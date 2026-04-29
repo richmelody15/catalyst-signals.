@@ -1,0 +1,57 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Signal {
+  id              String   @id @default(cuid())
+  tradePair       String
+  timer           String
+  entryTime       DateTime
+  direction       String   // BUY or SELL
+  confidence      Float
+  marketCondition  String
+  trend           String
+  bosConfirmed    Boolean
+  chochConfirmed  Boolean
+  fvgActive       Boolean
+  liquiditySweep  Boolean
+  volumeHigh      Boolean
+  zoneType        String
+  rsiValue        Float
+  stochasticBull  Boolean
+  bbExpanding     Boolean
+  adrStatus       String
+  riskReward      Float
+  signalQuality   String
+  checklistScore  Float
+  platform        String   @default("iq-option")
+  outcome         String?  // win, loss, pending
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+model PerformanceMetric {
+  id           String   @id @default(cuid())
+  date         DateTime @unique
+  totalTrades  Int      @default(0)
+  wins         Int      @default(0)
+  losses       Int      @default(0)
+  winRate      Float    @default(0)
+  avgConfidence Float   @default(0)
+  bestPair     String   @default("")
+  dailyPnl     Float    @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model IndicatorWeight {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  weight    Float
+  updatedAt DateTime @updatedAt
+}
