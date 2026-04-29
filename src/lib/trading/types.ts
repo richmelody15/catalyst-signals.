@@ -1,4 +1,6 @@
-// Trading Signal System - Type Definitions
+// CATALYST AI - Type Definitions
+
+import type { MarketRegime } from './market-regime';
 
 export interface Signal {
   id: string;
@@ -24,6 +26,21 @@ export interface Signal {
   signalQuality: string;
   checklistScore: number;
   platform: string;
+  // Market Regime Detection
+  marketRegime: MarketRegime;
+  regimeLabel: string;
+  regimeDescription: string;
+  // Strategy Guide
+  strategy: {
+    title: string;
+    entryRules: string[];
+    exitRules: string[];
+    riskManagement: string[];
+    avoidActions: string[];
+    confidenceNote: string;
+  };
+  // GLM Probability
+  glmProbability: number;
 }
 
 export interface MarketData {

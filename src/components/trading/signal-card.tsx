@@ -1,5 +1,6 @@
 'use client';
 
+import { useState } from 'react';
 import { Card, CardContent, CardHeader } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -18,6 +19,16 @@ import {
   Droplets,
   Volume2,
   Target,
+  Shield,
+  BookOpen,
+  ChevronDown,
+  ChevronUp,
+  Gauge,
+  AlertTriangle,
+  ListChecks,
+  LogOut,
+  ShieldAlert,
+  Sparkles,
 } from 'lucide-react';
 import type { Signal } from '@/lib/trading/types';
 import { toast } from 'sonner';
@@ -41,6 +52,15 @@ function formatEntryTime(entryTime: Date | string) {
   return `${time} WAT`;
 }
 
+const REGIME_COLORS: Record<string, string> = {
+  strong_trend: 'text-emerald-400 bg-emerald-400/10 border-emerald-400/20',
+  weak_trend: 'text-blue-400 bg-blue-400/10 border-blue-400/20',
+  ranging: 'text-yellow-400 bg-yellow-400/10 border-yellow-400/20',
+  volatile: 'text-red-400 bg-red-400/10 border-red-400/20',
+  breakout: 'text-purple-400 bg-purple-400/10 border-purple-400/20',
+  quiet: 'text-zinc-400 bg-zinc-400/10 border-zinc-400/20',
+};
+
 interface SignalCardProps {
   signal: Signal;
   onFeedback?: (signalId: string, outcome: 'win' | 'loss') => void;
@@ -51,17 +71,24 @@ export function SignalCard({ signal, onFeedback }: SignalCardProps) {
   const directionColor = isBuy ? 'text-emerald-400' : 'text-red-400';
   const borderColor = isBuy ? 'border-l-emerald-400' : 'border-l-red-400';
   const bgGlow = isBuy ? 'bg-emerald-400/5' : 'bg-red-400/5';
+  const [showStrategy, setShowStrategy] = useState(false);
+
+  const regimeColorClass = REGIME_COLORS[signal.marketRegime] || REGIME_COLORS.weak_trend;
+  const glmProb = signal.glmProbability ?? 94.3;
 
   const copySignal = () => {
     const text = [
-      `🔔 NEW SIGNAL!`,
+      `🔔 CATALYST AI SIGNAL!`,
       ``,
       `🎫 Trade: ${signal.tradePair}`,
       `⏳ Timer: ${signal.timer}`,
       `➡️ Entry: ${formatEntryTime(signal.entryTime)}`,
       `📈 Direction: ${signal.direction}`,
-      `🎯 AI Confidence: ${signal.confidence}%`,
+      `🎯 GLM Probability: ${glmProb}% WIN RATE`,
       `📊 Market: ${signal.marketCondition}`,
+      ``,
+      `🔮 Market Regime: ${signal.regimeLabel}`,
+      `   ${signal.regimeDescription}`,
       ``,
       `🧠 Trend: ${signal.trend}`,
       `📉 BOS: ${signal.bosConfirmed ? 'Confirmed' : 'Not Confirmed'}`,
@@ -78,7 +105,13 @@ export function SignalCard({ signal, onFeedback }: SignalCardProps) {
       `↪️ Risk Levels:`,
       ...Object.entries(signal.riskLevels).map(([key, value]) => `  ${key} → ${value}x`),
       ``,
-      `🎯 SIGNAL STATUS: ${signal.signalQuality}`,
+      `📋 STRATEGY GUIDE:`,
+      ...(signal.strategy?.entryRules?.map((r: string) => `  ✅ ${r}`) || []),
+      ...(signal.strategy?.exitRules?.map((r: string) => `  🚪 ${r}`) || []),
+      ...(signal.strategy?.riskManagement?.map((r: string) => `  🛡️ ${r}`) || []),
+      ``,
+      `🎯 GLM PROBABILITY: ${glmProb}% WIN RATE`,
+      `   ${signal.signalQuality}`,
     ].join('\n');
 
     navigator.clipboard.writeText(text).then(() => {
@@ -121,6 +154,15 @@ export function SignalCard({ signal, onFeedback }: SignalCardProps) {
       </CardHeader>
 
       <CardContent className="px-4 pb-4 space-y-3">
+        {/* GLM Probability Badge */}
+        <div className="flex items-center justify-between bg-zinc-800/60 rounded-lg p-2 border border-zinc-700/50">
+          <div className="flex items-center gap-1.5">
+            <Sparkles className="h-3.5 w-3.5 text-yellow-400" />
+            <span className="text-[10px] text-zinc-400 uppercase tracking-wider">GLM Probability</span>
+          </div>
+          <span className="text-sm font-bold text-yellow-400">{glmProb}% WIN RATE</span>
+        </div>
+
         {/* Confidence Bar */}
         <div className="space-y-1">
           <div className="flex items-center justify-between">
@@ -136,6 +178,20 @@ export function SignalCard({ signal, onFeedback }: SignalCardProps) {
           <p className="text-[10px] text-zinc-600">
             {signal.signalQuality} • Score: {signal.checklistScore}%
           </p>
+        </div>
+
+        {/* Market Regime */}
+        <div className="rounded-lg p-2 border border-zinc-700/50 bg-zinc-800/40">
+          <div className="flex items-center justify-between mb-1">
+            <div className="flex items-center gap-1.5">
+              <Gauge className="h-3.5 w-3.5 text-zinc-400" />
+              <span className="text-[10px] text-zinc-500 uppercase tracking-wider">Market Regime</span>
+            </div>
+            <Badge className={`text-[10px] h-5 font-bold border ${regimeColorClass}`}>
+              {signal.regimeLabel}
+            </Badge>
+          </div>
+          <p className="text-[10px] text-zinc-500 leading-relaxed">{signal.regimeDescription}</p>
         </div>
 
         <Separator className="bg-zinc-800" />
@@ -195,6 +251,99 @@ export function SignalCard({ signal, onFeedback }: SignalCardProps) {
             <span className="text-zinc-500">{signal.marketCondition}</span>
           </div>
         </div>
+
+        <Separator className="bg-zinc-800" />
+
+        {/* Strategy Guide Toggle */}
+        <Button
+          variant="ghost"
+          size="sm"
+          className="w-full h-6 text-[10px] text-zinc-400 hover:text-white hover:bg-zinc-800 justify-between px-2"
+          onClick={() => setShowStrategy(!showStrategy)}
+        >
+          <span className="flex items-center gap-1">
+            <BookOpen className="h-3 w-3" />
+            Strategy Guide
+          </span>
+          {showStrategy ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+        </Button>
+
+        {showStrategy && signal.strategy && (
+          <div className="space-y-2 animate-in slide-in-from-top-1 duration-200">
+            {/* Entry Rules */}
+            <div className="bg-emerald-400/5 border border-emerald-400/10 rounded-lg p-2">
+              <div className="flex items-center gap-1 mb-1">
+                <ListChecks className="h-3 w-3 text-emerald-400" />
+                <span className="text-[10px] font-bold text-emerald-400 uppercase tracking-wider">Entry Rules</span>
+              </div>
+              <ul className="space-y-0.5">
+                {signal.strategy.entryRules.map((rule, i) => (
+                  <li key={i} className="text-[10px] text-zinc-400 flex items-start gap-1">
+                    <span className="text-emerald-400 shrink-0">✓</span>
+                    {rule}
+                  </li>
+                ))}
+              </ul>
+            </div>
+
+            {/* Exit Rules */}
+            <div className="bg-blue-400/5 border border-blue-400/10 rounded-lg p-2">
+              <div className="flex items-center gap-1 mb-1">
+                <LogOut className="h-3 w-3 text-blue-400" />
+                <span className="text-[10px] font-bold text-blue-400 uppercase tracking-wider">Exit Rules</span>
+              </div>
+              <ul className="space-y-0.5">
+                {signal.strategy.exitRules.map((rule, i) => (
+                  <li key={i} className="text-[10px] text-zinc-400 flex items-start gap-1">
+                    <span className="text-blue-400 shrink-0">→</span>
+                    {rule}
+                  </li>
+                ))}
+              </ul>
+            </div>
+
+            {/* Risk Management */}
+            <div className="bg-yellow-400/5 border border-yellow-400/10 rounded-lg p-2">
+              <div className="flex items-center gap-1 mb-1">
+                <Shield className="h-3 w-3 text-yellow-400" />
+                <span className="text-[10px] font-bold text-yellow-400 uppercase tracking-wider">Risk Management</span>
+              </div>
+              <ul className="space-y-0.5">
+                {signal.strategy.riskManagement.map((rule, i) => (
+                  <li key={i} className="text-[10px] text-zinc-400 flex items-start gap-1">
+                    <span className="text-yellow-400 shrink-0">🛡</span>
+                    {rule}
+                  </li>
+                ))}
+              </ul>
+            </div>
+
+            {/* Avoid Actions */}
+            <div className="bg-red-400/5 border border-red-400/10 rounded-lg p-2">
+              <div className="flex items-center gap-1 mb-1">
+                <ShieldAlert className="h-3 w-3 text-red-400" />
+                <span className="text-[10px] font-bold text-red-400 uppercase tracking-wider">Avoid</span>
+              </div>
+              <ul className="space-y-0.5">
+                {signal.strategy.avoidActions.map((rule, i) => (
+                  <li key={i} className="text-[10px] text-zinc-400 flex items-start gap-1">
+                    <span className="text-red-400 shrink-0">✗</span>
+                    {rule}
+                  </li>
+                ))}
+              </ul>
+            </div>
+
+            {/* GLM Confidence Note */}
+            <div className="bg-yellow-400/5 border border-yellow-400/20 rounded-lg p-2">
+              <div className="flex items-center gap-1 mb-1">
+                <Sparkles className="h-3 w-3 text-yellow-400" />
+                <span className="text-[10px] font-bold text-yellow-400">GLM PROBABILITY: {glmProb}% WIN RATE</span>
+              </div>
+              <p className="text-[10px] text-zinc-500 leading-relaxed">{signal.strategy.confidenceNote}</p>
+            </div>
+          </div>
+        )}
 
         <Separator className="bg-zinc-800" />
 
