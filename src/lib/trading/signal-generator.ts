@@ -4,12 +4,14 @@ import { PriceActionAnalyzer } from './price-action';
 import { SignalQualityChecker } from './quality-checker';
 import { MarketRegimeDetector } from './market-regime';
 import { StrategyGuideGenerator } from './strategy-guide';
+import { SupportResistanceEngine } from './support-resistance';
 import { TRADING_CONFIG, type Signal, type MarketData } from './types';
 
 let signalCounter = 0;
 
 export class SignalGenerator {
   private qualityChecker = new SignalQualityChecker();
+  private srEngine = new SupportResistanceEngine();
   private generatedSignals: Signal[] = [];
 
   generateSignal(marketData: MarketData): Signal | null {
@@ -178,6 +180,19 @@ export class SignalGenerator {
       volumes,
     });
 
+    // Support & Resistance Detection
+    const ohlcBars = [];
+    for (let i = 0; i < closePrices.length; i++) {
+      ohlcBars.push({
+        open: openPrices[i],
+        high: highPrices[i],
+        low: lowPrices[i],
+        close: closePrices[i],
+        volume: volumes[i],
+      });
+    }
+    const srZones = this.srEngine.findKeySRZones(ohlcBars);
+
     // Strategy Guide
     const strategyGuide = StrategyGuideGenerator.generate({
       regime: regimeResult.regime,
@@ -230,6 +245,11 @@ export class SignalGenerator {
       },
       // GLM Probability — 94.3% win rate
       glmProbability: 94.3,
+      // Support & Resistance
+      nearestSupport: srZones.nearestSupport,
+      nearestResistance: srZones.nearestResistance,
+      supportZone: srZones.zoneRange.supportZone,
+      resistanceZone: srZones.zoneRange.resistanceZone,
     };
 
     this.generatedSignals.push(signal);

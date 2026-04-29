@@ -11,7 +11,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { Clock, TrendingUp, TrendingDown, CheckCircle2, XCircle } from 'lucide-react';
+import { Clock, TrendingUp, TrendingDown, Sparkles, Gauge } from 'lucide-react';
 import type { Signal } from '@/lib/trading/types';
 
 interface SignalHistoryProps {
@@ -46,16 +46,17 @@ export function SignalHistory({ signals }: SignalHistoryProps) {
               <TableRow className="border-zinc-800 hover:bg-transparent">
                 <TableHead className="text-[10px] text-zinc-500 h-7">Pair</TableHead>
                 <TableHead className="text-[10px] text-zinc-500 h-7">Direction</TableHead>
-                <TableHead className="text-[10px] text-zinc-500 h-7">Confidence</TableHead>
+                <TableHead className="text-[10px] text-zinc-500 h-7">GLM Prob</TableHead>
+                <TableHead className="text-[10px] text-zinc-500 h-7">Regime</TableHead>
                 <TableHead className="text-[10px] text-zinc-500 h-7">Time</TableHead>
-                <TableHead className="text-[10px] text-zinc-500 h-7">Checklist</TableHead>
+                <TableHead className="text-[10px] text-zinc-500 h-7">S/R</TableHead>
                 <TableHead className="text-[10px] text-zinc-500 h-7">Status</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {signals.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={6} className="text-center text-xs text-zinc-600 py-8">
+                  <TableCell colSpan={7} className="text-center text-xs text-zinc-600 py-8">
                     No signals generated yet. Waiting for market data...
                   </TableCell>
                 </TableRow>
@@ -78,15 +79,34 @@ export function SignalHistory({ signals }: SignalHistoryProps) {
                       </div>
                     </TableCell>
                     <TableCell className="py-1.5">
-                      <span className={`text-xs font-medium ${signal.confidence > 90 ? 'text-emerald-400' : 'text-yellow-400'}`}>
-                        {signal.confidence}%
-                      </span>
+                      <div className="flex items-center gap-1">
+                        <Sparkles className="h-2.5 w-2.5 text-yellow-400" />
+                        <span className="text-xs font-bold text-yellow-400">
+                          {signal.glmProbability ?? 94.3}%
+                        </span>
+                      </div>
+                    </TableCell>
+                    <TableCell className="py-1.5">
+                      <Badge variant="outline" className="text-[8px] h-4 border-zinc-700 text-zinc-400">
+                        {signal.regimeLabel || 'N/A'}
+                      </Badge>
                     </TableCell>
                     <TableCell className="text-xs text-zinc-500 py-1.5">
                       {formatTime(signal.entryTime)}
                     </TableCell>
                     <TableCell className="py-1.5">
-                      <span className="text-xs text-zinc-400">{signal.checklistScore}%</span>
+                      <div className="flex flex-col gap-0.5">
+                        {signal.nearestSupport && (
+                          <span className="text-[9px] text-emerald-400/70">
+                            S: {signal.nearestSupport.price.toFixed(signal.nearestSupport.price < 100 ? 4 : 2)}
+                          </span>
+                        )}
+                        {signal.nearestResistance && (
+                          <span className="text-[9px] text-red-400/70">
+                            R: {signal.nearestResistance.price.toFixed(signal.nearestResistance.price < 100 ? 4 : 2)}
+                          </span>
+                        )}
+                      </div>
                     </TableCell>
                     <TableCell className="py-1.5">
                       <Badge

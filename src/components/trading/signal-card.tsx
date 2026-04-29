@@ -29,6 +29,9 @@ import {
   LogOut,
   ShieldAlert,
   Sparkles,
+  Layers,
+  ArrowDown,
+  ArrowUp,
 } from 'lucide-react';
 import type { Signal } from '@/lib/trading/types';
 import { toast } from 'sonner';
@@ -109,6 +112,10 @@ export function SignalCard({ signal, onFeedback }: SignalCardProps) {
       ...(signal.strategy?.entryRules?.map((r: string) => `  ✅ ${r}`) || []),
       ...(signal.strategy?.exitRules?.map((r: string) => `  🚪 ${r}`) || []),
       ...(signal.strategy?.riskManagement?.map((r: string) => `  🛡️ ${r}`) || []),
+      ``,
+      `📐 SUPPORT/RESISTANCE:`,
+      ...(signal.nearestSupport ? [`  ⬇ Support: ${signal.nearestSupport.price.toFixed(signal.nearestSupport.price < 100 ? 4 : 2)} (Str: ${signal.nearestSupport.strength}${signal.nearestSupport.isMajor ? ', Major' : ''})`] : []),
+      ...(signal.nearestResistance ? [`  ⬆ Resistance: ${signal.nearestResistance.price.toFixed(signal.nearestResistance.price < 100 ? 4 : 2)} (Str: ${signal.nearestResistance.strength}${signal.nearestResistance.isMajor ? ', Major' : ''})`] : []),
       ``,
       `🎯 GLM PROBABILITY: ${glmProb}% WIN RATE`,
       `   ${signal.signalQuality}`,
@@ -228,6 +235,71 @@ export function SignalCard({ signal, onFeedback }: SignalCardProps) {
             <p className="text-xs font-bold text-white">1:{signal.riskReward}</p>
           </div>
         </div>
+
+        {/* Support & Resistance Zones */}
+        {(signal.nearestSupport || signal.nearestResistance) && (
+          <div className="rounded-lg p-2 border border-zinc-700/50 bg-zinc-800/40">
+            <div className="flex items-center gap-1.5 mb-1.5">
+              <Layers className="h-3.5 w-3.5 text-cyan-400" />
+              <span className="text-[10px] text-zinc-500 uppercase tracking-wider">S/R Zones</span>
+            </div>
+            <div className="space-y-1">
+              {signal.nearestSupport && (
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1">
+                    <ArrowDown className="h-3 w-3 text-emerald-400" />
+                    <span className="text-[10px] text-zinc-400">Support</span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[10px] font-bold text-emerald-400">
+                      {signal.nearestSupport.price.toFixed(signal.nearestSupport.price < 100 ? 4 : 2)}
+                    </span>
+                    {signal.nearestSupport.isMajor && (
+                      <Badge className="text-[8px] h-3 px-1 bg-emerald-400/10 text-emerald-400 border-0">Major</Badge>
+                    )}
+                    <span className="text-[9px] text-zinc-600">Str: {signal.nearestSupport.strength}</span>
+                  </div>
+                </div>
+              )}
+              {signal.nearestResistance && (
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1">
+                    <ArrowUp className="h-3 w-3 text-red-400" />
+                    <span className="text-[10px] text-zinc-400">Resistance</span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[10px] font-bold text-red-400">
+                      {signal.nearestResistance.price.toFixed(signal.nearestResistance.price < 100 ? 4 : 2)}
+                    </span>
+                    {signal.nearestResistance.isMajor && (
+                      <Badge className="text-[8px] h-3 px-1 bg-red-400/10 text-red-400 border-0">Major</Badge>
+                    )}
+                    <span className="text-[9px] text-zinc-600">Str: {signal.nearestResistance.strength}</span>
+                  </div>
+                </div>
+              )}
+              {/* Zone Ranges */}
+              <div className="flex gap-2 pt-0.5">
+                {signal.supportZone.start != null && (
+                  <div className="flex-1 bg-emerald-400/5 rounded px-1.5 py-0.5">
+                    <p className="text-[8px] text-zinc-600 text-center">Supply Zone</p>
+                    <p className="text-[9px] text-emerald-400/70 text-center">
+                      {signal.supportZone.start?.toFixed(signal.supportZone.start < 100 ? 4 : 2)} - {signal.supportZone.end?.toFixed((signal.supportZone.end ?? 0) < 100 ? 4 : 2)}
+                    </p>
+                  </div>
+                )}
+                {signal.resistanceZone.start != null && (
+                  <div className="flex-1 bg-red-400/5 rounded px-1.5 py-0.5">
+                    <p className="text-[8px] text-zinc-600 text-center">Resist Zone</p>
+                    <p className="text-[9px] text-red-400/70 text-center">
+                      {signal.resistanceZone.start?.toFixed(signal.resistanceZone.start < 100 ? 4 : 2)} - {signal.resistanceZone.end?.toFixed((signal.resistanceZone.end ?? 0) < 100 ? 4 : 2)}
+                    </p>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Risk Levels */}
         <div className="flex items-center gap-1">

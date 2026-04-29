@@ -1,6 +1,7 @@
 // CATALYST AI - Type Definitions
 
 import type { MarketRegime } from './market-regime';
+import type { SRLevel } from './support-resistance';
 
 export interface Signal {
   id: string;
@@ -41,6 +42,11 @@ export interface Signal {
   };
   // GLM Probability
   glmProbability: number;
+  // Support & Resistance
+  nearestSupport: SRLevel | null;
+  nearestResistance: SRLevel | null;
+  supportZone: { start: number | null; end: number | null };
+  resistanceZone: { start: number | null; end: number | null };
 }
 
 export interface MarketData {
