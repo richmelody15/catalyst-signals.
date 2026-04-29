@@ -7,8 +7,6 @@ import { TRADING_CONFIG, type Signal, type MarketData } from './types';
 let signalCounter = 0;
 
 export class SignalGenerator {
-  private indicators = new TechnicalIndicators();
-  private priceAction = new PriceActionAnalyzer();
   private qualityChecker = new SignalQualityChecker();
   private generatedSignals: Signal[] = [];
 
@@ -29,11 +27,11 @@ export class SignalGenerator {
     const emaLong = TechnicalIndicators.calculateEMA(closePrices, TRADING_CONFIG.EMA_LONG);
     const atr = TechnicalIndicators.calculateATR(highPrices, lowPrices, closePrices);
 
-    // Price Action Analysis
-    const { supports, resistances } = this.priceAction.detectSupportResistance(closePrices);
-    const fvgs = this.priceAction.detectFVG(closePrices);
-    const structure = this.priceAction.detectBosChoch(highPrices, lowPrices, closePrices);
-    const liquidity = this.priceAction.detectLiquiditySweep(highPrices, lowPrices, volumes);
+    // Price Action Analysis (static methods)
+    const { supports, resistances } = PriceActionAnalyzer.detectSupportResistance(closePrices);
+    const fvgs = PriceActionAnalyzer.detectFVG(closePrices);
+    const structure = PriceActionAnalyzer.detectBosChoch(highPrices, lowPrices, closePrices);
+    const liquidity = PriceActionAnalyzer.detectLiquiditySweep(highPrices, lowPrices, volumes);
 
     // Determine trend
     const trend = emaShort > emaLong ? 'bullish' : 'bearish';

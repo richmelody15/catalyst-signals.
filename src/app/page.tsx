@@ -24,6 +24,10 @@ import {
 } from 'lucide-react';
 
 export default function Home() {
+  // Client-side hydration guard — prevents SSR/client mismatch
+  // for dynamic content (WebSocket state, dates, etc.)
+  const [isClient, setIsClient] = useState(false);
+
   const {
     signals,
     isConnected,
@@ -38,16 +42,24 @@ export default function Home() {
   const [activeTab, setActiveTab] = useState('signals');
   const [isGenerating, setIsGenerating] = useState(false);
 
+  // Mark as client-rendered after mount
+  useEffect(() => {
+    setIsClient(true);
+  }, []);
+
   // Fetch initial signals
   useEffect(() => {
+    if (!isClient) return;
     fetchSignals();
-  }, [platform]);
+  }, [platform, isClient]);
 
   // Auto-refresh analytics
   useEffect(() => {
+    if (!isClient) return;
+    fetchAnalytics();
     const interval = setInterval(fetchAnalytics, 15000);
     return () => clearInterval(interval);
-  }, []);
+  }, [isClient]);
 
   const fetchSignals = useCallback(async () => {
     try {
@@ -128,10 +140,26 @@ export default function Home() {
   );
 
   const handleRefresh = useCallback(() => {
+    if (!isClient) return;
     fetchSignals();
     fetchAnalytics();
     requestSignal();
-  }, [fetchSignals, fetchAnalytics, requestSignal]);
+  }, [fetchSignals, fetchAnalytics, requestSignal, isClient]);
+
+  // SSR: render a lightweight placeholder to avoid hydration mismatch
+  // Client: render the full interactive dashboard
+  if (!isClient) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <div className="text-center space-y-3">
+          <div className="relative inline-block">
+            <Activity className="h-10 w-10 text-zinc-700 animate-pulse" />
+          </div>
+          <p className="text-xs text-zinc-600">Loading Trading Signal System...</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-background">
