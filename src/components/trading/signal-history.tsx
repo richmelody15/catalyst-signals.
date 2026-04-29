@@ -20,10 +20,12 @@ interface SignalHistoryProps {
 
 export function SignalHistory({ signals }: SignalHistoryProps) {
   const formatTime = (time: Date | string) => {
-    return new Date(time).toLocaleTimeString([], {
+    const t = new Date(time).toLocaleTimeString([], {
       hour: '2-digit',
       minute: '2-digit',
+      hour12: false,
     });
+    return `${t} WAT`;
   };
 
   return (

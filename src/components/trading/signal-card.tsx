@@ -37,7 +37,8 @@ function CheckItem({ label, value }: { label: string; value: boolean }) {
 
 function formatEntryTime(entryTime: Date | string) {
   const date = new Date(entryTime);
-  return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const time = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+  return `${time} WAT`;
 }
 
 interface SignalCardProps {
