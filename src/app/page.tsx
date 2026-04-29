@@ -155,7 +155,7 @@ export default function Home() {
           <div className="relative inline-block">
             <Activity className="h-10 w-10 text-zinc-700 animate-pulse" />
           </div>
-          <p className="text-xs text-zinc-600">Loading Trading Signal System...</p>
+          <p className="text-xs text-zinc-600">Loading CATALYST AI...</p>
         </div>
       </div>
     );
@@ -285,7 +285,7 @@ export default function Home() {
             <div className="flex items-center gap-2">
               <div className="h-1.5 w-1.5 bg-emerald-400 rounded-full pulse-glow" />
               <span className="text-[10px] text-zinc-600">
-                Trading Signal System v1.0 • Smart Money • AI-Powered
+                CATALYST AI v1.0 • Smart Money • AI-Powered
               </span>
             </div>
             <div className="flex items-center gap-3">

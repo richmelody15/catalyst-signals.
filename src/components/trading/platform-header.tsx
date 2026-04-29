@@ -36,7 +36,7 @@ export function PlatformHeader({
           </div>
           <div>
             <h1 className="text-lg font-bold text-white tracking-tight">
-              Trading Signal System
+              CATALYST AI
             </h1>
             <p className="text-[10px] text-zinc-500 uppercase tracking-widest">
               Smart Money • AI-Powered • 94.3% Filter

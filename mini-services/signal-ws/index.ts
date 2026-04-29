@@ -118,7 +118,7 @@ io.on('connection', (socket) => {
 
   // Send initial data
   socket.emit('connected', {
-    message: 'Trading Signal System Connected',
+    message: 'CATALYST AI Connected',
     activePairs: TRADING_PAIRS.length,
     timeframes: TIMEFRAMES,
   });
