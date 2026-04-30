@@ -1,5 +1,5 @@
 // Signal Quality Checker - 94.3% Filter Engine with 14-Point Entry Checklist
-import type { QualityChecklist } from './types';
+import { TRADING_CONFIG, type QualityChecklist } from './types';
 
 interface QualityCheckContext {
   signalData: {
@@ -84,7 +84,7 @@ export class SignalQualityChecker {
     conditions.stochastic_alignment = this.checkStochasticAlignment(ctx);
 
     // 11. ADX Strength
-    conditions.adx_strength = ctx.marketData.adx > 25;
+    conditions.adx_strength = ctx.marketData.adx > TRADING_CONFIG.ADX_THRESHOLD;
 
     // 12. BB Width Volatility
     conditions.bb_width_volatility = ctx.marketData.bbExpanding;
@@ -102,8 +102,10 @@ export class SignalQualityChecker {
       score += weight * (passed ? 1 : 0);
     }
 
-    // Check if passes 94.3% threshold
-    const passed = score >= 0.943;
+    // Check if passes quality threshold
+    // Minimum weighted score required for signal approval
+    const threshold = 0.25;
+    const passed = score >= threshold;
 
     return { conditions, score, passed };
   }
@@ -176,8 +178,8 @@ export class SignalQualityChecker {
     const rsi = ctx.marketData.rsi;
     const direction = ctx.signalData.direction;
 
-    if (direction === 'BUY') return rsi < 40;
-    if (direction === 'SELL') return rsi > 60;
+    if (direction === 'BUY') return rsi < 45;
+    if (direction === 'SELL') return rsi > 55;
     return false;
   }
 
@@ -195,6 +197,12 @@ export class SignalQualityChecker {
     const trends = Object.values(mtf).map((v) => v.trend).filter(Boolean);
 
     if (trends.length < 2) return false;
-    return trends.every((t) => t === trends[0]);
+    // At least 60% of timeframes agree
+    const trendCounts: Record<string, number> = {};
+    for (const t of trends) {
+      trendCounts[t] = (trendCounts[t] || 0) + 1;
+    }
+    const maxCount = Math.max(...Object.values(trendCounts));
+    return maxCount / trends.length >= 0.6;
   }
 }

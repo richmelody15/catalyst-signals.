@@ -14,10 +14,10 @@ export async function POST(request: Request) {
     const { TRADING_PAIRS, TIMEFRAMES } = await import('@/lib/trading/types');
     const newSignals: Signal[] = [];
 
-    // Generate for 3-5 random pairs
+    // Generate for 5-8 random pairs
     const pairsToCheck = TRADING_PAIRS
       .sort(() => Math.random() - 0.5)
-      .slice(0, 5);
+      .slice(0, 8);
 
     for (const pair of pairsToCheck) {
       const timeframe = TIMEFRAMES[Math.floor(Math.random() * TIMEFRAMES.length)];

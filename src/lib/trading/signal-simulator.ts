@@ -1,4 +1,5 @@
 // Market Data Simulator - Generates realistic market data for demo
+// Improved: Stronger trend cycles, wider H/L spreads, volume spikes
 import { TRADING_PAIRS, TIMEFRAMES, type MarketData } from './types';
 
 // Base prices for different pairs
@@ -32,8 +33,16 @@ const BASE_PRICES: Record<string, number> = {
   'USDNOK-OTC': 10.870,
 };
 
+// Each pair has its own trend state for realistic trending behavior
+interface PairTrendState {
+  direction: 1 | -1;       // Current trend direction
+  strength: number;         // 0.3–1.0
+  duration: number;         // How many bars left in this trend phase
+}
+
 export class MarketSimulator {
   private priceHistory: Record<string, number[]> = {};
+  private trendStates: Record<string, PairTrendState> = {};
   private initialized = false;
 
   initialize(): void {
@@ -43,13 +52,28 @@ export class MarketSimulator {
       const basePrice = BASE_PRICES[pair] || 100;
       this.priceHistory[pair] = [];
 
-      // Generate 200 candles of historical data
+      // Initialize trend state for each pair
+      this.trendStates[pair] = {
+        direction: Math.random() > 0.5 ? 1 : -1,
+        strength: 0.3 + Math.random() * 0.7,
+        duration: Math.floor(20 + Math.random() * 60), // 20–80 bars per trend phase
+      };
+
+      // Generate 200 candles of historical data with realistic trend cycles
       let price = basePrice;
       for (let i = 0; i < 200; i++) {
-        const volatility = basePrice * 0.001;
-        const change = (Math.random() - 0.5) * 2 * volatility;
-        price = Math.max(price + change, basePrice * 0.95);
-        price = Math.min(price, basePrice * 1.05);
+        this.updateTrendState(pair);
+        const state = this.trendStates[pair];
+
+        const volatility = basePrice * 0.002; // 0.2% per candle
+        const trendComponent = state.direction * state.strength * volatility * 0.8;
+        const randomComponent = (Math.random() - 0.5) * 2 * volatility * 0.6;
+        const meanReversion = (basePrice - price) * 0.003; // Gentle mean reversion
+
+        price = price + trendComponent + randomComponent + meanReversion;
+        price = Math.max(price, basePrice * 0.90);
+        price = Math.min(price, basePrice * 1.10);
+
         this.priceHistory[pair].push(price);
       }
     }
@@ -57,23 +81,38 @@ export class MarketSimulator {
     this.initialized = true;
   }
 
+  private updateTrendState(pair: string): void {
+    const state = this.trendStates[pair];
+    if (!state) return;
+
+    state.duration--;
+
+    // When trend phase expires, pick a new direction and strength
+    if (state.duration <= 0) {
+      state.direction = Math.random() > 0.5 ? 1 : -1;
+      state.strength = 0.3 + Math.random() * 0.7;
+      state.duration = Math.floor(15 + Math.random() * 50);
+    }
+  }
+
   tick(): void {
     for (const pair of TRADING_PAIRS) {
       const history = this.priceHistory[pair];
       if (!history || history.length === 0) continue;
 
+      this.updateTrendState(pair);
+      const state = this.trendStates[pair];
       const lastPrice = history[history.length - 1];
       const basePrice = BASE_PRICES[pair] || 100;
-      const volatility = basePrice * 0.0008;
 
-      // Random walk with mean reversion
-      const meanReversionForce = (basePrice - lastPrice) * 0.01;
-      const randomChange = (Math.random() - 0.5) * 2 * volatility;
-      const trendForce = (Math.random() > 0.5 ? 1 : -1) * volatility * 0.3;
+      const volatility = basePrice * 0.002;
+      const trendComponent = state.direction * state.strength * volatility * 0.8;
+      const randomComponent = (Math.random() - 0.5) * 2 * volatility * 0.5;
+      const meanReversion = (basePrice - lastPrice) * 0.003;
 
-      let newPrice = lastPrice + randomChange + meanReversionForce + trendForce;
-      newPrice = Math.max(newPrice, basePrice * 0.92);
-      newPrice = Math.min(newPrice, basePrice * 1.08);
+      let newPrice = lastPrice + trendComponent + randomComponent + meanReversion;
+      newPrice = Math.max(newPrice, basePrice * 0.88);
+      newPrice = Math.min(newPrice, basePrice * 1.12);
 
       history.push(newPrice);
 
@@ -89,17 +128,21 @@ export class MarketSimulator {
     if (!history || history.length < 50) return null;
 
     const basePrice = BASE_PRICES[pair] || 100;
-    const volatility = basePrice * 0.0005;
+    const volatility = basePrice * 0.0015; // 0.15% — wider H/L spreads for realistic indicators
 
     const closePrices = [...history];
-    const highPrices = closePrices.map((p) => p + Math.random() * volatility * 2);
-    const lowPrices = closePrices.map((p) => p - Math.random() * volatility * 2);
+    const highPrices = closePrices.map((p) => p + Math.random() * volatility * 3);
+    const lowPrices = closePrices.map((p) => p - Math.random() * volatility * 3);
     const openPrices = closePrices.map((p, i) =>
-      i === 0 ? p : closePrices[i - 1] + (Math.random() - 0.5) * volatility
+      i === 0 ? p : closePrices[i - 1] + (Math.random() - 0.5) * volatility * 2
     );
-    const volumes = closePrices.map(() =>
-      1000 + Math.random() * 5000 + (Math.random() > 0.9 ? 5000 : 0)
-    );
+
+    // Generate volume with occasional spikes (1 in 8 chance)
+    const volumes = closePrices.map(() => {
+      const base = 1000 + Math.random() * 4000;
+      const spike = Math.random() > 0.875 ? 8000 + Math.random() * 7000 : 0;
+      return base + spike;
+    });
 
     return {
       pair,

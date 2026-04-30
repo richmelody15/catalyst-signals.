@@ -13,11 +13,14 @@ export class TechnicalIndicators {
     const gains = deltas.map(d => d > 0 ? d : 0);
     const losses = deltas.map(d => d < 0 ? -d : 0);
 
-    const recentGains = gains.slice(-period);
-    const recentLosses = losses.slice(-period);
+    // Wilder's smoothing: first average = SMA, then EMA with alpha = 1/period
+    let avgGain = gains.slice(0, period).reduce((a, b) => a + b, 0) / period;
+    let avgLoss = losses.slice(0, period).reduce((a, b) => a + b, 0) / period;
 
-    const avgGain = recentGains.reduce((a, b) => a + b, 0) / period;
-    const avgLoss = recentLosses.reduce((a, b) => a + b, 0) / period;
+    for (let i = period; i < deltas.length; i++) {
+      avgGain = (avgGain * (period - 1) + gains[i]) / period;
+      avgLoss = (avgLoss * (period - 1) + losses[i]) / period;
+    }
 
     if (avgLoss === 0) return 100.0;
     const rs = avgGain / avgLoss;
@@ -29,21 +32,35 @@ export class TechnicalIndicators {
     low: number[],
     close: number[],
     kPeriod: number = TRADING_CONFIG.STOCHASTIC_K,
-    _dPeriod: number = TRADING_CONFIG.STOCHASTIC_D
+    dPeriod: number = TRADING_CONFIG.STOCHASTIC_D
   ): StochasticResult {
     if (high.length < kPeriod) return { k: 50, d: 50 };
 
-    const recentHigh = high.slice(-kPeriod);
-    const recentLow = low.slice(-kPeriod);
-    const lowestLow = Math.min(...recentLow);
-    const highestHigh = Math.max(...recentHigh);
+    // Calculate %K values for the last (dPeriod) windows
+    const kValues: number[] = [];
+    const lookback = Math.min(close.length, kPeriod + dPeriod - 1);
 
-    if (highestHigh - lowestLow === 0) return { k: 50, d: 50 };
+    for (let i = lookback - 1; i >= 0; i--) {
+      const startIdx = Math.max(0, i - kPeriod + 1);
+      const windowHigh = high.slice(startIdx, i + 1);
+      const windowLow = low.slice(startIdx, i + 1);
 
-    const k = 100 * ((close[close.length - 1] - lowestLow) / (highestHigh - lowestLow));
+      const highestHigh = Math.max(...windowHigh);
+      const lowestLow = Math.min(...windowLow);
 
-    // Simplified %D calculation
-    const d = k;
+      if (highestHigh - lowestLow === 0) {
+        kValues.push(50);
+      } else {
+        kValues.push(100 * ((close[i] - lowestLow) / (highestHigh - lowestLow)));
+      }
+    }
+
+    // Current %K = latest value
+    const k = kValues[0] ?? 50;
+
+    // %D = SMA of the last dPeriod %K values
+    const dSlice = kValues.slice(0, Math.min(dPeriod, kValues.length));
+    const d = dSlice.reduce((a, b) => a + b, 0) / dSlice.length;
 
     return { k, d };
   }
@@ -76,7 +93,7 @@ export class TechnicalIndicators {
     close: number[],
     period: number = TRADING_CONFIG.ADX_PERIOD
   ): number {
-    if (close.length < period + 1) return 20;
+    if (close.length < period * 2) return 20;
 
     const trList: number[] = [];
     const plusDmList: number[] = [];
@@ -99,24 +116,54 @@ export class TechnicalIndicators {
       minusDmList.push(minusDm);
     }
 
-    const recentTr = trList.slice(-period);
-    const recentPlusDm = plusDmList.slice(-period);
-    const recentMinusDm = minusDmList.slice(-period);
+    // Wilder's smoothing for ATR, +DM, -DM
+    let smoothTR = trList.slice(0, period).reduce((a, b) => a + b, 0);
+    let smoothPlusDM = plusDmList.slice(0, period).reduce((a, b) => a + b, 0);
+    let smoothMinusDM = minusDmList.slice(0, period).reduce((a, b) => a + b, 0);
 
-    const atr = recentTr.reduce((a, b) => a + b, 0) / period;
-    const avgPlusDm = recentPlusDm.reduce((a, b) => a + b, 0) / period;
-    const avgMinusDm = recentMinusDm.reduce((a, b) => a + b, 0) / period;
+    const dxValues: number[] = [];
 
-    if (atr === 0) return 0;
+    // First DX from initial smoothed values
+    if (smoothTR > 0) {
+      const plusDi = 100 * (smoothPlusDM / smoothTR);
+      const minusDi = 100 * (smoothMinusDM / smoothTR);
+      if (plusDi + minusDi > 0) {
+        dxValues.push(100 * Math.abs(plusDi - minusDi) / (plusDi + minusDi));
+      }
+    }
 
-    const plusDi = 100 * (avgPlusDm / atr);
-    const minusDi = 100 * (avgMinusDm / atr);
+    // Continue smoothing and calculate DX for each subsequent bar
+    for (let i = period; i < trList.length; i++) {
+      smoothTR = smoothTR - (smoothTR / period) + trList[i];
+      smoothPlusDM = smoothPlusDM - (smoothPlusDM / period) + plusDmList[i];
+      smoothMinusDM = smoothMinusDM - (smoothMinusDM / period) + minusDmList[i];
 
-    if (plusDi + minusDi === 0) return 0;
+      if (smoothTR > 0) {
+        const plusDi = 100 * (smoothPlusDM / smoothTR);
+        const minusDi = 100 * (smoothMinusDM / smoothTR);
+        if (plusDi + minusDi > 0) {
+          dxValues.push(100 * Math.abs(plusDi - minusDi) / (plusDi + minusDi));
+        }
+      }
+    }
 
-    const dx = 100 * Math.abs(plusDi - minusDi) / (plusDi + minusDi);
+    if (dxValues.length === 0) return 20;
 
-    return dx;
+    // ADX = Wilder's smoothed average of DX values
+    if (dxValues.length <= period) {
+      // Not enough DX values for full smoothing, return average
+      return +(dxValues.reduce((a, b) => a + b, 0) / dxValues.length).toFixed(1);
+    }
+
+    // First ADX = SMA of first 'period' DX values
+    let adx = dxValues.slice(0, period).reduce((a, b) => a + b, 0) / period;
+
+    // Subsequent ADX values use Wilder's smoothing
+    for (let i = period; i < dxValues.length; i++) {
+      adx = (adx * (period - 1) + dxValues[i]) / period;
+    }
+
+    return +adx.toFixed(1);
   }
 
   static calculateEMA(prices: number[], period: number): number {
