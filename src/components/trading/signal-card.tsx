@@ -32,6 +32,9 @@ import {
   Layers,
   ArrowDown,
   ArrowUp,
+  Clock,
+  Wrench,
+  Crosshair,
 } from 'lucide-react';
 import type { Signal } from '@/lib/trading/types';
 import { toast } from 'sonner';
@@ -80,7 +83,8 @@ export function SignalCard({ signal, onFeedback }: SignalCardProps) {
   const glmProb = signal.glmProbability ?? 94.3;
 
   const copySignal = () => {
-    const text = [
+    // Use the formatted signal if available, otherwise fall back to manual formatting
+    const text = signal.formatted?.emoji || [
       `🔔 CATALYST AI SIGNAL!`,
       ``,
       `🎫 Trade: ${signal.tradePair}`,
@@ -324,6 +328,152 @@ export function SignalCard({ signal, onFeedback }: SignalCardProps) {
           </div>
         </div>
 
+        {/* Multi-Timeframe Confluence */}
+        {signal.mtfConfluence && (
+          <div className="rounded-lg p-2 border border-zinc-700/50 bg-zinc-800/40">
+            <div className="flex items-center justify-between mb-1.5">
+              <div className="flex items-center gap-1.5">
+                <Clock className="h-3.5 w-3.5 text-purple-400" />
+                <span className="text-[10px] text-zinc-500 uppercase tracking-wider">MTF Confluence</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <Badge className={`text-[9px] h-4 font-bold border ${
+                  signal.mtfConfluence.aligned
+                    ? 'text-emerald-400 bg-emerald-400/10 border-emerald-400/20'
+                    : 'text-yellow-400 bg-yellow-400/10 border-yellow-400/20'
+                }`}>
+                  {signal.mtfConfluence.aligned ? 'ALIGNED' : 'MIXED'}
+                </Badge>
+                <span className="text-[9px] text-zinc-500">{signal.mtfConfluence.alignmentScore}%</span>
+              </div>
+            </div>
+            {/* Timeframe breakdown */}
+            <div className="grid grid-cols-6 gap-1 mb-1.5">
+              {Object.entries(signal.mtfConfluence.timeframeResults).map(([tf, analysis]) => (
+                <div key={tf} className="bg-zinc-800/60 rounded px-1 py-0.5 text-center">
+                  <p className="text-[8px] text-zinc-600">{tf}</p>
+                  <p className={`text-[9px] font-bold ${
+                    analysis.trend === 'bullish' ? 'text-emerald-400' :
+                    analysis.trend === 'bearish' ? 'text-red-400' : 'text-zinc-500'
+                  }`}>
+                    {analysis.trend === 'bullish' ? '↑' : analysis.trend === 'bearish' ? '↓' : '→'}
+                  </p>
+                </div>
+              ))}
+            </div>
+            {/* MTF Checklist Score */}
+            <div className="flex items-center justify-between">
+              <span className="text-[9px] text-zinc-600">8-Point Checklist</span>
+              <span className={`text-[9px] font-bold ${
+                signal.mtfConfluence.checklistScore >= 70 ? 'text-emerald-400' :
+                signal.mtfConfluence.checklistScore >= 50 ? 'text-yellow-400' : 'text-red-400'
+              }`}>
+                {signal.mtfConfluence.checklistScore}%
+              </span>
+            </div>
+            <div className="grid grid-cols-4 gap-1 mt-1">
+              {Object.entries(signal.mtfConfluence.checklist).map(([key, val]) => (
+                <div key={key} className="flex items-center gap-0.5">
+                  {val ? (
+                    <CheckCircle2 className="h-2.5 w-2.5 text-emerald-400" />
+                  ) : (
+                    <XCircle className="h-2.5 w-2.5 text-zinc-700" />
+                  )}
+                  <span className="text-[7px] text-zinc-600 truncate">{key.replace(/_/g, ' ').slice(0, 12)}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Supply/Demand Zone */}
+        {signal.nearestSDZone && (
+          <div className="rounded-lg p-2 border border-zinc-700/50 bg-zinc-800/40">
+            <div className="flex items-center justify-between mb-1">
+              <div className="flex items-center gap-1.5">
+                <Crosshair className="h-3.5 w-3.5 text-orange-400" />
+                <span className="text-[10px] text-zinc-500 uppercase tracking-wider">S/D Zone</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <Badge className={`text-[9px] h-4 font-bold border ${
+                  signal.nearestSDZone.direction === 'bullish'
+                    ? 'text-emerald-400 bg-emerald-400/10 border-emerald-400/20'
+                    : 'text-red-400 bg-red-400/10 border-red-400/20'
+                }`}>
+                  {signal.nearestSDZone.type}
+                </Badge>
+                <Badge className={`text-[8px] h-3.5 px-1 border ${
+                  signal.nearestSDZone.strength === 'extreme' ? 'text-purple-400 bg-purple-400/10 border-purple-400/20' :
+                  signal.nearestSDZone.strength === 'strong' ? 'text-orange-400 bg-orange-400/10 border-orange-400/20' :
+                  signal.nearestSDZone.strength === 'moderate' ? 'text-blue-400 bg-blue-400/10 border-blue-400/20' :
+                  'text-zinc-400 bg-zinc-400/10 border-zinc-400/20'
+                }`}>
+                  {signal.nearestSDZone.strength}
+                </Badge>
+              </div>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-[9px] text-zinc-500">
+                Range: {signal.nearestSDZone.low.toFixed(5)} - {signal.nearestSDZone.high.toFixed(5)}
+              </span>
+              <span className="text-[9px] text-zinc-400">
+                Belief: <span className="font-bold text-orange-400">{signal.nearestSDZone.beliefScore}%</span>
+              </span>
+            </div>
+            {signal.nearestSDZone.performance.timesTested > 0 && (
+              <div className="flex items-center justify-between mt-0.5">
+                <span className="text-[8px] text-zinc-600">
+                  Tested: {signal.nearestSDZone.performance.timesTested}x
+                </span>
+                <span className={`text-[8px] ${signal.nearestSDZone.performance.holdRate >= 70 ? 'text-emerald-400' : 'text-yellow-400'}`}>
+                  Hold: {signal.nearestSDZone.performance.holdRate}%
+                </span>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Zone Interaction Signal */}
+        {signal.zoneInteraction && signal.zoneInteraction.signal && (
+          <div className={`rounded-lg p-2 border ${
+            signal.zoneInteraction.signal === 'BUY'
+              ? 'border-emerald-400/30 bg-emerald-400/5'
+              : 'border-red-400/30 bg-red-400/5'
+          }`}>
+            <div className="flex items-center justify-between mb-1">
+              <div className="flex items-center gap-1.5">
+                <Target className="h-3.5 w-3.5 text-yellow-400" />
+                <span className="text-[10px] text-zinc-400 uppercase tracking-wider">
+                  Zone Signal: {signal.zoneInteraction.interactionType}
+                </span>
+              </div>
+              <span className={`text-xs font-bold ${
+                signal.zoneInteraction.signal === 'BUY' ? 'text-emerald-400' : 'text-red-400'
+              }`}>
+                {signal.zoneInteraction.signal}
+              </span>
+            </div>
+            <div className="grid grid-cols-3 gap-1 text-center">
+              <div>
+                <p className="text-[8px] text-zinc-600">SL</p>
+                <p className="text-[9px] text-red-400 font-bold">{signal.zoneInteraction.stopLoss.toFixed(4)}</p>
+              </div>
+              <div>
+                <p className="text-[8px] text-zinc-600">Entry</p>
+                <p className="text-[9px] text-white font-bold">{signal.zoneInteraction.entryPrice.toFixed(4)}</p>
+              </div>
+              <div>
+                <p className="text-[8px] text-zinc-600">TP</p>
+                <p className="text-[9px] text-emerald-400 font-bold">{signal.zoneInteraction.takeProfit.toFixed(4)}</p>
+              </div>
+            </div>
+            <div className="flex items-center justify-between mt-1">
+              <span className="text-[8px] text-zinc-600">R:R 1:{signal.zoneInteraction.riskReward}</span>
+              <span className="text-[8px] text-zinc-500">Conf: {signal.zoneInteraction.confidence}%</span>
+            </div>
+          </div>
+        )}
+
         <Separator className="bg-zinc-800" />
 
         {/* Strategy Guide Toggle */}
@@ -413,6 +563,28 @@ export function SignalCard({ signal, onFeedback }: SignalCardProps) {
                 <span className="text-[10px] font-bold text-yellow-400">GLM PROBABILITY: {glmProb}% WIN RATE</span>
               </div>
               <p className="text-[10px] text-zinc-500 leading-relaxed">{signal.strategy.confidenceNote}</p>
+            </div>
+          </div>
+        )}
+
+        {/* Engine Health Indicator */}
+        {signal.engineHealth && (signal.engineHealth.errorsRecovered > 0 || signal.engineHealth.lastError) && (
+          <div className="flex items-center justify-between bg-zinc-800/30 rounded px-2 py-1">
+            <div className="flex items-center gap-1">
+              <Wrench className="h-3 w-3 text-zinc-600" />
+              <span className="text-[8px] text-zinc-600">Engine Health</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-[8px] text-zinc-500">
+                {signal.engineHealth.errorsRecovered} recovered
+              </span>
+              <Badge className={`text-[7px] h-3 px-1 border ${
+                signal.engineHealth.recoveryRate >= 90
+                  ? 'text-emerald-400 bg-emerald-400/10 border-emerald-400/20'
+                  : 'text-yellow-400 bg-yellow-400/10 border-yellow-400/20'
+              }`}>
+                {signal.engineHealth.recoveryRate}%
+              </Badge>
             </div>
           </div>
         )}
