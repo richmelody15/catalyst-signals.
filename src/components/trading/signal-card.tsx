@@ -114,7 +114,7 @@ export function SignalCard({ signal, onFeedback }: SignalCardProps) {
       ...Object.entries(signal.riskLevels).map(([key, level], idx) => {
         const mult = typeof level === 'object' && level !== null && 'multiplier' in level ? (level as { multiplier: number; time: string }).multiplier : level;
         const time = typeof level === 'object' && level !== null && 'time' in level ? (level as { multiplier: number; time: string }).time : '';
-        return `  ${key} → ${mult}x  Entry Time (${time})   ← initial entry`;
+        return `  ${key} → ${mult}x (${time})   ← initial entry`;
       }),
       ...(signal.glmSmartMoney ? [
         ``,
@@ -334,7 +334,6 @@ export function SignalCard({ signal, onFeedback }: SignalCardProps) {
                     <span className="text-[10px] font-bold text-yellow-400">{key}</span>
                     <span className="text-[10px] text-zinc-500">→</span>
                     <span className="text-[10px] font-bold text-white">{mult}x</span>
-                    <span className="text-[9px] text-zinc-600">Entry Time</span>
                   </div>
                   <div className="flex items-center gap-1.5">
                     <span className="text-[10px] text-emerald-400 font-mono font-bold">({time})</span>
