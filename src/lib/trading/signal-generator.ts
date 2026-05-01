@@ -273,20 +273,21 @@ export class SignalGenerator {
     const riskUnit = atr > 0 ? atr : currentPrice * 0.001;
 
     // Calculate WAT time for each Martingale level based on timeframe
+    // M1 = initial entry, M2 = entry + 1 TF (if M1 lost), M3 = entry + 2 TF (if M2 lost)
     const entryDate = new Date(Date.now() + 4 * 60 * 1000);
     const tfMinutes = this.parseTimeframeToMinutes(timeframe);
     const riskLevels = {
       M1: {
         multiplier: +((riskUnit * atrMultiplier1 / currentPrice) * 100).toFixed(1),
-        time: this.formatWATTime(new Date(entryDate.getTime() + tfMinutes * 1 * 60 * 1000)),
+        time: this.formatWATTime(entryDate),
       },
       M2: {
         multiplier: +((riskUnit * atrMultiplier2 / currentPrice) * 100).toFixed(1),
-        time: this.formatWATTime(new Date(entryDate.getTime() + tfMinutes * 2 * 60 * 1000)),
+        time: this.formatWATTime(new Date(entryDate.getTime() + tfMinutes * 1 * 60 * 1000)),
       },
       M3: {
         multiplier: +((riskUnit * atrMultiplier3 / currentPrice) * 100).toFixed(1),
-        time: this.formatWATTime(new Date(entryDate.getTime() + tfMinutes * 3 * 60 * 1000)),
+        time: this.formatWATTime(new Date(entryDate.getTime() + tfMinutes * 2 * 60 * 1000)),
       },
     };
 

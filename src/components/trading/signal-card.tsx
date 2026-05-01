@@ -113,7 +113,7 @@ export function SignalCard({ signal, onFeedback }: SignalCardProps) {
       ...Object.entries(signal.riskLevels).map(([key, level]) => {
         const mult = typeof level === 'object' && level !== null && 'multiplier' in level ? (level as { multiplier: number; time: string }).multiplier : level;
         const time = typeof level === 'object' && level !== null && 'time' in level ? (level as { multiplier: number; time: string }).time : '';
-        return `  ${key} → ${mult}x  (${time})`;
+        return `  ${key} → ${mult}x  Entry Time (${time})`;
       }),
       ``,
       `📋 STRATEGY GUIDE:`,
@@ -316,18 +316,23 @@ export function SignalCard({ signal, onFeedback }: SignalCardProps) {
             <span className="text-[10px] text-zinc-500 uppercase tracking-wider">Risk Levels</span>
           </div>
           <div className="space-y-1">
-            {Object.entries(signal.riskLevels).map(([key, level]) => (
-              <div key={key} className="flex items-center justify-between bg-zinc-900/60 rounded px-2 py-0.5">
-                <div className="flex items-center gap-1.5">
-                  <span className="text-[10px] font-bold text-yellow-400">{key}</span>
-                  <span className="text-[10px] text-zinc-500">→</span>
-                  <span className="text-[10px] font-bold text-white">{typeof level === 'object' && level !== null && 'multiplier' in level ? (level as { multiplier: number; time: string }).multiplier : level}x</span>
+            {Object.entries(signal.riskLevels).map(([key, level]) => {
+              const mult = typeof level === 'object' && level !== null && 'multiplier' in level ? (level as { multiplier: number; time: string }).multiplier : level;
+              const time = typeof level === 'object' && level !== null && 'time' in level ? (level as { multiplier: number; time: string }).time : '';
+              return (
+                <div key={key} className="flex items-center justify-between bg-zinc-900/60 rounded px-2 py-0.5">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[10px] font-bold text-yellow-400">{key}</span>
+                    <span className="text-[10px] text-zinc-500">→</span>
+                    <span className="text-[10px] font-bold text-white">{mult}x</span>
+                    <span className="text-[9px] text-zinc-600">Entry Time</span>
+                  </div>
+                  <span className="text-[10px] text-emerald-400 font-mono font-bold">
+                    {time}
+                  </span>
                 </div>
-                <span className="text-[10px] text-zinc-400 font-mono">
-                  {typeof level === 'object' && level !== null && 'time' in level ? (level as { multiplier: number; time: string }).time : ''}
-                </span>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
 

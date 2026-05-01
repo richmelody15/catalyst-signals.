@@ -74,8 +74,8 @@ export class SignalFormatter {
     lines.push('', 'RISK LEVELS:');
     for (const [key, level] of Object.entries(signal.riskLevels)) {
       const mult = typeof level === 'object' && level !== null && 'multiplier' in level ? level.multiplier : level;
-      const time = typeof level === 'object' && level !== null && 'time' in level ? ` (${level.time})` : '';
-      lines.push(`  ${key} -> ${mult}x${time}`);
+      const time = typeof level === 'object' && level !== null && 'time' in level ? level.time : '';
+      lines.push(`  ${key} -> ${mult}x  Entry Time (${time})`);
     }
 
     // Engine Health
@@ -144,8 +144,8 @@ export class SignalFormatter {
     lines.push('', '↪️ Risk Levels:');
     for (const [key, level] of Object.entries(signal.riskLevels)) {
       const mult = typeof level === 'object' && level !== null && 'multiplier' in level ? level.multiplier : level;
-      const time = typeof level === 'object' && level !== null && 'time' in level ? `  (${level.time})` : '';
-      lines.push(`  💰 ${key} → ${mult}x${time}`);
+      const time = typeof level === 'object' && level !== null && 'time' in level ? level.time : '';
+      lines.push(`  💰 ${key} → ${mult}x  Entry Time (${time})`);
     }
 
     // Strategy Guide (compact)
@@ -307,8 +307,8 @@ export class SignalFormatter {
     lines.push('', 'RISK LEVELS', '─────────────────');
     for (const [key, level] of Object.entries(signal.riskLevels)) {
       const mult = typeof level === 'object' && level !== null && 'multiplier' in level ? level.multiplier : level;
-      const time = typeof level === 'object' && level !== null && 'time' in level ? ` (${level.time})` : '';
-      lines.push(`  ${key}: ${mult}x${time}`);
+      const time = typeof level === 'object' && level !== null && 'time' in level ? level.time : '';
+      lines.push(`  ${key}: ${mult}x  Entry Time (${time})`);
     }
 
     // Engine Health
