@@ -1,27 +1,26 @@
 ---
 Task ID: 1
-Agent: Main Agent
-Task: Fix client-side exception and enhance risk level display
+Agent: main
+Task: Fix client-side exception in CATALYST AI live preview
 
 Work Log:
-- Analyzed entire codebase (30+ files) to identify crash sources
-- Identified multiple potential crash points: NaN values in Progress component, unsafe .startsWith() in signal-formatter, missing null guards in signal-history
-- Added NaN guards for signal.confidence, signal.rsiValue, signal.riskReward, signal.checklistScore in signal-card.tsx
-- Added safeConfidence variable to prevent NaN in Progress component
-- Fixed signal-formatter.ts: Changed `glm.breakout.startsWith('CONFIRMED')` to `(glm.breakout ?? '').startsWith('CONFIRMED')` to prevent TypeError
-- Added comprehensive null/type checks in signal-history.tsx for price.toFixed() calls
-- Created SafeSignalCard wrapper in page.tsx with try/catch to prevent individual signal cards from crashing the entire page
-- Enhanced ErrorBoundary component to show actual error message and component stack trace
-- Enhanced error.tsx to display error digest for debugging
-- Updated risk level display to match Python format: "Martingale Recovery (Risk Level)" with "← initial entry" only on M1
-- Added "Trade 1% - 3% of your capability and capital" note to risk levels
-- Updated signal-formatter.ts risk level output in all 3 formats (plain, emoji, detailed) to match Python format
-- Updated copy signal text to include "Note: Trade 1% - 3%..." and "SIGNAL STATUS" lines
-- Verified build succeeds with no errors
-- Tested page rendering with agent-browser - no client-side exceptions
+- Investigated full project structure (87 TypeScript files, Next.js 16.1.1 with App Router)
+- Read all key component files: page.tsx, signal-card.tsx, signal-history.tsx, analytics-panel.tsx, platform-header.tsx, error-boundary.tsx
+- Read all trading engine modules: signal-generator.ts, signal-store.ts, use-signal-websocket.ts, types.ts, bug-fixer.ts, mtf-analyzer.ts, supply-demand.ts, glm-smart-money.ts, support-resistance.ts, engine-singleton.ts, signal-simulator.ts, self-learning.ts
+- Confirmed build succeeds without errors
+- Identified root cause: signals from API have deeply nested objects that weren't being normalized in the Zustand store, causing null/undefined property access crashes during rendering
+- Fixed signal-history.tsx: Added timeZone: 'Africa/Lagos' and null checks to formatTime()
+- Fixed signal-store.ts: Added comprehensive normalization functions for all complex nested types:
+  - normalizeSRLevel() - ensures SRLevel fields exist
+  - normalizeSDZone() - ensures SupplyDemandZone fields exist
+  - normalizeZoneInteraction() - ensures ZoneInteraction fields exist
+  - normalizeMTFConfluence() - ensures all 6 timeframe results and 8 checklist items exist
+  - normalizeGLMSmartMoney() - ensures all GLM Smart Money fields and labels exist
+- Rebuilt project successfully
+- Started dev server and verified all endpoints return 200
 
 Stage Summary:
-- Client-side exception is fixed - page renders correctly with no errors
-- Risk levels now display with proper entry times in WAT format matching Python output
-- Added per-card error boundary to prevent cascade failures
-- All NaN/null guards in place for numeric display values
+- Client-side exception root cause: API signals contain deeply nested objects (zoneInteraction.zone, mtfConfluence.timeframeResults, etc.) that were passed directly to React components without normalization. When fields were missing or null, accessing nested properties caused runtime crashes.
+- Fix: Added 5 normalization functions in signal-store.ts that validate every field of every complex type before it reaches React components.
+- All API endpoints verified working: /, /api/v1/signals/generate, /api/v1/signals/live/[platform]
+- Dev server running on port 3000

@@ -1,6 +1,7 @@
 // Signal Store - Zustand state management for trading signals
 import { create } from 'zustand';
-import type { Signal, PerformanceData } from './types';
+import type { Signal, PerformanceData, SupplyDemandZone, ZoneInteraction, MTFConfluence, MTFTimeframe, MTFAnalysis, GLMSmartMoneyResult } from './types';
+import type { SRLevel } from './support-resistance';
 
 interface TradingState {
   signals: Signal[];
@@ -52,24 +53,15 @@ function normalizeSignal(raw: Partial<Signal> & Record<string, unknown>): Signal
     regimeDescription: raw.regimeDescription ?? '',
     strategy: normalizeStrategy(raw.strategy),
     glmProbability: typeof raw.glmProbability === 'number' ? raw.glmProbability : 94.3,
-    nearestSupport: raw.nearestSupport ?? null,
-    nearestResistance: raw.nearestResistance ?? null,
+    nearestSupport: normalizeSRLevel(raw.nearestSupport),
+    nearestResistance: normalizeSRLevel(raw.nearestResistance),
     supportZone: raw.supportZone ?? { start: null, end: null },
     resistanceZone: raw.resistanceZone ?? { start: null, end: null },
-    mtfConfluence: raw.mtfConfluence ?? null,
-    nearestSDZone: raw.nearestSDZone ?? null,
-    zoneInteraction: raw.zoneInteraction ?? null,
+    mtfConfluence: normalizeMTFConfluence(raw.mtfConfluence),
+    nearestSDZone: normalizeSDZone(raw.nearestSDZone),
+    zoneInteraction: normalizeZoneInteraction(raw.zoneInteraction),
     engineHealth: raw.engineHealth ?? { errorsRecovered: 0, fallbacksUsed: 0, recoveryRate: 100, lastError: null },
-    glmSmartMoney: raw.glmSmartMoney ?? {
-      price: 0,
-      structure: 'RANGE',
-      liquidity: 'NO_SWEEP',
-      breakout: 'NO_BREAKOUT',
-      signal: 'WAIT',
-      labels: { structure: 'Range', liquidity: 'No Sweep', breakout: 'No Breakout', signal: 'Wait' },
-      structureHistory: [],
-      liquidityHistory: [],
-    },
+    glmSmartMoney: normalizeGLMSmartMoney(raw.glmSmartMoney),
     formatted: raw.formatted ?? null,
   };
 }
@@ -89,6 +81,188 @@ function normalizeRiskLevels(raw: unknown): Record<string, { multiplier: number;
     }
   }
   return result;
+}
+
+/**
+ * Normalize GLM Smart Money result from API — ensure all required fields exist
+ */
+function normalizeGLMSmartMoney(raw: unknown): GLMSmartMoneyResult {
+  if (!raw || typeof raw !== 'object') {
+    return {
+      price: 0, structure: 'RANGE', liquidity: 'NO_SWEEP', breakout: 'NO_BREAKOUT', signal: 'WAIT',
+      labels: { structure: 'Range', liquidity: 'No Sweep', breakout: 'No Breakout', signal: 'Wait' },
+      structureHistory: [], liquidityHistory: [],
+    };
+  }
+  const g = raw as Record<string, unknown>;
+  const validStructures = ['BOS_UP', 'BOS_DOWN', 'RANGE'];
+  const validLiquidity = ['BUY_SWEEP', 'SELL_SWEEP', 'NO_SWEEP'];
+  const validBreakout = ['CONFIRMED_BREAKOUT_BUY', 'CONFIRMED_BREAKDOWN_SELL', 'NO_BREAKOUT'];
+  const validSignal = ['VALID_BUY', 'VALID_SELL', 'FILTERED_NO_TRADE', 'WAIT'];
+
+  const structure = validStructures.includes(g.structure as string) ? g.structure as GLMSmartMoneyResult['structure'] : 'RANGE';
+  const liquidity = validLiquidity.includes(g.liquidity as string) ? g.liquidity as GLMSmartMoneyResult['liquidity'] : 'NO_SWEEP';
+  const breakout = validBreakout.includes(g.breakout as string) ? g.breakout as GLMSmartMoneyResult['breakout'] : 'NO_BREAKOUT';
+  const signal = validSignal.includes(g.signal as string) ? g.signal as GLMSmartMoneyResult['signal'] : 'WAIT';
+
+  const rawLabels = (g.labels || {}) as Record<string, unknown>;
+
+  return {
+    price: typeof g.price === 'number' ? g.price : 0,
+    structure,
+    liquidity,
+    breakout,
+    signal,
+    labels: {
+      structure: typeof rawLabels.structure === 'string' ? rawLabels.structure : structure,
+      liquidity: typeof rawLabels.liquidity === 'string' ? rawLabels.liquidity : liquidity,
+      breakout: typeof rawLabels.breakout === 'string' ? rawLabels.breakout : breakout,
+      signal: typeof rawLabels.signal === 'string' ? rawLabels.signal : signal,
+    },
+    structureHistory: Array.isArray(g.structureHistory) ? g.structureHistory.filter((s: unknown) => validStructures.includes(s as string)) as GLMSmartMoneyResult['structureHistory'] : [],
+    liquidityHistory: Array.isArray(g.liquidityHistory) ? g.liquidityHistory.filter((l: unknown) => validLiquidity.includes(l as string)) as GLMSmartMoneyResult['liquidityHistory'] : [],
+  };
+}
+
+/**
+ * Normalize MTF confluence from API — ensure all required fields exist
+ */
+function normalizeMTFConfluence(raw: unknown): MTFConfluence | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const c = raw as Record<string, unknown>;
+
+  // Normalize timeframeResults — ensure all 6 timeframes exist
+  const tfNames: MTFTimeframe[] = ['30s', '45s', '1m', '2m', '3m', '5m'];
+  const rawResults = (c.timeframeResults || {}) as Record<string, unknown>;
+  const timeframeResults: Record<MTFTimeframe, MTFAnalysis> = {} as Record<MTFTimeframe, MTFAnalysis>;
+  for (const tf of tfNames) {
+    const r = rawResults[tf] as Record<string, unknown> | undefined;
+    timeframeResults[tf] = r && typeof r === 'object' ? {
+      timeframe: tf,
+      trend: r.trend === 'bullish' || r.trend === 'bearish' ? r.trend as 'bullish' | 'bearish' : 'neutral',
+      trendStrength: typeof r.trendStrength === 'number' ? r.trendStrength : 0,
+      rsi: typeof r.rsi === 'number' ? r.rsi : 50,
+      stochK: typeof r.stochK === 'number' ? r.stochK : 50,
+      stochD: typeof r.stochD === 'number' ? r.stochD : 50,
+      adx: typeof r.adx === 'number' ? r.adx : 20,
+      bosConfirmed: !!r.bosConfirmed,
+      chochConfirmed: !!r.chochConfirmed,
+      fvgActive: !!r.fvgActive,
+      liquiditySweep: !!r.liquiditySweep,
+      emaShort: typeof r.emaShort === 'number' ? r.emaShort : 0,
+      emaLong: typeof r.emaLong === 'number' ? r.emaLong : 0,
+      bbWidth: typeof r.bbWidth === 'number' ? r.bbWidth : 0.02,
+      volumeSpike: !!r.volumeSpike,
+    } : {
+      timeframe: tf, trend: 'neutral', trendStrength: 0, rsi: 50, stochK: 50, stochD: 50,
+      adx: 20, bosConfirmed: false, chochConfirmed: false, fvgActive: false,
+      liquiditySweep: false, emaShort: 0, emaLong: 0, bbWidth: 0.02, volumeSpike: false,
+    };
+  }
+
+  // Normalize checklist — ensure all 8 keys exist
+  const rawChecklist = (c.checklist || {}) as Record<string, unknown>;
+  const checklist = {
+    higher_tf_trend_alignment: !!rawChecklist.higher_tf_trend_alignment,
+    structure_break_confirmed: !!rawChecklist.structure_break_confirmed,
+    momentum_convergence: !!rawChecklist.momentum_convergence,
+    volume_confirmation: !!rawChecklist.volume_confirmation,
+    rsi_divergence_check: !!rawChecklist.rsi_divergence_check,
+    ema_stack_alignment: !!rawChecklist.ema_stack_alignment,
+    volatility_filter: !!rawChecklist.volatility_filter,
+    liquidity_pool_proximity: !!rawChecklist.liquidity_pool_proximity,
+  };
+
+  return {
+    aligned: !!c.aligned,
+    alignmentScore: typeof c.alignmentScore === 'number' ? c.alignmentScore : 0,
+    dominantTrend: c.dominantTrend === 'bullish' || c.dominantTrend === 'bearish' ? c.dominantTrend as 'bullish' | 'bearish' : 'neutral',
+    bullishCount: typeof c.bullishCount === 'number' ? c.bullishCount : 0,
+    bearishCount: typeof c.bearishCount === 'number' ? c.bearishCount : 0,
+    neutralCount: typeof c.neutralCount === 'number' ? c.neutralCount : 0,
+    timeframeResults,
+    checklist,
+    checklistScore: typeof c.checklistScore === 'number' ? c.checklistScore : 0,
+  };
+}
+
+/**
+ * Normalize S/R level from API — ensure all required fields exist
+ */
+function normalizeSRLevel(raw: unknown): SRLevel | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  const price = typeof r.price === 'number' ? r.price : NaN;
+  if (isNaN(price)) return null;
+  return {
+    price,
+    strength: typeof r.strength === 'number' ? r.strength : 0,
+    type: r.type === 'support' || r.type === 'resistance' ? r.type as 'support' | 'resistance' : 'support',
+    zoneWidth: typeof r.zoneWidth === 'number' ? r.zoneWidth : 0.002,
+    timeframe: typeof r.timeframe === 'string' ? r.timeframe : 'merged',
+    score: typeof r.score === 'number' ? r.score : 0,
+    isMajor: !!r.isMajor,
+    lastTest: typeof r.lastTest === 'string' ? r.lastTest : new Date().toISOString(),
+    breakout: !!r.breakout,
+  };
+}
+
+/**
+ * Normalize S/D zone from API — ensure all required fields exist
+ */
+function normalizeSDZone(raw: unknown): SupplyDemandZone | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const z = raw as Record<string, unknown>;
+  return {
+    id: typeof z.id === 'string' ? z.id : `ZONE-${Date.now()}`,
+    type: z.type as string ?? 'volume_profile',
+    direction: z.direction === 'bullish' || z.direction === 'bearish' ? z.direction : 'bullish',
+    high: typeof z.high === 'number' ? z.high : 0,
+    low: typeof z.low === 'number' ? z.low : 0,
+    midpoint: typeof z.midpoint === 'number' ? z.midpoint : 0,
+    width: typeof z.width === 'number' ? z.width : 0,
+    strength: z.strength as string ?? 'moderate',
+    beliefScore: typeof z.beliefScore === 'number' ? z.beliefScore : 50,
+    creationIndex: typeof z.creationIndex === 'number' ? z.creationIndex : 0,
+    touches: typeof z.touches === 'number' ? z.touches : 0,
+    lastTouchIndex: typeof z.lastTouchIndex === 'number' ? z.lastTouchIndex : 0,
+    active: !!z.active,
+    tested: !!z.tested,
+    broken: !!z.broken,
+    volumeAtCreation: typeof z.volumeAtCreation === 'number' ? z.volumeAtCreation : 0,
+    atrAtCreation: typeof z.atrAtCreation === 'number' ? z.atrAtCreation : 0,
+    age: typeof z.age === 'number' ? z.age : 0,
+    performance: z.performance && typeof z.performance === 'object'
+      ? {
+          timesTested: typeof (z.performance as Record<string, unknown>).timesTested === 'number' ? (z.performance as Record<string, unknown>).timesTested as number : 0,
+          timesHeld: typeof (z.performance as Record<string, unknown>).timesHeld === 'number' ? (z.performance as Record<string, unknown>).timesHeld as number : 0,
+          timesBroken: typeof (z.performance as Record<string, unknown>).timesBroken === 'number' ? (z.performance as Record<string, unknown>).timesBroken as number : 0,
+          holdRate: typeof (z.performance as Record<string, unknown>).holdRate === 'number' ? (z.performance as Record<string, unknown>).holdRate as number : 0,
+        }
+      : { timesTested: 0, timesHeld: 0, timesBroken: 0, holdRate: 0 },
+  };
+}
+
+/**
+ * Normalize zone interaction from API — ensure all required fields exist
+ */
+function normalizeZoneInteraction(raw: unknown): ZoneInteraction | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const z = raw as Record<string, unknown>;
+  // The 'zone' property is required by ZoneInteraction type but is only used for reference
+  // We normalize it to prevent rendering issues
+  const zone = normalizeSDZone(z.zone);
+  if (!zone) return null;
+  return {
+    zone,
+    interactionType: (z.interactionType as string) ?? 'approach',
+    signal: z.signal === 'BUY' || z.signal === 'SELL' ? z.signal : null,
+    confidence: typeof z.confidence === 'number' ? z.confidence : 0,
+    entryPrice: typeof z.entryPrice === 'number' ? z.entryPrice : 0,
+    stopLoss: typeof z.stopLoss === 'number' ? z.stopLoss : 0,
+    takeProfit: typeof z.takeProfit === 'number' ? z.takeProfit : 0,
+    riskReward: typeof z.riskReward === 'number' ? z.riskReward : 0,
+  };
 }
 
 /**

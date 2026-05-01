@@ -21,10 +21,14 @@ interface SignalHistoryProps {
 export function SignalHistory({ signals }: SignalHistoryProps) {
   const formatTime = (time: Date | string) => {
     try {
-      const t = new Date(time).toLocaleTimeString([], {
+      if (!time) return '--:-- WAT';
+      const date = new Date(time);
+      if (isNaN(date.getTime())) return '--:-- WAT';
+      const t = date.toLocaleTimeString('en-GB', {
         hour: '2-digit',
         minute: '2-digit',
         hour12: false,
+        timeZone: 'Africa/Lagos',
       });
       return `${t} WAT`;
     } catch {
