@@ -2,7 +2,7 @@
 // Emoji-rich signal output formatting for multiple display contexts
 // Converts Signal objects into formatted text for copy/share/telegram
 
-import type { Signal, FormattedSignal, MTFConfluence, SupplyDemandZone, ZoneInteraction } from './types';
+import type { Signal, FormattedSignal, MTFConfluence, SupplyDemandZone, ZoneInteraction, GLMSmartMoneyResult } from './types';
 
 /**
  * Format a signal in multiple output styles.
@@ -68,6 +68,12 @@ export class SignalFormatter {
     if (signal.zoneInteraction) {
       lines.push('', 'ZONE INTERACTION:');
       lines.push(...this.formatInteractionPlain(signal.zoneInteraction));
+    }
+
+    // GLM Smart Money Engine
+    if (signal.glmSmartMoney) {
+      lines.push('', 'GLM SMART MONEY:');
+      lines.push(...this.formatGLMSmartMoneyPlain(signal.glmSmartMoney));
     }
 
     // Risk Levels
@@ -140,6 +146,12 @@ export class SignalFormatter {
     if (signal.zoneInteraction) {
       lines.push('', '⚡ ZONE INTERACTION:');
       lines.push(...this.formatInteractionEmoji(signal.zoneInteraction));
+    }
+
+    // GLM Smart Money Engine
+    if (signal.glmSmartMoney) {
+      lines.push('', '🧪 GLM SMART MONEY:');
+      lines.push(...this.formatGLMSmartMoneyEmoji(signal.glmSmartMoney));
     }
 
     // Risk Levels
@@ -293,6 +305,12 @@ export class SignalFormatter {
       lines.push(`  R:R: 1:${zi.riskReward}`);
     }
 
+    // GLM Smart Money Engine
+    if (signal.glmSmartMoney) {
+      lines.push('', 'GLM SMART MONEY ENGINE', '─────────────────');
+      lines.push(...this.formatGLMSmartMoneyDetailed(signal.glmSmartMoney));
+    }
+
     // Strategy
     if (signal.strategy) {
       lines.push('', 'STRATEGY GUIDE', '─────────────────');
@@ -412,6 +430,61 @@ export class SignalFormatter {
       `  🛑 SL: ${interaction.stopLoss.toFixed(5)} | 🎯 TP: ${interaction.takeProfit.toFixed(5)}`,
       `  ⚖️ R:R: 1:${interaction.riskReward}`,
     ];
+  }
+
+  // ─── Private: GLM Smart Money Formatting ─────────────────────────────
+
+  private formatGLMSmartMoneyPlain(glm: GLMSmartMoneyResult): string[] {
+    return [
+      `  Structure: ${glm.labels.structure}`,
+      `  Liquidity: ${glm.labels.liquidity}`,
+      `  Breakout: ${glm.labels.breakout}`,
+      `  Signal: ${glm.labels.signal}`,
+    ];
+  }
+
+  private formatGLMSmartMoneyEmoji(glm: GLMSmartMoneyResult): string[] {
+    const structureEmoji = glm.structure === 'BOS_UP' ? '🟢' : glm.structure === 'BOS_DOWN' ? '🔴' : '🟡';
+    const liquidityEmoji = glm.liquidity === 'BUY_SWEEP' ? '🟢' : glm.liquidity === 'SELL_SWEEP' ? '🔴' : '⚪';
+    const breakoutEmoji = glm.breakout.startsWith('CONFIRMED') ? '🚀' : '❌';
+    const signalEmoji = glm.signal === 'VALID_BUY' ? '✅ 🟢' : glm.signal === 'VALID_SELL' ? '✅ 🔴' : glm.signal === 'FILTERED_NO_TRADE' ? '❌' : '⏸';
+
+    return [
+      `  ${structureEmoji} Structure: ${glm.labels.structure}`,
+      `  ${liquidityEmoji} Liquidity: ${glm.labels.liquidity}`,
+      `  ${breakoutEmoji} Breakout: ${glm.labels.breakout}`,
+      `  ${signalEmoji} Signal: ${glm.labels.signal}`,
+    ];
+  }
+
+  private formatGLMSmartMoneyDetailed(glm: GLMSmartMoneyResult): string[] {
+    const lines: string[] = [
+      `  Structure: ${glm.structure} — ${glm.labels.structure}`,
+      `  Liquidity: ${glm.liquidity} — ${glm.labels.liquidity}`,
+      `  Breakout: ${glm.breakout} — ${glm.labels.breakout}`,
+      `  Final Signal: ${glm.signal} — ${glm.labels.signal}`,
+      `  Price at Analysis: ${glm.price.toFixed(glm.price < 100 ? 5 : 2)}`,
+    ];
+
+    // Structure history
+    if (glm.structureHistory.length > 0) {
+      lines.push('', '  Structure History (last 5 bars):');
+      for (const s of glm.structureHistory) {
+        const emoji = s === 'BOS_UP' ? '↑' : s === 'BOS_DOWN' ? '↓' : '↔';
+        lines.push(`    ${emoji} ${s}`);
+      }
+    }
+
+    // Liquidity history
+    if (glm.liquidityHistory.length > 0) {
+      lines.push('', '  Liquidity History (last 5 bars):');
+      for (const l of glm.liquidityHistory) {
+        const emoji = l === 'BUY_SWEEP' ? '🟢' : l === 'SELL_SWEEP' ? '🔴' : '⚪';
+        lines.push(`    ${emoji} ${l}`);
+      }
+    }
+
+    return lines;
   }
 
   // ─── Private: Utilities ───────────────────────────────────────────

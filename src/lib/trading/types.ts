@@ -129,6 +129,28 @@ export interface ZoneTrackerStats {
   worstPerformingType: ZoneType;
 }
 
+// ─── GLM Smart Money Engine Types ──────────────────────────────────
+export type StructureSignal = 'BOS_UP' | 'BOS_DOWN' | 'RANGE';
+export type LiquiditySignal = 'BUY_SWEEP' | 'SELL_SWEEP' | 'NO_SWEEP';
+export type BreakoutSignal = 'CONFIRMED_BREAKOUT_BUY' | 'CONFIRMED_BREAKDOWN_SELL' | 'NO_BREAKOUT';
+export type FilteredSignal = 'VALID_BUY' | 'VALID_SELL' | 'FILTERED_NO_TRADE' | 'WAIT';
+
+export interface GLMSmartMoneyResult {
+  price: number;
+  structure: StructureSignal;
+  liquidity: LiquiditySignal;
+  breakout: BreakoutSignal;
+  signal: FilteredSignal;
+  labels: {
+    structure: string;
+    liquidity: string;
+    breakout: string;
+    signal: string;
+  };
+  structureHistory: StructureSignal[];
+  liquidityHistory: LiquiditySignal[];
+}
+
 // ─── Signal Formatter Types ───────────────────────────────────────
 export interface FormattedSignal {
   plain: string;
@@ -194,6 +216,8 @@ export interface Signal {
     recoveryRate: number;
     lastError: string | null;
   };
+  // GLM Smart Money Engine
+  glmSmartMoney: GLMSmartMoneyResult;
   // Formatted Signal
   formatted: FormattedSignal | null;
 }

@@ -35,6 +35,7 @@ import {
   Clock,
   Wrench,
   Crosshair,
+  FlaskConical,
 } from 'lucide-react';
 import type { Signal } from '@/lib/trading/types';
 import { toast } from 'sonner';
@@ -115,6 +116,14 @@ export function SignalCard({ signal, onFeedback }: SignalCardProps) {
         const time = typeof level === 'object' && level !== null && 'time' in level ? (level as { multiplier: number; time: string }).time : '';
         return `  ${key} → ${mult}x  Entry Time (${time})   ← initial entry`;
       }),
+      ...(signal.glmSmartMoney ? [
+        ``,
+        `🧪 GLM SMART MONEY:`,
+        `  Structure: ${signal.glmSmartMoney.labels.structure}`,
+        `  Liquidity: ${signal.glmSmartMoney.labels.liquidity}`,
+        `  Breakout: ${signal.glmSmartMoney.labels.breakout}`,
+        `  Signal: ${signal.glmSmartMoney.labels.signal}`,
+      ] : []),
       ``,
       `📋 STRATEGY GUIDE:`,
       ...(signal.strategy?.entryRules?.map((r: string) => `  ✅ ${r}`) || []),
@@ -336,6 +345,62 @@ export function SignalCard({ signal, onFeedback }: SignalCardProps) {
             })}
           </div>
         </div>
+
+        {/* GLM Smart Money Engine */}
+        {signal.glmSmartMoney && (
+          <div className="rounded-lg p-2 border border-zinc-700/50 bg-zinc-800/40">
+            <div className="flex items-center justify-between mb-1.5">
+              <div className="flex items-center gap-1.5">
+                <FlaskConical className="h-3.5 w-3.5 text-purple-400" />
+                <span className="text-[10px] text-zinc-500 uppercase tracking-wider">GLM Smart Money</span>
+              </div>
+              <Badge className={`text-[9px] h-4 font-bold border ${
+                signal.glmSmartMoney.signal === 'VALID_BUY'
+                  ? 'text-emerald-400 bg-emerald-400/10 border-emerald-400/20'
+                  : signal.glmSmartMoney.signal === 'VALID_SELL'
+                  ? 'text-red-400 bg-red-400/10 border-red-400/20'
+                  : signal.glmSmartMoney.signal === 'FILTERED_NO_TRADE'
+                  ? 'text-zinc-500 bg-zinc-500/10 border-zinc-500/20'
+                  : 'text-yellow-400 bg-yellow-400/10 border-yellow-400/20'
+              }`}>
+                {signal.glmSmartMoney.signal.replace(/_/g, ' ')}
+              </Badge>
+            </div>
+            <div className="space-y-1">
+              {/* Structure */}
+              <div className="flex items-center justify-between bg-zinc-900/60 rounded px-2 py-0.5">
+                <span className="text-[9px] text-zinc-500">Structure</span>
+                <span className={`text-[10px] font-bold ${
+                  signal.glmSmartMoney.structure === 'BOS_UP' ? 'text-emerald-400' :
+                  signal.glmSmartMoney.structure === 'BOS_DOWN' ? 'text-red-400' : 'text-yellow-400'
+                }`}>
+                  {signal.glmSmartMoney.structure === 'BOS_UP' ? '↑' : signal.glmSmartMoney.structure === 'BOS_DOWN' ? '↓' : '↔'} {signal.glmSmartMoney.structure}
+                </span>
+              </div>
+              {/* Liquidity */}
+              <div className="flex items-center justify-between bg-zinc-900/60 rounded px-2 py-0.5">
+                <span className="text-[9px] text-zinc-500">Liquidity</span>
+                <span className={`text-[10px] font-bold ${
+                  signal.glmSmartMoney.liquidity === 'BUY_SWEEP' ? 'text-emerald-400' :
+                  signal.glmSmartMoney.liquidity === 'SELL_SWEEP' ? 'text-red-400' : 'text-zinc-500'
+                }`}>
+                  {signal.glmSmartMoney.liquidity.replace(/_/g, ' ')}
+                </span>
+              </div>
+              {/* Breakout */}
+              <div className="flex items-center justify-between bg-zinc-900/60 rounded px-2 py-0.5">
+                <span className="text-[9px] text-zinc-500">Breakout</span>
+                <span className={`text-[10px] font-bold ${
+                  signal.glmSmartMoney.breakout === 'CONFIRMED_BREAKOUT_BUY' ? 'text-emerald-400' :
+                  signal.glmSmartMoney.breakout === 'CONFIRMED_BREAKDOWN_SELL' ? 'text-red-400' : 'text-zinc-600'
+                }`}>
+                  {signal.glmSmartMoney.breakout === 'CONFIRMED_BREAKOUT_BUY' ? '🚀 Buy' :
+                   signal.glmSmartMoney.breakout === 'CONFIRMED_BREAKDOWN_SELL' ? '📉 Sell' : 'None'}
+                </span>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Zone & Market Condition */}
         <div className="flex items-center justify-between text-[10px]">

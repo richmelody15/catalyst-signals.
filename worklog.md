@@ -177,3 +177,38 @@ Stage Summary:
 - Time intervals match the signal's timeframe (e.g., 3m = 3-min gaps, 45s = ~1-min gaps)
 - Updated in types, generator, card UI, and all 4 formatter output styles
 - Production server restarted and verified
+---
+Task ID: 1
+Agent: Main Agent
+Task: Convert Python GLM_SmartMoneyEngine to TypeScript and integrate into CATALYST AI
+
+Work Log:
+- Read current price-action.ts, signal-generator.ts, signal-formatter.ts, types.ts, signal-card.tsx
+- Created new /src/lib/trading/glm-smart-money.ts with full Python→TypeScript conversion:
+  - MarketStructure.detect() → BOS_UP/BOS_DOWN/RANGE using 5-bar rolling window
+  - LiquidityEngine.detect() → BUY_SWEEP/SELL_SWEEP/NO_SWEEP using fake drop/spike reversal
+  - breakoutConfirmation() → CONFIRMED_BREAKOUT_BUY/CONFIRMED_BREAKDOWN_SELL/NO_BREAKOUT
+  - fakeSignalFilter() → VALID_BUY/VALID_SELL/FILTERED_NO_TRADE/WAIT
+  - GLM_SmartMoneyEngine.analyze() → combines all 4 stages
+  - getSignalStrength() → 0-100 score based on alignment quality
+- Added GLMSmartMoneyResult type to types.ts
+- Added glmSmartMoney field to Signal interface
+- Integrated into signal-generator.ts:
+  - GLM BOS structure signal: +2 buy/sell signals
+  - GLM liquidity sweep: +2 buy/sell signals
+  - GLM breakout confirmation: +3 buy/sell signals
+  - GLM final filter (VALID_BUY/SELL): +3 buy/sell signals
+  - FILTERED_NO_TRADE: reduces both buy and sell signals by 1
+  - GLM probability bonus: up to +3.5% for strong signals, +1% for validated, -2% for filtered
+- Updated signal-formatter.ts with GLM Smart Money sections in all 4 format styles
+- Updated signal-card.tsx with GLM Smart Money UI panel (structure, liquidity, breakout, signal)
+- Updated copy-signal text to include GLM Smart Money section
+- Rebuilt and restarted production server
+- Verified: GLM engine produces correct signals with 4-stage pipeline
+
+Stage Summary:
+- New file: /src/lib/trading/glm-smart-money.ts (full Python conversion)
+- Modified: types.ts, signal-generator.ts, signal-formatter.ts, signal-card.tsx
+- GLM Smart Money Engine fully integrated with weighted confluence scoring
+- GLM Probability now includes Smart Money bonus/penalty (range: 85.0%–97.5%)
+- Server rebuilt and running at localhost:3000

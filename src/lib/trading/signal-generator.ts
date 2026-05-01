@@ -10,7 +10,8 @@ import { MTFAnalyzer } from './mtf-analyzer';
 import { SupplyDemandZoneTracker } from './supply-demand';
 import { SignalFormatter } from './signal-formatter';
 import { bugFixer } from './bug-fixer';
-import { TRADING_CONFIG, type Signal, type MarketData, type MTFConfluence, type SupplyDemandZone, type ZoneInteraction } from './types';
+import { TRADING_CONFIG, type Signal, type MarketData, type MTFConfluence, type SupplyDemandZone, type ZoneInteraction, type GLMSmartMoneyResult } from './types';
+import { GLM_SmartMoneyEngine } from './glm-smart-money';
 
 let signalCounter = 0;
 
@@ -20,6 +21,7 @@ export class SignalGenerator {
   private mtfAnalyzer = new MTFAnalyzer();
   private sdZoneTracker = new SupplyDemandZoneTracker();
   private signalFormatter = new SignalFormatter();
+  private glmSmartMoney = new GLM_SmartMoneyEngine();
   private generatedSignals: Signal[] = [];
 
   // ─── Bug-fixer wrapped methods ──────────────────────────────────
@@ -104,6 +106,12 @@ export class SignalGenerator {
     const structure = PriceActionAnalyzer.detectBosChoch(highPrices, lowPrices, closePrices);
     const liquidity = PriceActionAnalyzer.detectLiquiditySweep(highPrices, lowPrices, volumes);
 
+    // ── GLM Smart Money Engine ──
+    const glmResult = this.glmSmartMoney.analyze(
+      highPrices, lowPrices, closePrices,
+      supports.slice(-5), resistances.slice(-5)
+    );
+
     // ── Multi-Timeframe Analysis (with bug-fixer protection) ──
     let mtfConfluence: MTFConfluence | null = null;
     try {
@@ -146,13 +154,34 @@ export class SignalGenerator {
     if (emaShort > emaLong) buySignals++;
     else sellSignals++;
 
-    // Structure check
+    // Structure check (legacy BOS/CHoCH)
     if (structure.bos && trend === 'bullish') buySignals++;
     else if (structure.bos && trend === 'bearish') sellSignals++;
 
     if (structure.choch) {
       if (trend === 'bullish') buySignals += 2;
       else sellSignals += 2;
+    }
+
+    // GLM Smart Money Engine — BOS structure signal (weighted heavily)
+    if (glmResult.structure === 'BOS_UP') buySignals += 2;
+    else if (glmResult.structure === 'BOS_DOWN') sellSignals += 2;
+
+    // GLM Smart Money — Liquidity sweep signal
+    if (glmResult.liquidity === 'BUY_SWEEP') buySignals += 2;
+    else if (glmResult.liquidity === 'SELL_SWEEP') sellSignals += 2;
+
+    // GLM Smart Money — Breakout confirmation
+    if (glmResult.breakout === 'CONFIRMED_BREAKOUT_BUY') buySignals += 3;
+    else if (glmResult.breakout === 'CONFIRMED_BREAKDOWN_SELL') sellSignals += 3;
+
+    // GLM Smart Money — Final filter (strongest signal)
+    if (glmResult.signal === 'VALID_BUY') buySignals += 3;
+    else if (glmResult.signal === 'VALID_SELL') sellSignals += 3;
+    else if (glmResult.signal === 'FILTERED_NO_TRADE') {
+      // Strong counter-signal: reduce confidence in the opposing direction
+      buySignals = Math.max(0, buySignals - 1);
+      sellSignals = Math.max(0, sellSignals - 1);
     }
 
     // FVG check
@@ -162,7 +191,7 @@ export class SignalGenerator {
       else sellSignals++;
     }
 
-    // Liquidity sweep check
+    // Liquidity sweep check (legacy)
     if (liquidity.sweepDetected) {
       if (liquidity.sweepType === 'sell_side') buySignals += 2;
       else if (liquidity.sweepType === 'buy_side') sellSignals += 2;
@@ -369,7 +398,8 @@ export class SignalGenerator {
       // Base: 85%, boosted by quality score, confluence, MTF alignment, and S/D zone strength
       glmProbability: this.calculateGLMProbability(
         qualityCheck.score, confidence, buySignals + sellSignals,
-        structure.bos, structure.choch, mtfConfluence, zoneInteraction
+        structure.bos, structure.choch, mtfConfluence, zoneInteraction,
+        glmResult
       ),
       // Support & Resistance
       nearestSupport: srZones.nearestSupport,
@@ -383,6 +413,8 @@ export class SignalGenerator {
       zoneInteraction,
       // Bug Fixer Status
       engineHealth: bugFixer.getEngineHealth(),
+      // GLM Smart Money Engine
+      glmSmartMoney: glmResult,
       // Formatted Signal (will be set below)
       formatted: null,
     };
@@ -398,7 +430,7 @@ export class SignalGenerator {
 
   /**
    * Calculate GLM probability dynamically based on quality metrics.
-   * Base: 85.0%, boosted by multiple quality factors.
+   * Base: 85.0%, boosted by multiple quality factors including GLM Smart Money.
    * Range: 85.0% – 97.5%
    */
   private calculateGLMProbability(
@@ -408,7 +440,8 @@ export class SignalGenerator {
     bosConfirmed: boolean,
     chochConfirmed: boolean,
     mtfConfluence: MTFConfluence | null,
-    zoneInteraction: ZoneInteraction | null
+    zoneInteraction: ZoneInteraction | null,
+    glmSmartMoney?: GLMSmartMoneyResult | null
   ): number {
     let glm = 85.0;
 
@@ -437,6 +470,23 @@ export class SignalGenerator {
     // Zone interaction bonus (0-1%)
     if (zoneInteraction?.signal) {
       glm += Math.min(zoneInteraction.confidence / 100, 1);
+    }
+
+    // GLM Smart Money Engine bonus (0-3.5%)
+    if (glmSmartMoney) {
+      const strength = this.glmSmartMoney.getSignalStrength(glmSmartMoney);
+      // Scale 0-100 strength to 0-3.5% bonus
+      glm += (strength / 100) * 3.5;
+
+      // Extra bonus for validated signals
+      if (glmSmartMoney.signal === 'VALID_BUY' || glmSmartMoney.signal === 'VALID_SELL') {
+        glm += 1.0;
+      }
+
+      // Penalty for filtered signals
+      if (glmSmartMoney.signal === 'FILTERED_NO_TRADE') {
+        glm -= 2.0;
+      }
     }
 
     // Clamp to realistic range
