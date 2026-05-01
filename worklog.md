@@ -26,3 +26,24 @@ Stage Summary:
 - All Python logic faithfully converted to TypeScript
 - System is fully operational — build passes, API generates signals with GLM data
 - No code changes needed — conversion verified as correct
+---
+Task ID: fix-preview-error
+Agent: main
+Task: Fix client-side exception error in live preview
+
+Work Log:
+- Investigated "Application error: a client-side exception has occurred" error
+- Identified root causes: WebSocket connection failure, clipboard API in non-secure context, unhandled API fetch errors
+- Fixed WebSocket hook: lazy-loaded socket.io-client, added connect_error handler, added cancellation guard
+- Fixed clipboard: added async copySignal with secure context check and fallback for HTTP
+- Added ErrorBoundary component wrapping children in layout.tsx
+- Added error.tsx and global-error.tsx for Next.js error handling
+- Added AbortController with timeouts for all API fetch calls
+- Production build succeeds, dev server runs correctly
+
+Stage Summary:
+- All client-side crash points now have proper error handling
+- WebSocket failures are non-fatal and logged as warnings
+- Clipboard API works in both secure (HTTPS) and non-secure (HTTP) contexts
+- Error boundaries catch React rendering errors gracefully
+- API fetch calls have 8-15 second timeouts to prevent hanging

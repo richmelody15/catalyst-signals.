@@ -63,7 +63,12 @@ export default function Home() {
 
   const fetchSignals = useCallback(async () => {
     try {
-      const res = await fetch(`/api/v1/signals/live/${platform}?XTransformPort=3000`);
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 8000);
+      const res = await fetch(`/api/v1/signals/live/${platform}?XTransformPort=3000`, {
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
       if (res.ok) {
         const data = await res.json();
         if (data.signals && data.signals.length > 0) {
@@ -71,13 +76,18 @@ export default function Home() {
         }
       }
     } catch {
-      // Silently fail
+      // Silently fail — network/proxy errors are non-fatal
     }
   }, [platform]);
 
   const fetchAnalytics = useCallback(async () => {
     try {
-      const res = await fetch('/api/v1/analytics/performance?XTransformPort=3000');
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 8000);
+      const res = await fetch('/api/v1/analytics/performance?XTransformPort=3000', {
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
       if (res.ok) {
         const data = await res.json();
         setPerformance({
@@ -91,16 +101,20 @@ export default function Home() {
         });
       }
     } catch {
-      // Silently fail
+      // Silently fail — network/proxy errors are non-fatal
     }
   }, [setPerformance]);
 
   const generateSignals = useCallback(async () => {
     setIsGenerating(true);
     try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 15000);
       const res = await fetch('/api/v1/signals/generate?XTransformPort=3000', {
         method: 'POST',
+        signal: controller.signal,
       });
+      clearTimeout(timeout);
       if (res.ok) {
         const data = await res.json();
         if (data.signals) {
@@ -110,7 +124,7 @@ export default function Home() {
         }
       }
     } catch {
-      // Silently fail
+      // Silently fail — network/proxy errors are non-fatal
     } finally {
       setIsGenerating(false);
     }

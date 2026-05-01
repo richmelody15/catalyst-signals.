@@ -83,7 +83,7 @@ export function SignalCard({ signal, onFeedback }: SignalCardProps) {
   const regimeColorClass = REGIME_COLORS[signal.marketRegime] || REGIME_COLORS.weak_trend;
   const glmProb = signal.glmProbability ?? 94.3;
 
-  const copySignal = () => {
+  const copySignal = async () => {
     // Use the formatted signal if available, otherwise fall back to manual formatting
     const text = signal.formatted?.emoji || [
       `🔔 CATALYST AI SIGNAL!`,
@@ -138,9 +138,25 @@ export function SignalCard({ signal, onFeedback }: SignalCardProps) {
       `   ${signal.signalQuality}`,
     ].join('\n');
 
-    navigator.clipboard.writeText(text).then(() => {
-      toast.success('Signal copied to clipboard!');
-    });
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+        toast.success('Signal copied to clipboard!');
+      } else {
+        // Fallback for non-secure contexts (HTTP preview)
+        const textarea = document.createElement('textarea');
+        textarea.value = text;
+        textarea.style.position = 'fixed';
+        textarea.style.left = '-9999px';
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textarea);
+        toast.success('Signal copied to clipboard!');
+      }
+    } catch {
+      toast.error('Failed to copy signal');
+    }
   };
 
   return (
