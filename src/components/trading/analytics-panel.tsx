@@ -23,6 +23,8 @@ interface AnalyticsPanelProps {
 }
 
 export function AnalyticsPanel({ performance, signalCount }: AnalyticsPanelProps) {
+  // Safe defaults for confidenceAccuracy
+  const confAcc = performance.confidenceAccuracy || { accuracy: 0, total: 0, wins: 0, losses: 0 };
   const metrics = [
     {
       label: 'GLM Probability',
@@ -100,19 +102,19 @@ export function AnalyticsPanel({ performance, signalCount }: AnalyticsPanelProps
             <div className="flex justify-between items-center">
               <span className="text-xs text-zinc-500">Wins</span>
               <span className="text-xs font-bold text-emerald-400">
-                {performance.confidenceAccuracy.wins || 139}
+                {confAcc.wins || 139}
               </span>
             </div>
             <div className="flex justify-between items-center">
               <span className="text-xs text-zinc-500">Losses</span>
               <span className="text-xs font-bold text-red-400">
-                {performance.confidenceAccuracy.losses || 17}
+                {confAcc.losses || 17}
               </span>
             </div>
             <div className="flex justify-between items-center">
               <span className="text-xs text-zinc-500">Total Evaluated</span>
               <span className="text-xs font-bold text-white">
-                {performance.confidenceAccuracy.total || 156}
+                {confAcc.total || 156}
               </span>
             </div>
           </CardContent>

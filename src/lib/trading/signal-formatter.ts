@@ -252,13 +252,13 @@ export class SignalFormatter {
     // S/R Zones
     if (signal.nearestSupport || signal.nearestResistance) {
       lines.push('', 'SUPPORT/RESISTANCE', '─────────────────');
-      if (signal.nearestSupport) {
+      if (signal.nearestSupport && signal.nearestSupport.price != null) {
         const s = signal.nearestSupport;
-        lines.push(`  Support: ${s.price.toFixed(s.price < 100 ? 4 : 2)} (Strength: ${s.strength}${s.isMajor ? ', Major' : ''})`);
+        lines.push(`  Support: ${this.priceFmt(s.price)} (Strength: ${s.strength ?? 0}${s.isMajor ? ', Major' : ''})`);
       }
-      if (signal.nearestResistance) {
+      if (signal.nearestResistance && signal.nearestResistance.price != null) {
         const r = signal.nearestResistance;
-        lines.push(`  Resistance: ${r.price.toFixed(r.price < 100 ? 4 : 2)} (Strength: ${r.strength}${r.isMajor ? ', Major' : ''})`);
+        lines.push(`  Resistance: ${this.priceFmt(r.price)} (Strength: ${r.strength ?? 0}${r.isMajor ? ', Major' : ''})`);
       }
     }
 
@@ -285,24 +285,24 @@ export class SignalFormatter {
     }
 
     // S/D Zone
-    if (signal.nearestSDZone) {
+    if (signal.nearestSDZone && signal.nearestSDZone.low != null) {
       lines.push('', 'SUPPLY/DEMAND ZONE', '─────────────────');
       const z = signal.nearestSDZone;
       lines.push(`  Type: ${z.type} (${z.direction})`);
-      lines.push(`  Range: ${z.low.toFixed(5)} - ${z.high.toFixed(5)}`);
-      lines.push(`  Strength: ${z.strength} | Belief: ${z.beliefScore}%`);
-      lines.push(`  Touches: ${z.touches} | Hold Rate: ${z.performance.holdRate}%`);
+      lines.push(`  Range: ${this.safeToFixed(z.low, 5)} - ${this.safeToFixed(z.high, 5)}`);
+      lines.push(`  Strength: ${z.strength} | Belief: ${z.beliefScore ?? 0}%`);
+      lines.push(`  Touches: ${z.touches ?? 0} | Hold Rate: ${z.performance?.holdRate ?? 0}%`);
     }
 
     // Zone Interaction
-    if (signal.zoneInteraction) {
+    if (signal.zoneInteraction && signal.zoneInteraction.signal) {
       lines.push('', 'ZONE INTERACTION SIGNAL', '─────────────────');
       const zi = signal.zoneInteraction;
-      lines.push(`  Type: ${zi.interactionType} | Signal: ${zi.signal || 'N/A'}`);
-      lines.push(`  Confidence: ${zi.confidence}%`);
-      lines.push(`  Entry: ${zi.entryPrice.toFixed(5)}`);
-      lines.push(`  SL: ${zi.stopLoss.toFixed(5)} | TP: ${zi.takeProfit.toFixed(5)}`);
-      lines.push(`  R:R: 1:${zi.riskReward}`);
+      lines.push(`  Type: ${zi.interactionType || 'N/A'} | Signal: ${zi.signal}`);
+      lines.push(`  Confidence: ${zi.confidence ?? 0}%`);
+      lines.push(`  Entry: ${this.safeToFixed(zi.entryPrice, 5)}`);
+      lines.push(`  SL: ${this.safeToFixed(zi.stopLoss, 5)} | TP: ${this.safeToFixed(zi.takeProfit, 5)}`);
+      lines.push(`  R:R: 1:${zi.riskReward ?? 0}`);
     }
 
     // GLM Smart Money Engine
@@ -386,9 +386,9 @@ export class SignalFormatter {
   private formatZonePlain(zone: SupplyDemandZone): string[] {
     return [
       `  Type: ${zone.type} (${zone.direction})`,
-      `  Range: ${zone.low.toFixed(5)} - ${zone.high.toFixed(5)}`,
-      `  Strength: ${zone.strength} | Belief: ${zone.beliefScore}%`,
-      `  Touches: ${zone.touches} | Hold Rate: ${zone.performance.holdRate}%`,
+      `  Range: ${this.safeToFixed(zone.low, 5)} - ${this.safeToFixed(zone.high, 5)}`,
+      `  Strength: ${zone.strength} | Belief: ${zone.beliefScore ?? 0}%`,
+      `  Touches: ${zone.touches ?? 0} | Hold Rate: ${zone.performance?.holdRate ?? 0}%`,
     ];
   }
 
@@ -398,9 +398,9 @@ export class SignalFormatter {
 
     return [
       `  ${dirEmoji} ${zone.type} (${zone.direction})`,
-      `  Range: ${zone.low.toFixed(5)} - ${zone.high.toFixed(5)}`,
-      `  ${strengthEmoji} Strength: ${zone.strength} | Belief: ${zone.beliefScore}%`,
-      `  🎯 Touches: ${zone.touches} | Hold: ${zone.performance.holdRate}%`,
+      `  Range: ${this.safeToFixed(zone.low, 5)} - ${this.safeToFixed(zone.high, 5)}`,
+      `  ${strengthEmoji} Strength: ${zone.strength} | Belief: ${zone.beliefScore ?? 0}%`,
+      `  🎯 Touches: ${zone.touches ?? 0} | Hold: ${zone.performance?.holdRate ?? 0}%`,
     ];
   }
 
@@ -408,12 +408,12 @@ export class SignalFormatter {
 
   private formatInteractionPlain(interaction: ZoneInteraction): string[] {
     return [
-      `  Type: ${interaction.interactionType}`,
+      `  Type: ${interaction.interactionType || 'N/A'}`,
       `  Signal: ${interaction.signal || 'N/A'}`,
-      `  Confidence: ${interaction.confidence}%`,
-      `  Entry: ${interaction.entryPrice.toFixed(5)}`,
-      `  SL: ${interaction.stopLoss.toFixed(5)} | TP: ${interaction.takeProfit.toFixed(5)}`,
-      `  R:R: 1:${interaction.riskReward}`,
+      `  Confidence: ${interaction.confidence ?? 0}%`,
+      `  Entry: ${this.safeToFixed(interaction.entryPrice, 5)}`,
+      `  SL: ${this.safeToFixed(interaction.stopLoss, 5)} | TP: ${this.safeToFixed(interaction.takeProfit, 5)}`,
+      `  R:R: 1:${interaction.riskReward ?? 0}`,
     ];
   }
 
@@ -424,11 +424,11 @@ export class SignalFormatter {
     };
 
     return [
-      `  ${typeEmoji[interaction.interactionType] || '📊'} ${interaction.interactionType}`,
-      `  ${signalEmoji} Signal: ${interaction.signal || 'N/A'} (${interaction.confidence}%)`,
-      `  💰 Entry: ${interaction.entryPrice.toFixed(5)}`,
-      `  🛑 SL: ${interaction.stopLoss.toFixed(5)} | 🎯 TP: ${interaction.takeProfit.toFixed(5)}`,
-      `  ⚖️ R:R: 1:${interaction.riskReward}`,
+      `  ${typeEmoji[interaction.interactionType || ''] || '📊'} ${interaction.interactionType || 'N/A'}`,
+      `  ${signalEmoji} Signal: ${interaction.signal || 'N/A'} (${interaction.confidence ?? 0}%)`,
+      `  💰 Entry: ${this.safeToFixed(interaction.entryPrice, 5)}`,
+      `  🛑 SL: ${this.safeToFixed(interaction.stopLoss, 5)} | 🎯 TP: ${this.safeToFixed(interaction.takeProfit, 5)}`,
+      `  ⚖️ R:R: 1:${interaction.riskReward ?? 0}`,
     ];
   }
 
@@ -436,10 +436,10 @@ export class SignalFormatter {
 
   private formatGLMSmartMoneyPlain(glm: GLMSmartMoneyResult): string[] {
     return [
-      `  Structure: ${glm.labels.structure}`,
-      `  Liquidity: ${glm.labels.liquidity}`,
-      `  Breakout: ${glm.labels.breakout}`,
-      `  Signal: ${glm.labels.signal}`,
+      `  Structure: ${glm.labels?.structure ?? glm.structure ?? 'N/A'}`,
+      `  Liquidity: ${glm.labels?.liquidity ?? glm.liquidity ?? 'N/A'}`,
+      `  Breakout: ${glm.labels?.breakout ?? glm.breakout ?? 'N/A'}`,
+      `  Signal: ${glm.labels?.signal ?? glm.signal ?? 'N/A'}`,
     ];
   }
 
@@ -459,11 +459,11 @@ export class SignalFormatter {
 
   private formatGLMSmartMoneyDetailed(glm: GLMSmartMoneyResult): string[] {
     const lines: string[] = [
-      `  Structure: ${glm.structure} — ${glm.labels.structure}`,
-      `  Liquidity: ${glm.liquidity} — ${glm.labels.liquidity}`,
-      `  Breakout: ${glm.breakout} — ${glm.labels.breakout}`,
-      `  Final Signal: ${glm.signal} — ${glm.labels.signal}`,
-      `  Price at Analysis: ${glm.price.toFixed(glm.price < 100 ? 5 : 2)}`,
+      `  Structure: ${glm.structure ?? 'N/A'} — ${glm.labels?.structure ?? 'N/A'}`,
+      `  Liquidity: ${glm.liquidity ?? 'N/A'} — ${glm.labels?.liquidity ?? 'N/A'}`,
+      `  Breakout: ${glm.breakout ?? 'N/A'} — ${glm.labels?.breakout ?? 'N/A'}`,
+      `  Final Signal: ${glm.signal ?? 'N/A'} — ${glm.labels?.signal ?? 'N/A'}`,
+      `  Price at Analysis: ${this.priceFmt(glm.price)}`,
     ];
 
     // Structure history
@@ -490,8 +490,31 @@ export class SignalFormatter {
   // ─── Private: Utilities ───────────────────────────────────────────
 
   private formatTime(entryTime: Date | string): string {
-    const date = new Date(entryTime);
-    const time = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
-    return `${time} WAT`;
+    try {
+      if (!entryTime) return '--:-- WAT';
+      const date = new Date(entryTime);
+      if (isNaN(date.getTime())) return '--:-- WAT';
+      // Format in WAT (Africa/Lagos = UTC+1)
+      const time = date.toLocaleTimeString('en-GB', {
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+        timeZone: 'Africa/Lagos',
+      });
+      return `${time} WAT`;
+    } catch {
+      return '--:-- WAT';
+    }
+  }
+
+  /** Safe toFixed for potentially null numbers */
+  private safeToFixed(value: number | null | undefined, decimals: number = 5): string {
+    if (value == null || typeof value !== 'number' || isNaN(value)) return 'N/A';
+    return value.toFixed(decimals);
+  }
+
+  private priceFmt(price: number | null | undefined): string {
+    if (price == null || typeof price !== 'number' || isNaN(price)) return 'N/A';
+    return price.toFixed(price < 100 ? 5 : 2);
   }
 }

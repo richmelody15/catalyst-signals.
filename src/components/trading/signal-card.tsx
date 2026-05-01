@@ -55,13 +55,32 @@ function CheckItem({ label, value }: { label: string; value: boolean }) {
 
 function formatEntryTime(entryTime: Date | string) {
   try {
+    if (!entryTime) return '--:-- WAT';
     const date = new Date(entryTime);
     if (isNaN(date.getTime())) return '--:-- WAT';
-    const time = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+    // Format in WAT (Africa/Lagos = UTC+1)
+    const time = date.toLocaleTimeString('en-GB', {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+      timeZone: 'Africa/Lagos',
+    });
     return `${time} WAT`;
   } catch {
     return '--:-- WAT';
   }
+}
+
+/** Safe toFixed that handles null/undefined numbers */
+function safeToFixed(value: number | null | undefined, decimals: number = 4): string {
+  if (value == null || typeof value !== 'number' || isNaN(value)) return 'N/A';
+  return value.toFixed(decimals);
+}
+
+/** Get decimal places based on price magnitude */
+function priceDecimals(price: number | null | undefined): number {
+  if (price == null || typeof price !== 'number' || isNaN(price)) return 4;
+  return price < 100 ? 4 : 2;
 }
 
 const REGIME_COLORS: Record<string, string> = {
@@ -90,15 +109,26 @@ export function SignalCard({ signal, onFeedback }: SignalCardProps) {
 
   // Safe accessors for deeply nested properties that may be null from API
   const strategy = signal.strategy || { title: '', entryRules: [], exitRules: [], riskManagement: [], avoidActions: [], confidenceNote: '' };
-  const glmSmartMoney = signal.glmSmartMoney;
-  const mtfConfluence = signal.mtfConfluence;
-  const nearestSDZone = signal.nearestSDZone;
-  const zoneInteraction = signal.zoneInteraction;
-  const engineHealth = signal.engineHealth;
-  const nearestSupport = signal.nearestSupport;
-  const nearestResistance = signal.nearestResistance;
+  const glmSmartMoney = signal.glmSmartMoney || null;
+  const mtfConfluence = signal.mtfConfluence || null;
+  const nearestSDZone = signal.nearestSDZone || null;
+  const zoneInteraction = signal.zoneInteraction || null;
+  const engineHealth = signal.engineHealth || null;
+  const nearestSupport = signal.nearestSupport || null;
+  const nearestResistance = signal.nearestResistance || null;
   const supportZone = signal.supportZone || { start: null, end: null };
   const resistanceZone = signal.resistanceZone || { start: null, end: null };
+  // Normalize riskLevels: handle both old format (number) and new format ({multiplier, time})
+  const riskLevels: Record<string, { multiplier: number; time: string }> = {};
+  if (signal.riskLevels && typeof signal.riskLevels === 'object') {
+    for (const [key, val] of Object.entries(signal.riskLevels)) {
+      if (val != null && typeof val === 'object' && 'multiplier' in val) {
+        riskLevels[key] = { multiplier: (val as { multiplier: number; time: string }).multiplier ?? 0, time: (val as { multiplier: number; time: string }).time || '--:-- WAT' };
+      } else if (typeof val === 'number') {
+        riskLevels[key] = { multiplier: val, time: '--:-- WAT' };
+      }
+    }
+  }
 
   const copySignal = async () => {
     // Use the formatted signal if available, otherwise fall back to manual formatting
@@ -128,18 +158,16 @@ export function SignalCard({ signal, onFeedback }: SignalCardProps) {
       `⚖️ RR: 1:${signal.riskReward}`,
       ``,
       `↪️ Risk Levels:`,
-      ...Object.entries(signal.riskLevels).map(([key, level], idx) => {
-        const mult = typeof level === 'object' && level !== null && 'multiplier' in level ? (level as { multiplier: number; time: string }).multiplier : level;
-        const time = typeof level === 'object' && level !== null && 'time' in level ? (level as { multiplier: number; time: string }).time : '';
-        return `  ${key} → ${mult}x  Entry Time (${time})   ← initial entry`;
+      ...Object.entries(riskLevels).map(([key, level]) => {
+        return `  ${key} → ${level.multiplier}x  Entry Time (${level.time})   ← initial entry`;
       }),
       ...(glmSmartMoney ? [
         ``,
         `🧪 GLM SMART MONEY:`,
-        `  Structure: ${glmSmartMoney.labels?.structure ?? 'N/A'}`,
-        `  Liquidity: ${glmSmartMoney.labels?.liquidity ?? 'N/A'}`,
-        `  Breakout: ${glmSmartMoney.labels?.breakout ?? 'N/A'}`,
-        `  Signal: ${glmSmartMoney.labels?.signal ?? 'N/A'}`,
+        `  Structure: ${glmSmartMoney.labels?.structure ?? glmSmartMoney.structure ?? 'N/A'}`,
+        `  Liquidity: ${glmSmartMoney.labels?.liquidity ?? glmSmartMoney.liquidity ?? 'N/A'}`,
+        `  Breakout: ${glmSmartMoney.labels?.breakout ?? glmSmartMoney.breakout ?? 'N/A'}`,
+        `  Signal: ${glmSmartMoney.labels?.signal ?? glmSmartMoney.signal ?? 'N/A'}`,
       ] : []),
       ``,
       `📋 STRATEGY GUIDE:`,
@@ -148,8 +176,8 @@ export function SignalCard({ signal, onFeedback }: SignalCardProps) {
       ...(strategy.riskManagement?.map((r: string) => `  🛡️ ${r}`) || []),
       ``,
       `📐 SUPPORT/RESISTANCE:`,
-      ...(nearestSupport ? [`  ⬇ Support: ${nearestSupport.price.toFixed(nearestSupport.price < 100 ? 4 : 2)} (Str: ${nearestSupport.strength}${nearestSupport.isMajor ? ', Major' : ''})`] : []),
-      ...(nearestResistance ? [`  ⬆ Resistance: ${nearestResistance.price.toFixed(nearestResistance.price < 100 ? 4 : 2)} (Str: ${nearestResistance.strength}${nearestResistance.isMajor ? ', Major' : ''})`] : []),
+      ...(nearestSupport && nearestSupport.price != null ? [`  ⬇ Support: ${safeToFixed(nearestSupport.price, priceDecimals(nearestSupport.price))} (Str: ${nearestSupport.strength ?? 0}${nearestSupport.isMajor ? ', Major' : ''})`] : []),
+      ...(nearestResistance && nearestResistance.price != null ? [`  ⬆ Resistance: ${safeToFixed(nearestResistance.price, priceDecimals(nearestResistance.price))} (Str: ${nearestResistance.strength ?? 0}${nearestResistance.isMajor ? ', Major' : ''})`] : []),
       ``,
       `🎯 GLM PROBABILITY: ${glmProb}% WIN RATE`,
       `   ${signal.signalQuality}`,
@@ -294,7 +322,7 @@ export function SignalCard({ signal, onFeedback }: SignalCardProps) {
               <span className="text-[10px] text-zinc-500 uppercase tracking-wider">S/R Zones</span>
             </div>
             <div className="space-y-1">
-              {nearestSupport && (
+              {nearestSupport && nearestSupport.price != null && (
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-1">
                     <ArrowDown className="h-3 w-3 text-emerald-400" />
@@ -302,16 +330,16 @@ export function SignalCard({ signal, onFeedback }: SignalCardProps) {
                   </div>
                   <div className="flex items-center gap-1.5">
                     <span className="text-[10px] font-bold text-emerald-400">
-                      {nearestSupport.price.toFixed(nearestSupport.price < 100 ? 4 : 2)}
+                      {safeToFixed(nearestSupport.price, priceDecimals(nearestSupport.price))}
                     </span>
                     {nearestSupport.isMajor && (
                       <Badge className="text-[8px] h-3 px-1 bg-emerald-400/10 text-emerald-400 border-0">Major</Badge>
                     )}
-                    <span className="text-[9px] text-zinc-600">Str: {nearestSupport.strength}</span>
+                    <span className="text-[9px] text-zinc-600">Str: {nearestSupport.strength ?? 0}</span>
                   </div>
                 </div>
               )}
-              {nearestResistance && (
+              {nearestResistance && nearestResistance.price != null && (
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-1">
                     <ArrowUp className="h-3 w-3 text-red-400" />
@@ -319,30 +347,30 @@ export function SignalCard({ signal, onFeedback }: SignalCardProps) {
                   </div>
                   <div className="flex items-center gap-1.5">
                     <span className="text-[10px] font-bold text-red-400">
-                      {nearestResistance.price.toFixed(nearestResistance.price < 100 ? 4 : 2)}
+                      {safeToFixed(nearestResistance.price, priceDecimals(nearestResistance.price))}
                     </span>
                     {nearestResistance.isMajor && (
                       <Badge className="text-[8px] h-3 px-1 bg-red-400/10 text-red-400 border-0">Major</Badge>
                     )}
-                    <span className="text-[9px] text-zinc-600">Str: {nearestResistance.strength}</span>
+                    <span className="text-[9px] text-zinc-600">Str: {nearestResistance.strength ?? 0}</span>
                   </div>
                 </div>
               )}
               {/* Zone Ranges */}
               <div className="flex gap-2 pt-0.5">
-                {supportZone.start != null && (
+                {supportZone.start != null && typeof supportZone.start === 'number' && (
                   <div className="flex-1 bg-emerald-400/5 rounded px-1.5 py-0.5">
                     <p className="text-[8px] text-zinc-600 text-center">Supply Zone</p>
                     <p className="text-[9px] text-emerald-400/70 text-center">
-                      {supportZone.start.toFixed(supportZone.start < 100 ? 4 : 2)} - {(supportZone.end ?? 0).toFixed((supportZone.end ?? 0) < 100 ? 4 : 2)}
+                      {safeToFixed(supportZone.start, priceDecimals(supportZone.start))} - {safeToFixed(supportZone.end, priceDecimals(supportZone.end))}
                     </p>
                   </div>
                 )}
-                {resistanceZone.start != null && (
+                {resistanceZone.start != null && typeof resistanceZone.start === 'number' && (
                   <div className="flex-1 bg-red-400/5 rounded px-1.5 py-0.5">
                     <p className="text-[8px] text-zinc-600 text-center">Resist Zone</p>
                     <p className="text-[9px] text-red-400/70 text-center">
-                      {resistanceZone.start.toFixed(resistanceZone.start < 100 ? 4 : 2)} - {(resistanceZone.end ?? 0).toFixed((resistanceZone.end ?? 0) < 100 ? 4 : 2)}
+                      {safeToFixed(resistanceZone.start, priceDecimals(resistanceZone.start))} - {safeToFixed(resistanceZone.end, priceDecimals(resistanceZone.end))}
                     </p>
                   </div>
                 )}
@@ -358,28 +386,25 @@ export function SignalCard({ signal, onFeedback }: SignalCardProps) {
             <span className="text-[10px] text-zinc-500 uppercase tracking-wider">Risk Levels</span>
           </div>
           <div className="space-y-1">
-            {Object.entries(signal.riskLevels).map(([key, level], idx) => {
-              const mult = typeof level === 'object' && level !== null && 'multiplier' in level ? (level as { multiplier: number; time: string }).multiplier : level;
-              const time = typeof level === 'object' && level !== null && 'time' in level ? (level as { multiplier: number; time: string }).time : '';
-              return (
+            {Object.entries(riskLevels).map(([key, level]) => (
                 <div key={key} className="flex items-center justify-between bg-zinc-900/60 rounded px-2 py-0.5">
                   <div className="flex items-center gap-1.5">
                     <span className="text-[10px] font-bold text-yellow-400">{key}</span>
                     <span className="text-[10px] text-zinc-500">→</span>
-                    <span className="text-[10px] font-bold text-white">{mult}x</span>
+                    <span className="text-[10px] font-bold text-white">{level.multiplier}x</span>
                   </div>
                   <div className="flex items-center gap-1.5">
-                    <span className="text-[10px] text-emerald-400 font-mono font-bold">Entry Time ({time})</span>
+                    <Clock className="h-2.5 w-2.5 text-emerald-400" />
+                    <span className="text-[10px] text-emerald-400 font-mono font-bold">{level.time}</span>
                     <span className="text-[8px] text-zinc-700">← initial entry</span>
                   </div>
                 </div>
-              );
-            })}
+              ))}
           </div>
         </div>
 
         {/* GLM Smart Money Engine */}
-        {glmSmartMoney && (
+        {glmSmartMoney && glmSmartMoney.signal && (
           <div className="rounded-lg p-2 border border-zinc-700/50 bg-zinc-800/40">
             <div className="flex items-center justify-between mb-1.5">
               <div className="flex items-center gap-1.5">
@@ -395,7 +420,7 @@ export function SignalCard({ signal, onFeedback }: SignalCardProps) {
                   ? 'text-zinc-500 bg-zinc-500/10 border-zinc-500/20'
                   : 'text-yellow-400 bg-yellow-400/10 border-yellow-400/20'
               }`}>
-                {glmSmartMoney.signal.replace(/_/g, ' ')}
+                {(glmSmartMoney.signal || '').replace(/_/g, ' ')}
               </Badge>
             </div>
             <div className="space-y-1">
@@ -406,7 +431,7 @@ export function SignalCard({ signal, onFeedback }: SignalCardProps) {
                   glmSmartMoney.structure === 'BOS_UP' ? 'text-emerald-400' :
                   glmSmartMoney.structure === 'BOS_DOWN' ? 'text-red-400' : 'text-yellow-400'
                 }`}>
-                  {glmSmartMoney.structure === 'BOS_UP' ? '↑' : glmSmartMoney.structure === 'BOS_DOWN' ? '↓' : '↔'} {glmSmartMoney.structure}
+                  {glmSmartMoney.structure === 'BOS_UP' ? '↑' : glmSmartMoney.structure === 'BOS_DOWN' ? '↓' : '↔'} {glmSmartMoney.structure || 'N/A'}
                 </span>
               </div>
               {/* Liquidity */}
@@ -416,7 +441,7 @@ export function SignalCard({ signal, onFeedback }: SignalCardProps) {
                   glmSmartMoney.liquidity === 'BUY_SWEEP' ? 'text-emerald-400' :
                   glmSmartMoney.liquidity === 'SELL_SWEEP' ? 'text-red-400' : 'text-zinc-500'
                 }`}>
-                  {glmSmartMoney.liquidity.replace(/_/g, ' ')}
+                  {(glmSmartMoney.liquidity || 'N/A').replace(/_/g, ' ')}
                 </span>
               </div>
               {/* Breakout */}
@@ -438,16 +463,16 @@ export function SignalCard({ signal, onFeedback }: SignalCardProps) {
         <div className="flex items-center justify-between text-[10px]">
           <div className="flex items-center gap-1">
             <Droplets className="h-3 w-3 text-blue-400" />
-            <span className="text-zinc-400">{signal.zoneType}</span>
+            <span className="text-zinc-400">{signal.zoneType || 'N/A'}</span>
           </div>
           <div className="flex items-center gap-1">
             <Volume2 className="h-3 w-3 text-zinc-500" />
-            <span className="text-zinc-500">{signal.marketCondition}</span>
+            <span className="text-zinc-500">{signal.marketCondition || 'N/A'}</span>
           </div>
         </div>
 
         {/* Multi-Timeframe Confluence */}
-        {mtfConfluence && (
+        {mtfConfluence && mtfConfluence.timeframeResults && (
           <div className="rounded-lg p-2 border border-zinc-700/50 bg-zinc-800/40">
             <div className="flex items-center justify-between mb-1.5">
               <div className="flex items-center gap-1.5">
@@ -462,7 +487,7 @@ export function SignalCard({ signal, onFeedback }: SignalCardProps) {
                 }`}>
                   {mtfConfluence.aligned ? 'ALIGNED' : 'MIXED'}
                 </Badge>
-                <span className="text-[9px] text-zinc-500">{mtfConfluence.alignmentScore}%</span>
+                <span className="text-[9px] text-zinc-500">{mtfConfluence.alignmentScore ?? 0}%</span>
               </div>
             </div>
             {/* Timeframe breakdown */}
@@ -483,10 +508,10 @@ export function SignalCard({ signal, onFeedback }: SignalCardProps) {
             <div className="flex items-center justify-between">
               <span className="text-[9px] text-zinc-600">8-Point Checklist</span>
               <span className={`text-[9px] font-bold ${
-                mtfConfluence.checklistScore >= 70 ? 'text-emerald-400' :
-                mtfConfluence.checklistScore >= 50 ? 'text-yellow-400' : 'text-red-400'
+                (mtfConfluence.checklistScore ?? 0) >= 70 ? 'text-emerald-400' :
+                (mtfConfluence.checklistScore ?? 0) >= 50 ? 'text-yellow-400' : 'text-red-400'
               }`}>
-                {mtfConfluence.checklistScore}%
+                {mtfConfluence.checklistScore ?? 0}%
               </span>
             </div>
             <div className="grid grid-cols-4 gap-1 mt-1">
@@ -505,7 +530,7 @@ export function SignalCard({ signal, onFeedback }: SignalCardProps) {
         )}
 
         {/* Supply/Demand Zone */}
-        {nearestSDZone && (
+        {nearestSDZone && nearestSDZone.low != null && nearestSDZone.high != null && (
           <div className="rounded-lg p-2 border border-zinc-700/50 bg-zinc-800/40">
             <div className="flex items-center justify-between mb-1">
               <div className="flex items-center gap-1.5">
@@ -518,7 +543,7 @@ export function SignalCard({ signal, onFeedback }: SignalCardProps) {
                     ? 'text-emerald-400 bg-emerald-400/10 border-emerald-400/20'
                     : 'text-red-400 bg-red-400/10 border-red-400/20'
                 }`}>
-                  {nearestSDZone.type}
+                  {nearestSDZone.type || 'N/A'}
                 </Badge>
                 <Badge className={`text-[8px] h-3.5 px-1 border ${
                   nearestSDZone.strength === 'extreme' ? 'text-purple-400 bg-purple-400/10 border-purple-400/20' :
@@ -526,16 +551,16 @@ export function SignalCard({ signal, onFeedback }: SignalCardProps) {
                   nearestSDZone.strength === 'moderate' ? 'text-blue-400 bg-blue-400/10 border-blue-400/20' :
                   'text-zinc-400 bg-zinc-400/10 border-zinc-400/20'
                 }`}>
-                  {nearestSDZone.strength}
+                  {nearestSDZone.strength || 'N/A'}
                 </Badge>
               </div>
             </div>
             <div className="flex items-center justify-between">
               <span className="text-[9px] text-zinc-500">
-                Range: {nearestSDZone.low.toFixed(5)} - {nearestSDZone.high.toFixed(5)}
+                Range: {safeToFixed(nearestSDZone.low, 5)} - {safeToFixed(nearestSDZone.high, 5)}
               </span>
               <span className="text-[9px] text-zinc-400">
-                Belief: <span className="font-bold text-orange-400">{nearestSDZone.beliefScore}%</span>
+                Belief: <span className="font-bold text-orange-400">{nearestSDZone.beliefScore ?? 0}%</span>
               </span>
             </div>
             {nearestSDZone.performance?.timesTested > 0 && (
@@ -543,8 +568,8 @@ export function SignalCard({ signal, onFeedback }: SignalCardProps) {
                 <span className="text-[8px] text-zinc-600">
                   Tested: {nearestSDZone.performance.timesTested}x
                 </span>
-                <span className={`text-[8px] ${nearestSDZone.performance.holdRate >= 70 ? 'text-emerald-400' : 'text-yellow-400'}`}>
-                  Hold: {nearestSDZone.performance.holdRate}%
+                <span className={`text-[8px] ${(nearestSDZone.performance.holdRate ?? 0) >= 70 ? 'text-emerald-400' : 'text-yellow-400'}`}>
+                  Hold: {nearestSDZone.performance.holdRate ?? 0}%
                 </span>
               </div>
             )}
@@ -562,7 +587,7 @@ export function SignalCard({ signal, onFeedback }: SignalCardProps) {
               <div className="flex items-center gap-1.5">
                 <Target className="h-3.5 w-3.5 text-yellow-400" />
                 <span className="text-[10px] text-zinc-400 uppercase tracking-wider">
-                  Zone Signal: {zoneInteraction.interactionType}
+                  Zone Signal: {zoneInteraction.interactionType || 'N/A'}
                 </span>
               </div>
               <span className={`text-xs font-bold ${
@@ -574,15 +599,15 @@ export function SignalCard({ signal, onFeedback }: SignalCardProps) {
             <div className="grid grid-cols-3 gap-1 text-center">
               <div>
                 <p className="text-[8px] text-zinc-600">SL</p>
-                <p className="text-[9px] text-red-400 font-bold">{zoneInteraction.stopLoss?.toFixed(4) ?? 'N/A'}</p>
+                <p className="text-[9px] text-red-400 font-bold">{safeToFixed(zoneInteraction.stopLoss, 4)}</p>
               </div>
               <div>
                 <p className="text-[8px] text-zinc-600">Entry</p>
-                <p className="text-[9px] text-white font-bold">{zoneInteraction.entryPrice?.toFixed(4) ?? 'N/A'}</p>
+                <p className="text-[9px] text-white font-bold">{safeToFixed(zoneInteraction.entryPrice, 4)}</p>
               </div>
               <div>
                 <p className="text-[8px] text-zinc-600">TP</p>
-                <p className="text-[9px] text-emerald-400 font-bold">{zoneInteraction.takeProfit?.toFixed(4) ?? 'N/A'}</p>
+                <p className="text-[9px] text-emerald-400 font-bold">{safeToFixed(zoneInteraction.takeProfit, 4)}</p>
               </div>
             </div>
             <div className="flex items-center justify-between mt-1">
@@ -694,14 +719,14 @@ export function SignalCard({ signal, onFeedback }: SignalCardProps) {
             </div>
             <div className="flex items-center gap-2">
               <span className="text-[8px] text-zinc-500">
-                {engineHealth.errorsRecovered} recovered
+                {engineHealth.errorsRecovered ?? 0} recovered
               </span>
               <Badge className={`text-[7px] h-3 px-1 border ${
-                engineHealth.recoveryRate >= 90
+                (engineHealth.recoveryRate ?? 0) >= 90
                   ? 'text-emerald-400 bg-emerald-400/10 border-emerald-400/20'
                   : 'text-yellow-400 bg-yellow-400/10 border-yellow-400/20'
               }`}>
-                {engineHealth.recoveryRate}%
+                {engineHealth.recoveryRate ?? 0}%
               </Badge>
             </div>
           </div>

@@ -91,13 +91,13 @@ export default function Home() {
       if (res.ok) {
         const data = await res.json();
         setPerformance({
-          winRate: data.winRate,
-          totalTrades: data.totalTrades,
-          wins: data.wins,
-          losses: data.losses,
-          bestPair: data.bestPair,
-          dailyPnl: data.dailyPnl,
-          confidenceAccuracy: data.confidenceAccuracy,
+          winRate: data.winRate ?? 0,
+          totalTrades: data.totalTrades ?? 0,
+          wins: data.wins ?? 0,
+          losses: data.losses ?? 0,
+          bestPair: data.bestPair ?? 'EURUSD-OTC',
+          dailyPnl: data.dailyPnl ?? 0,
+          confidenceAccuracy: data.confidenceAccuracy ?? { accuracy: 0, total: 0, wins: 0, losses: 0 },
         });
       }
     } catch {

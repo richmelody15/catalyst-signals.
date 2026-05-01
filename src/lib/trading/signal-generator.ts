@@ -565,12 +565,22 @@ export class SignalGenerator {
   }
 
   /**
-   * Format a Date to HH:MM WAT string.
+   * Format a Date to HH:MM WAT string using Africa/Lagos timezone.
    */
   private formatWATTime(date: Date): string {
-    const hours = date.getHours().toString().padStart(2, '0');
-    const minutes = date.getMinutes().toString().padStart(2, '0');
-    return `${hours}:${minutes} WAT`;
+    try {
+      const time = date.toLocaleTimeString('en-GB', {
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+        timeZone: 'Africa/Lagos',
+      });
+      return `${time} WAT`;
+    } catch {
+      const hours = date.getHours().toString().padStart(2, '0');
+      const minutes = date.getMinutes().toString().padStart(2, '0');
+      return `${hours}:${minutes} WAT`;
+    }
   }
 
   /**
