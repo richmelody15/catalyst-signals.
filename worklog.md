@@ -28,3 +28,23 @@ Stage Summary:
 - Cross-origin resource loading is now allowed for the preview domain
 - The page compiles and renders successfully (HTTP 200)
 - Dev server needs restart for next.config.ts changes to take effect
+
+---
+Task ID: 2
+Agent: Main Agent
+Task: Update risk level format to match Python reference — add "Entry Time" prefix
+
+Work Log:
+- Read Python reference code for generate_risk_levels() format
+- Identified format difference: Python uses `M1 → 0.7x  Entry Time (19:24 WAT)   ← initial entry`
+- Previous TS format was: `M1 → 0.7x (19:24 WAT) ← initial entry`
+- Updated signal-formatter.ts: All 3 format methods (plain, emoji, detailed) now use "Entry Time (HH:MM WAT)" format
+- Updated signal-card.tsx: Copy-to-clipboard text now uses "Entry Time (HH:MM WAT)" format
+- Updated signal-card.tsx: UI card display now shows "Entry Time (HH:MM WAT)" label
+- Verified compilation succeeds (HTTP 200, no TS errors)
+
+Stage Summary:
+- Risk level format now matches Python reference exactly:
+  `M1 → 0.7x  Entry Time (19:24 WAT)   ← initial entry`
+- All 4 display contexts updated: plain format, emoji format, detailed format, UI card
+- No compilation errors
