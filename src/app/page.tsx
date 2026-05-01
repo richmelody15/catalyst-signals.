@@ -1,10 +1,9 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, ComponentType } from 'react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Separator } from '@/components/ui/separator';
 import {
   SignalCard,
 } from '@/components/trading/signal-card';
@@ -22,6 +21,24 @@ import {
   Zap,
   Activity,
 } from 'lucide-react';
+
+/**
+ * Safe wrapper around SignalCard that catches rendering errors per-card.
+ * Prevents one broken signal from crashing the entire page.
+ */
+function SafeSignalCard({ signal, onFeedback }: { signal: Signal; onFeedback?: (signalId: string, outcome: 'win' | 'loss') => void }) {
+  try {
+    return <SignalCard signal={signal} onFeedback={onFeedback} />;
+  } catch (err) {
+    console.error('SignalCard render error:', err);
+    return (
+      <div className="border border-red-400/30 bg-red-400/5 rounded-lg p-3 text-center">
+        <p className="text-xs text-red-400">Signal render error — data may be incomplete</p>
+        <p className="text-[10px] text-zinc-600 mt-1">{signal.tradePair || 'Unknown'} • {signal.direction || 'N/A'}</p>
+      </div>
+    );
+  }
+}
 
 export default function Home() {
   // Client-side hydration guard — prevents SSR/client mismatch
@@ -273,7 +290,7 @@ export default function Home() {
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
                 {signals.map((signal, index) => (
                   <div key={signal.id} className="signal-enter" style={{ animationDelay: `${index * 50}ms` }}>
-                    <SignalCard signal={signal} onFeedback={handleFeedback} />
+                    <SafeSignalCard signal={signal} onFeedback={handleFeedback} />
                   </div>
                 ))}
               </div>

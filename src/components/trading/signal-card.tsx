@@ -104,8 +104,10 @@ export function SignalCard({ signal, onFeedback }: SignalCardProps) {
   const bgGlow = isBuy ? 'bg-emerald-400/5' : 'bg-red-400/5';
   const [showStrategy, setShowStrategy] = useState(false);
 
-  const regimeColorClass = REGIME_COLORS[signal.marketRegime] || REGIME_COLORS.weak_trend;
-  const glmProb = signal.glmProbability ?? 94.3;
+  const regimeColorClass = REGIME_COLORS[signal.marketRegime ?? 'weak_trend'] || REGIME_COLORS.weak_trend;
+  const glmProb = typeof signal.glmProbability === 'number' && !isNaN(signal.glmProbability) ? signal.glmProbability : 94.3;
+  // Safe confidence value — guard against NaN/null/undefined
+  const safeConfidence = typeof signal.confidence === 'number' && !isNaN(signal.confidence) ? signal.confidence : 0;
 
   // Safe accessors for deeply nested properties that may be null from API
   const strategy = signal.strategy || { title: '', entryRules: [], exitRules: [], riskManagement: [], avoidActions: [], confidenceNote: '' };
@@ -157,9 +159,10 @@ export function SignalCard({ signal, onFeedback }: SignalCardProps) {
       `📊 BB Width: ${signal.bbExpanding ? 'Expanding' : 'Contracting'}`,
       `⚖️ RR: 1:${signal.riskReward}`,
       ``,
-      `↪️ Risk Levels:`,
-      ...Object.entries(riskLevels).map(([key, level]) => {
-        return `  ${key} → ${level.multiplier}x  Entry Time (${level.time})   ← initial entry`;
+      `↪️ ── 🛡️ MARTINGALE RECOVERY (Risk Level) ──`,
+      ...Object.entries(riskLevels).map(([key, level], idx) => {
+        const entryLabel = idx === 0 ? '   ← initial entry' : '';
+        return `  ${key} → ${level.multiplier}x  Entry Time (${level.time})${entryLabel}`;
       }),
       ...(glmSmartMoney ? [
         ``,
@@ -178,6 +181,9 @@ export function SignalCard({ signal, onFeedback }: SignalCardProps) {
       `📐 SUPPORT/RESISTANCE:`,
       ...(nearestSupport && nearestSupport.price != null ? [`  ⬇ Support: ${safeToFixed(nearestSupport.price, priceDecimals(nearestSupport.price))} (Str: ${nearestSupport.strength ?? 0}${nearestSupport.isMajor ? ', Major' : ''})`] : []),
       ...(nearestResistance && nearestResistance.price != null ? [`  ⬆ Resistance: ${safeToFixed(nearestResistance.price, priceDecimals(nearestResistance.price))} (Str: ${nearestResistance.strength ?? 0}${nearestResistance.isMajor ? ', Major' : ''})`] : []),
+      ``,
+      `Note: Trade 1% - 3% of your capability and capital`,
+      `🎯 SIGNAL STATUS: ${signal.signalQuality || 'HIGH PROBABILITY ONLY'}`,
       ``,
       `🎯 GLM PROBABILITY: ${glmProb}% WIN RATE`,
       `   ${signal.signalQuality}`,
@@ -252,16 +258,16 @@ export function SignalCard({ signal, onFeedback }: SignalCardProps) {
         <div className="space-y-1">
           <div className="flex items-center justify-between">
             <span className="text-[10px] text-zinc-500 uppercase tracking-wider">AI Confidence</span>
-            <span className={`text-xs font-bold ${signal.confidence > 90 ? 'text-emerald-400' : signal.confidence > 85 ? 'text-yellow-400' : 'text-red-400'}`}>
-              {signal.confidence}%
+            <span className={`text-xs font-bold ${safeConfidence > 90 ? 'text-emerald-400' : safeConfidence > 85 ? 'text-yellow-400' : 'text-red-400'}`}>
+              {safeConfidence}%
             </span>
           </div>
           <Progress
-            value={signal.confidence}
+            value={safeConfidence}
             className="h-2 bg-zinc-800"
           />
           <p className="text-[10px] text-zinc-600">
-            {signal.signalQuality} • Score: {signal.checklistScore}%
+            {signal.signalQuality || 'N/A'} • Score: {typeof signal.checklistScore === 'number' && !isNaN(signal.checklistScore) ? signal.checklistScore : 0}%
           </p>
         </div>
 
@@ -298,19 +304,19 @@ export function SignalCard({ signal, onFeedback }: SignalCardProps) {
           <div className="bg-zinc-800/50 rounded-lg p-2">
             <Activity className="h-3 w-3 text-zinc-500 mx-auto mb-1" />
             <p className="text-[10px] text-zinc-500">RSI</p>
-            <p className="text-xs font-bold text-white">{signal.rsiValue}</p>
+            <p className="text-xs font-bold text-white">{typeof signal.rsiValue === 'number' && !isNaN(signal.rsiValue) ? signal.rsiValue : 'N/A'}</p>
           </div>
           <div className="bg-zinc-800/50 rounded-lg p-2">
             <BarChart3 className="h-3 w-3 text-zinc-500 mx-auto mb-1" />
             <p className="text-[10px] text-zinc-500">Trend</p>
             <p className={`text-xs font-bold ${isBuy ? 'text-emerald-400' : 'text-red-400'}`}>
-              {signal.trend}
+              {signal.trend || 'N/A'}
             </p>
           </div>
           <div className="bg-zinc-800/50 rounded-lg p-2">
             <Target className="h-3 w-3 text-zinc-500 mx-auto mb-1" />
             <p className="text-[10px] text-zinc-500">R:R</p>
-            <p className="text-xs font-bold text-white">1:{signal.riskReward}</p>
+            <p className="text-xs font-bold text-white">1:{typeof signal.riskReward === 'number' && !isNaN(signal.riskReward) ? signal.riskReward : 'N/A'}</p>
           </div>
         </div>
 
@@ -379,14 +385,14 @@ export function SignalCard({ signal, onFeedback }: SignalCardProps) {
           </div>
         )}
 
-        {/* Risk Levels */}
-        <div className="rounded-lg p-2 border border-zinc-700/50 bg-zinc-800/40">
+        {/* Risk Levels — Martingale Recovery */}
+        <div className="rounded-lg p-2 border border-yellow-500/20 bg-zinc-800/40">
           <div className="flex items-center gap-1.5 mb-1.5">
-            <Zap className="h-3.5 w-3.5 text-yellow-500" />
-            <span className="text-[10px] text-zinc-500 uppercase tracking-wider">Risk Levels</span>
+            <Shield className="h-3.5 w-3.5 text-yellow-500" />
+            <span className="text-[10px] text-zinc-500 uppercase tracking-wider">Martingale Recovery (Risk Level)</span>
           </div>
           <div className="space-y-1">
-            {Object.entries(riskLevels).map(([key, level]) => (
+            {Object.entries(riskLevels).map(([key, level], idx) => (
                 <div key={key} className="flex items-center justify-between bg-zinc-900/60 rounded px-2 py-0.5">
                   <div className="flex items-center gap-1.5">
                     <span className="text-[10px] font-bold text-yellow-400">{key}</span>
@@ -395,12 +401,13 @@ export function SignalCard({ signal, onFeedback }: SignalCardProps) {
                   </div>
                   <div className="flex items-center gap-1.5">
                     <Clock className="h-2.5 w-2.5 text-emerald-400" />
-                    <span className="text-[10px] text-emerald-400 font-mono font-bold">{level.time}</span>
-                    <span className="text-[8px] text-zinc-700">← initial entry</span>
+                    <span className="text-[10px] text-emerald-400 font-mono font-bold">Entry Time ({level.time})</span>
+                    {idx === 0 && <span className="text-[8px] text-yellow-500/70">← initial entry</span>}
                   </div>
                 </div>
               ))}
           </div>
+          <p className="text-[8px] text-zinc-600 mt-1.5">Trade 1% - 3% of your capability and capital</p>
         </div>
 
         {/* GLM Smart Money Engine */}

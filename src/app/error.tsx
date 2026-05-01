@@ -13,6 +13,9 @@ export default function Error({
     console.error('CATALYST AI Error:', error);
   }, [error]);
 
+  const errorMessage = error?.message || 'Unknown error';
+  const errorDigest = error?.digest;
+
   return (
     <div className="min-h-screen bg-zinc-950 flex items-center justify-center p-4">
       <div className="text-center space-y-4 max-w-md">
@@ -22,9 +25,14 @@ export default function Error({
           The trading engine encountered an unexpected error. This is usually temporary and
           can be resolved by refreshing the page.
         </p>
-        {error.message && (
-          <p className="text-xs text-zinc-600 font-mono bg-zinc-900 rounded p-2">
-            {error.message}
+        {errorMessage && (
+          <p className="text-xs text-zinc-600 font-mono bg-zinc-900 rounded p-2 break-all">
+            {errorMessage}
+          </p>
+        )}
+        {errorDigest && (
+          <p className="text-[10px] text-zinc-700">
+            Digest: {errorDigest}
           </p>
         )}
         <button

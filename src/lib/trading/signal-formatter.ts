@@ -76,15 +76,17 @@ export class SignalFormatter {
       lines.push(...this.formatGLMSmartMoneyPlain(signal.glmSmartMoney));
     }
 
-    // Risk Levels
-    lines.push('', '↪️ Risk Levels:');
+    // Risk Levels — Martingale Recovery
+    lines.push('', '↪️ ── 🛡️ MARTINGALE RECOVERY (Risk Level) ──');
     const riskEntriesPlain = Object.entries(signal.riskLevels);
     for (let i = 0; i < riskEntriesPlain.length; i++) {
       const [key, level] = riskEntriesPlain[i];
       const mult = typeof level === 'object' && level !== null && 'multiplier' in level ? level.multiplier : level;
       const time = typeof level === 'object' && level !== null && 'time' in level ? level.time : '';
-      lines.push(`  ${key} → ${mult}x  Entry Time (${time})   ← initial entry`);
+      const entryLabel = i === 0 ? '   ← initial entry' : '';
+      lines.push(`  ${key} → ${mult}x  Entry Time (${time})${entryLabel}`);
     }
+    lines.push('Note: Trade 1% - 3% of your capability and capital');
 
     // Engine Health
     if (signal.engineHealth) {
@@ -154,15 +156,17 @@ export class SignalFormatter {
       lines.push(...this.formatGLMSmartMoneyEmoji(signal.glmSmartMoney));
     }
 
-    // Risk Levels
-    lines.push('', '↪️ Risk Levels:');
+    // Risk Levels — Martingale Recovery
+    lines.push('', '↪️ ── 🛡️ MARTINGALE RECOVERY (Risk Level) ──');
     const riskEntries = Object.entries(signal.riskLevels);
     for (let i = 0; i < riskEntries.length; i++) {
       const [key, level] = riskEntries[i];
       const mult = typeof level === 'object' && level !== null && 'multiplier' in level ? level.multiplier : level;
       const time = typeof level === 'object' && level !== null && 'time' in level ? level.time : '';
-      lines.push(`  ${key} → ${mult}x  Entry Time (${time})   ← initial entry`);
+      const entryLabel = i === 0 ? '   ← initial entry' : '';
+      lines.push(`  ${key} → ${mult}x  Entry Time (${time})${entryLabel}`);
     }
+    lines.push('Note: Trade 1% - 3% of your capability and capital');
 
     // Strategy Guide (compact)
     if (signal.strategy) {
@@ -325,15 +329,17 @@ export class SignalFormatter {
       for (const r of signal.strategy.avoidActions) lines.push(`    ✗ ${r}`);
     }
 
-    // Risk Levels
-    lines.push('', '↪️ RISK LEVELS', '─────────────────');
+    // Risk Levels — Martingale Recovery
+    lines.push('', '↪️ MARTINGALE RECOVERY (Risk Level)', '─────────────────');
     const riskEntriesDetailed = Object.entries(signal.riskLevels);
     for (let i = 0; i < riskEntriesDetailed.length; i++) {
       const [key, level] = riskEntriesDetailed[i];
       const mult = typeof level === 'object' && level !== null && 'multiplier' in level ? level.multiplier : level;
       const time = typeof level === 'object' && level !== null && 'time' in level ? level.time : '';
-      lines.push(`  ${key} → ${mult}x  Entry Time (${time})   ← initial entry`);
+      const entryLabel = i === 0 ? '   ← initial entry' : '';
+      lines.push(`  ${key} → ${mult}x  Entry Time (${time})${entryLabel}`);
     }
+    lines.push('  Note: Trade 1% - 3% of your capability and capital');
 
     // Engine Health
     if (signal.engineHealth) {
@@ -446,7 +452,7 @@ export class SignalFormatter {
   private formatGLMSmartMoneyEmoji(glm: GLMSmartMoneyResult): string[] {
     const structureEmoji = glm.structure === 'BOS_UP' ? '🟢' : glm.structure === 'BOS_DOWN' ? '🔴' : '🟡';
     const liquidityEmoji = glm.liquidity === 'BUY_SWEEP' ? '🟢' : glm.liquidity === 'SELL_SWEEP' ? '🔴' : '⚪';
-    const breakoutEmoji = glm.breakout.startsWith('CONFIRMED') ? '🚀' : '❌';
+    const breakoutEmoji = (glm.breakout ?? '').startsWith('CONFIRMED') ? '🚀' : '❌';
     const signalEmoji = glm.signal === 'VALID_BUY' ? '✅ 🟢' : glm.signal === 'VALID_SELL' ? '✅ 🔴' : glm.signal === 'FILTERED_NO_TRADE' ? '❌' : '⏸';
 
     return [

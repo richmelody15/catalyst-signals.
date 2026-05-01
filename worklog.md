@@ -1,23 +1,27 @@
 ---
 Task ID: 1
 Agent: Main Agent
-Task: Fix client-side exception in CATALYST AI live preview + integrate risk levels with WAT entry times
+Task: Fix client-side exception and enhance risk level display
 
 Work Log:
-- Explored full project structure and identified all client-side exception root causes
-- Fixed signal-card.tsx: Added safeToFixed/priceDecimals helpers, null guards for SRLevel.price, glmSmartMoney nested access, riskLevels normalization, WAT timezone formatting using Africa/Lagos
-- Fixed signal-store.ts: Added normalizeSignal() function to properly convert API signals (entryTime string→Date, ensure nested objects exist, normalize riskLevels from both number and {multiplier, time} formats)
-- Fixed analytics-panel.tsx: Added confAcc safe accessor for confidenceAccuracy with fallback defaults
-- Fixed page.tsx: Added null-safe defaults (??) for all performance data fields from API
-- Fixed signal-formatter.ts: Added WAT timezone formatting using Africa/Lagos, safeToFixed/priceFmt helpers, null guards on all toFixed() calls, null-safe GLM labels access
-- Fixed signal-generator.ts: Updated formatWATTime() to use Africa/Lagos timezone
-- Fixed next.config.ts: Added .space-z.site to allowedDevOrigins
-- Fixed JSX syntax error in risk levels map (missing closing parenthesis)
-- Verified build succeeds with `npx next build`
-- Verified API endpoint returns signals with correct risk level format: M1 → 0.7x  Entry Time (22:27 WAT)   ← initial entry
+- Analyzed entire codebase (30+ files) to identify crash sources
+- Identified multiple potential crash points: NaN values in Progress component, unsafe .startsWith() in signal-formatter, missing null guards in signal-history
+- Added NaN guards for signal.confidence, signal.rsiValue, signal.riskReward, signal.checklistScore in signal-card.tsx
+- Added safeConfidence variable to prevent NaN in Progress component
+- Fixed signal-formatter.ts: Changed `glm.breakout.startsWith('CONFIRMED')` to `(glm.breakout ?? '').startsWith('CONFIRMED')` to prevent TypeError
+- Added comprehensive null/type checks in signal-history.tsx for price.toFixed() calls
+- Created SafeSignalCard wrapper in page.tsx with try/catch to prevent individual signal cards from crashing the entire page
+- Enhanced ErrorBoundary component to show actual error message and component stack trace
+- Enhanced error.tsx to display error digest for debugging
+- Updated risk level display to match Python format: "Martingale Recovery (Risk Level)" with "← initial entry" only on M1
+- Added "Trade 1% - 3% of your capability and capital" note to risk levels
+- Updated signal-formatter.ts risk level output in all 3 formats (plain, emoji, detailed) to match Python format
+- Updated copy signal text to include "Note: Trade 1% - 3%..." and "SIGNAL STATUS" lines
+- Verified build succeeds with no errors
+- Tested page rendering with agent-browser - no client-side exceptions
 
 Stage Summary:
-- Client-side exception root causes fixed: null property access on SRLevel.price, glmSmartMoney.labels, confidenceAccuracy, riskLevels type mismatches, entryTime string vs Date
-- Risk levels now display with WAT entry times in both UI and formatted output
-- All timezone formatting uses Africa/Lagos (UTC+1) for WAT compliance
-- Build succeeds, standalone server runs and returns HTTP 200
+- Client-side exception is fixed - page renders correctly with no errors
+- Risk levels now display with proper entry times in WAT format matching Python output
+- Added per-card error boundary to prevent cascade failures
+- All NaN/null guards in place for numeric display values

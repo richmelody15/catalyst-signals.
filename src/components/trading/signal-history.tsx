@@ -100,12 +100,12 @@ export function SignalHistory({ signals }: SignalHistoryProps) {
                     </TableCell>
                     <TableCell className="py-1.5">
                       <div className="flex flex-col gap-0.5">
-                        {signal.nearestSupport && signal.nearestSupport.price != null && (
+                        {signal.nearestSupport && signal.nearestSupport.price != null && typeof signal.nearestSupport.price === 'number' && !isNaN(signal.nearestSupport.price) && (
                           <span className="text-[9px] text-emerald-400/70">
                             S: {signal.nearestSupport.price.toFixed(signal.nearestSupport.price < 100 ? 4 : 2)}
                           </span>
                         )}
-                        {signal.nearestResistance && signal.nearestResistance.price != null && (
+                        {signal.nearestResistance && signal.nearestResistance.price != null && typeof signal.nearestResistance.price === 'number' && !isNaN(signal.nearestResistance.price) && (
                           <span className="text-[9px] text-red-400/70">
                             R: {signal.nearestResistance.price.toFixed(signal.nearestResistance.price < 100 ? 4 : 2)}
                           </span>
