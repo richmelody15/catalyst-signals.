@@ -113,7 +113,7 @@ export function SignalCard({ signal, onFeedback }: SignalCardProps) {
       ...Object.entries(signal.riskLevels).map(([key, level]) => {
         const mult = typeof level === 'object' && level !== null && 'multiplier' in level ? (level as { multiplier: number; time: string }).multiplier : level;
         const time = typeof level === 'object' && level !== null && 'time' in level ? (level as { multiplier: number; time: string }).time : '';
-        return `  ${key} → ${mult}x  Entry Time (${time})`;
+        return `  ${key} → ${mult}x  Entry Time (${time})   ← initial entry`;
       }),
       ``,
       `📋 STRATEGY GUIDE:`,
@@ -327,9 +327,10 @@ export function SignalCard({ signal, onFeedback }: SignalCardProps) {
                     <span className="text-[10px] font-bold text-white">{mult}x</span>
                     <span className="text-[9px] text-zinc-600">Entry Time</span>
                   </div>
-                  <span className="text-[10px] text-emerald-400 font-mono font-bold">
-                    {time}
-                  </span>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[10px] text-emerald-400 font-mono font-bold">{time}</span>
+                    <span className="text-[8px] text-zinc-700">← initial entry</span>
+                  </div>
                 </div>
               );
             })}

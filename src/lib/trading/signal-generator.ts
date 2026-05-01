@@ -266,28 +266,22 @@ export class SignalGenerator {
 
     if (confidence < TRADING_CONFIG.MIN_CONFIDENCE_SCORE) return null;
 
-    // Calculate risk levels based on ATR (deterministic, no Math.random())
-    const atrMultiplier1 = 1.5;
-    const atrMultiplier2 = 3.0;
-    const atrMultiplier3 = 6.5;
-    const riskUnit = atr > 0 ? atr : currentPrice * 0.001;
-
-    // Calculate WAT time for each Martingale level based on timeframe
-    // M1 = initial entry, M2 = entry + 1 TF (if M1 lost), M3 = entry + 2 TF (if M2 lost)
+    // Calculate risk levels based on timeframe-specific multipliers and intervals
+    // Converted from Python generate_risk_levels() reference
     const entryDate = new Date(Date.now() + 4 * 60 * 1000);
-    const tfMinutes = this.parseTimeframeToMinutes(timeframe);
+    const riskConfig = this.getRiskConfig(timeframe);
     const riskLevels = {
       M1: {
-        multiplier: +((riskUnit * atrMultiplier1 / currentPrice) * 100).toFixed(1),
+        multiplier: riskConfig.multipliers[0],
         time: this.formatWATTime(entryDate),
       },
       M2: {
-        multiplier: +((riskUnit * atrMultiplier2 / currentPrice) * 100).toFixed(1),
-        time: this.formatWATTime(new Date(entryDate.getTime() + tfMinutes * 1 * 60 * 1000)),
+        multiplier: riskConfig.multipliers[1],
+        time: this.formatWATTime(new Date(entryDate.getTime() + riskConfig.intervalMinutes * 1 * 60 * 1000)),
       },
       M3: {
-        multiplier: +((riskUnit * atrMultiplier3 / currentPrice) * 100).toFixed(1),
-        time: this.formatWATTime(new Date(entryDate.getTime() + tfMinutes * 2 * 60 * 1000)),
+        multiplier: riskConfig.multipliers[2],
+        time: this.formatWATTime(new Date(entryDate.getTime() + riskConfig.intervalMinutes * 2 * 60 * 1000)),
       },
     };
 
@@ -484,15 +478,40 @@ export class SignalGenerator {
   }
 
   /**
-   * Parse timeframe string to minutes.
-   * e.g. '30s' → 0.5, '45s' → 0.75, '1m' → 1, '2m' → 2, '3m' → 3, '5m' → 5
+   * Get risk configuration (multipliers + interval) for a given timeframe.
+   * Converted from Python generate_risk_levels() reference.
+   *
+   * Each timeframe has specific:
+   * - multipliers: [M1, M2, M3] stake multiplier values
+   * - intervalMinutes: minutes between each Martingale level
    */
-  private parseTimeframeToMinutes(timeframe: string): number {
-    const match = timeframe.match(/^(\d+)(s|m)$/i);
-    if (!match) return 1; // default 1 minute
-    const value = parseInt(match[1], 10);
-    const unit = match[2].toLowerCase();
-    return unit === 's' ? value / 60 : value;
+  private getRiskConfig(timeframe: string): { multipliers: [number, number, number]; intervalMinutes: number } {
+    const tf = timeframe.toLowerCase();
+
+    // 30-second and 45-second timeframes
+    if (tf === '30sec' || tf === '30s') {
+      return { multipliers: [0.4, 0.8, 1.5], intervalMinutes: 0.5 };
+    }
+    if (tf === '45sec' || tf === '45s') {
+      return { multipliers: [0.5, 1.0, 2.0], intervalMinutes: 0.75 };
+    }
+
+    // Map of all other timeframe configs
+    const riskConfigMap: Record<string, { multipliers: [number, number, number]; intervalMinutes: number }> = {
+      's3':  { multipliers: [0.5, 1.0, 2.0], intervalMinutes: 1 },
+      's15': { multipliers: [0.6, 1.2, 2.5], intervalMinutes: 1.5 },
+      's30': { multipliers: [0.65, 1.3, 2.8], intervalMinutes: 1.5 },
+      's45': { multipliers: [0.7, 1.4, 3.0], intervalMinutes: 1.5 },
+      '1m':  { multipliers: [0.7, 1.5, 3.2], intervalMinutes: 2 },
+      '2m':  { multipliers: [0.8, 1.8, 3.5], intervalMinutes: 3 },
+      '3m':  { multipliers: [0.9, 2.0, 4.0], intervalMinutes: 4 },
+      '5m':  { multipliers: [1.0, 2.2, 4.5], intervalMinutes: 5 },
+      '30m': { multipliers: [1.1, 2.5, 5.0], intervalMinutes: 15 },
+      '1h':  { multipliers: [1.2, 2.8, 5.5], intervalMinutes: 30 },
+      '4h':  { multipliers: [1.3, 3.0, 6.0], intervalMinutes: 60 },
+    };
+
+    return riskConfigMap[tf] || { multipliers: [0.7, 1.5, 3.2], intervalMinutes: 2 };
   }
 
   /**

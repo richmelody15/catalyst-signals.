@@ -75,7 +75,7 @@ export class SignalFormatter {
     for (const [key, level] of Object.entries(signal.riskLevels)) {
       const mult = typeof level === 'object' && level !== null && 'multiplier' in level ? level.multiplier : level;
       const time = typeof level === 'object' && level !== null && 'time' in level ? level.time : '';
-      lines.push(`  ${key} -> ${mult}x  Entry Time (${time})`);
+      lines.push(`  ${key} -> ${mult}x  Entry Time (${time})   ← initial entry`);
     }
 
     // Engine Health
@@ -145,7 +145,7 @@ export class SignalFormatter {
     for (const [key, level] of Object.entries(signal.riskLevels)) {
       const mult = typeof level === 'object' && level !== null && 'multiplier' in level ? level.multiplier : level;
       const time = typeof level === 'object' && level !== null && 'time' in level ? level.time : '';
-      lines.push(`  💰 ${key} → ${mult}x  Entry Time (${time})`);
+      lines.push(`  💰 ${key} → ${mult}x  Entry Time (${time})   ← initial entry`);
     }
 
     // Strategy Guide (compact)
@@ -308,7 +308,7 @@ export class SignalFormatter {
     for (const [key, level] of Object.entries(signal.riskLevels)) {
       const mult = typeof level === 'object' && level !== null && 'multiplier' in level ? level.multiplier : level;
       const time = typeof level === 'object' && level !== null && 'time' in level ? level.time : '';
-      lines.push(`  ${key}: ${mult}x  Entry Time (${time})`);
+      lines.push(`  ${key}: ${mult}x  Entry Time (${time})   ← initial entry`);
     }
 
     // Engine Health
