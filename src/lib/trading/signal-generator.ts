@@ -271,10 +271,23 @@ export class SignalGenerator {
     const atrMultiplier2 = 3.0;
     const atrMultiplier3 = 6.5;
     const riskUnit = atr > 0 ? atr : currentPrice * 0.001;
+
+    // Calculate WAT time for each Martingale level based on timeframe
+    const entryDate = new Date(Date.now() + 4 * 60 * 1000);
+    const tfMinutes = this.parseTimeframeToMinutes(timeframe);
     const riskLevels = {
-      M1: +((riskUnit * atrMultiplier1 / currentPrice) * 100).toFixed(1),
-      M2: +((riskUnit * atrMultiplier2 / currentPrice) * 100).toFixed(1),
-      M3: +((riskUnit * atrMultiplier3 / currentPrice) * 100).toFixed(1),
+      M1: {
+        multiplier: +((riskUnit * atrMultiplier1 / currentPrice) * 100).toFixed(1),
+        time: this.formatWATTime(new Date(entryDate.getTime() + tfMinutes * 1 * 60 * 1000)),
+      },
+      M2: {
+        multiplier: +((riskUnit * atrMultiplier2 / currentPrice) * 100).toFixed(1),
+        time: this.formatWATTime(new Date(entryDate.getTime() + tfMinutes * 2 * 60 * 1000)),
+      },
+      M3: {
+        multiplier: +((riskUnit * atrMultiplier3 / currentPrice) * 100).toFixed(1),
+        time: this.formatWATTime(new Date(entryDate.getTime() + tfMinutes * 3 * 60 * 1000)),
+      },
     };
 
     // ── Market Regime Detection ──
@@ -467,6 +480,27 @@ export class SignalGenerator {
 
   clearSignals(): void {
     this.generatedSignals = [];
+  }
+
+  /**
+   * Parse timeframe string to minutes.
+   * e.g. '30s' → 0.5, '45s' → 0.75, '1m' → 1, '2m' → 2, '3m' → 3, '5m' → 5
+   */
+  private parseTimeframeToMinutes(timeframe: string): number {
+    const match = timeframe.match(/^(\d+)(s|m)$/i);
+    if (!match) return 1; // default 1 minute
+    const value = parseInt(match[1], 10);
+    const unit = match[2].toLowerCase();
+    return unit === 's' ? value / 60 : value;
+  }
+
+  /**
+   * Format a Date to HH:MM WAT string.
+   */
+  private formatWATTime(date: Date): string {
+    const hours = date.getHours().toString().padStart(2, '0');
+    const minutes = date.getMinutes().toString().padStart(2, '0');
+    return `${hours}:${minutes} WAT`;
   }
 
   /**

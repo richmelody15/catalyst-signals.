@@ -149,3 +149,31 @@ Stage Summary:
 - Full pipeline: Indicators → Price Action → MTF → S/D Zones → Quality Check → Confidence → GLM → Signal Format
 - Dynamic GLM probability: 85.0-97.5% based on quality/confluence/MTF/zone metrics
 - Production build succeeds with zero errors
+
+---
+Task ID: 4
+Agent: Main Agent
+Task: Add WAT time to Risk Levels (M1, M2, M3 Martingale levels)
+
+Work Log:
+- Updated types.ts: Changed `riskLevels: Record<string, number>` to `Record<string, { multiplier: number; time: string }>`
+- Updated signal-generator.ts:
+  - Added `parseTimeframeToMinutes()` helper to convert timeframe strings (30s, 45s, 1m, 2m, 3m, 5m) to minutes
+  - Added `formatWATTime()` helper to format Date objects as HH:MM WAT
+  - M1 time = entry + 1x timeframe duration, M2 = +2x, M3 = +3x
+  - Risk levels now include both multiplier and WAT time
+- Updated signal-card.tsx:
+  - Redesigned Risk Levels section: expanded from inline badges to a bordered panel with per-level rows
+  - Each row shows: Level name → Multiplier x (HH:MM WAT)
+  - Copy signal text also includes WAT time
+- Updated signal-formatter.ts:
+  - All 4 format styles (plain, emoji, compact, detailed) now include WAT time in risk levels
+  - Example: `M1 → 2.8x (19:17 WAT)`
+- Rebuilt production bundle successfully
+- Tested: 45s signals show ~1min intervals, 3m signals show 3min intervals between M1/M2/M3
+
+Stage Summary:
+- Risk levels now display WAT time for each Martingale level: M1 → 2.8x (19:17 WAT)
+- Time intervals match the signal's timeframe (e.g., 3m = 3-min gaps, 45s = ~1-min gaps)
+- Updated in types, generator, card UI, and all 4 formatter output styles
+- Production server restarted and verified

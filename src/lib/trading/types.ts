@@ -158,7 +158,7 @@ export interface Signal {
   bbExpanding: boolean;
   adrStatus: string;
   riskReward: number;
-  riskLevels: Record<string, number>;
+  riskLevels: Record<string, { multiplier: number; time: string }>;
   signalQuality: string;
   checklistScore: number;
   platform: string;

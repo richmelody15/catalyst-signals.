@@ -110,7 +110,11 @@ export function SignalCard({ signal, onFeedback }: SignalCardProps) {
       `⚖️ RR: 1:${signal.riskReward}`,
       ``,
       `↪️ Risk Levels:`,
-      ...Object.entries(signal.riskLevels).map(([key, value]) => `  ${key} → ${value}x`),
+      ...Object.entries(signal.riskLevels).map(([key, level]) => {
+        const mult = typeof level === 'object' && level !== null && 'multiplier' in level ? (level as { multiplier: number; time: string }).multiplier : level;
+        const time = typeof level === 'object' && level !== null && 'time' in level ? (level as { multiplier: number; time: string }).time : '';
+        return `  ${key} → ${mult}x  (${time})`;
+      }),
       ``,
       `📋 STRATEGY GUIDE:`,
       ...(signal.strategy?.entryRules?.map((r: string) => `  ✅ ${r}`) || []),
@@ -306,14 +310,25 @@ export function SignalCard({ signal, onFeedback }: SignalCardProps) {
         )}
 
         {/* Risk Levels */}
-        <div className="flex items-center gap-1">
-          <Zap className="h-3 w-3 text-yellow-500" />
-          <span className="text-[10px] text-zinc-500 mr-1">Risk:</span>
-          {Object.entries(signal.riskLevels).map(([key, value]) => (
-            <Badge key={key} variant="outline" className="text-[9px] h-4 border-zinc-700 text-zinc-400 px-1.5">
-              {key}: {value}x
-            </Badge>
-          ))}
+        <div className="rounded-lg p-2 border border-zinc-700/50 bg-zinc-800/40">
+          <div className="flex items-center gap-1.5 mb-1.5">
+            <Zap className="h-3.5 w-3.5 text-yellow-500" />
+            <span className="text-[10px] text-zinc-500 uppercase tracking-wider">Risk Levels</span>
+          </div>
+          <div className="space-y-1">
+            {Object.entries(signal.riskLevels).map(([key, level]) => (
+              <div key={key} className="flex items-center justify-between bg-zinc-900/60 rounded px-2 py-0.5">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[10px] font-bold text-yellow-400">{key}</span>
+                  <span className="text-[10px] text-zinc-500">→</span>
+                  <span className="text-[10px] font-bold text-white">{typeof level === 'object' && level !== null && 'multiplier' in level ? (level as { multiplier: number; time: string }).multiplier : level}x</span>
+                </div>
+                <span className="text-[10px] text-zinc-400 font-mono">
+                  {typeof level === 'object' && level !== null && 'time' in level ? (level as { multiplier: number; time: string }).time : ''}
+                </span>
+              </div>
+            ))}
+          </div>
         </div>
 
         {/* Zone & Market Condition */}
