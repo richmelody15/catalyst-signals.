@@ -20,12 +20,16 @@ interface SignalHistoryProps {
 
 export function SignalHistory({ signals }: SignalHistoryProps) {
   const formatTime = (time: Date | string) => {
-    const t = new Date(time).toLocaleTimeString([], {
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: false,
-    });
-    return `${t} WAT`;
+    try {
+      const t = new Date(time).toLocaleTimeString([], {
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+      });
+      return `${t} WAT`;
+    } catch {
+      return '--:-- WAT';
+    }
   };
 
   return (
@@ -96,12 +100,12 @@ export function SignalHistory({ signals }: SignalHistoryProps) {
                     </TableCell>
                     <TableCell className="py-1.5">
                       <div className="flex flex-col gap-0.5">
-                        {signal.nearestSupport && (
+                        {signal.nearestSupport && signal.nearestSupport.price != null && (
                           <span className="text-[9px] text-emerald-400/70">
                             S: {signal.nearestSupport.price.toFixed(signal.nearestSupport.price < 100 ? 4 : 2)}
                           </span>
                         )}
-                        {signal.nearestResistance && (
+                        {signal.nearestResistance && signal.nearestResistance.price != null && (
                           <span className="text-[9px] text-red-400/70">
                             R: {signal.nearestResistance.price.toFixed(signal.nearestResistance.price < 100 ? 4 : 2)}
                           </span>
