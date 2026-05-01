@@ -110,7 +110,7 @@ export function SignalCard({ signal, onFeedback }: SignalCardProps) {
       `⚖️ RR: 1:${signal.riskReward}`,
       ``,
       `↪️ Risk Levels:`,
-      ...Object.entries(signal.riskLevels).map(([key, level]) => {
+      ...Object.entries(signal.riskLevels).map(([key, level], idx) => {
         const mult = typeof level === 'object' && level !== null && 'multiplier' in level ? (level as { multiplier: number; time: string }).multiplier : level;
         const time = typeof level === 'object' && level !== null && 'time' in level ? (level as { multiplier: number; time: string }).time : '';
         return `  ${key} → ${mult}x  Entry Time (${time})   ← initial entry`;
@@ -316,7 +316,7 @@ export function SignalCard({ signal, onFeedback }: SignalCardProps) {
             <span className="text-[10px] text-zinc-500 uppercase tracking-wider">Risk Levels</span>
           </div>
           <div className="space-y-1">
-            {Object.entries(signal.riskLevels).map(([key, level]) => {
+            {Object.entries(signal.riskLevels).map(([key, level], idx) => {
               const mult = typeof level === 'object' && level !== null && 'multiplier' in level ? (level as { multiplier: number; time: string }).multiplier : level;
               const time = typeof level === 'object' && level !== null && 'time' in level ? (level as { multiplier: number; time: string }).time : '';
               return (
@@ -328,7 +328,7 @@ export function SignalCard({ signal, onFeedback }: SignalCardProps) {
                     <span className="text-[9px] text-zinc-600">Entry Time</span>
                   </div>
                   <div className="flex items-center gap-1.5">
-                    <span className="text-[10px] text-emerald-400 font-mono font-bold">{time}</span>
+                    <span className="text-[10px] text-emerald-400 font-mono font-bold">({time})</span>
                     <span className="text-[8px] text-zinc-700">← initial entry</span>
                   </div>
                 </div>

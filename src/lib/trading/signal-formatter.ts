@@ -72,7 +72,9 @@ export class SignalFormatter {
 
     // Risk Levels
     lines.push('', 'RISK LEVELS:');
-    for (const [key, level] of Object.entries(signal.riskLevels)) {
+    const riskEntriesPlain = Object.entries(signal.riskLevels);
+    for (let i = 0; i < riskEntriesPlain.length; i++) {
+      const [key, level] = riskEntriesPlain[i];
       const mult = typeof level === 'object' && level !== null && 'multiplier' in level ? level.multiplier : level;
       const time = typeof level === 'object' && level !== null && 'time' in level ? level.time : '';
       lines.push(`  ${key} -> ${mult}x  Entry Time (${time})   ← initial entry`);
@@ -142,10 +144,12 @@ export class SignalFormatter {
 
     // Risk Levels
     lines.push('', '↪️ Risk Levels:');
-    for (const [key, level] of Object.entries(signal.riskLevels)) {
+    const riskEntries = Object.entries(signal.riskLevels);
+    for (let i = 0; i < riskEntries.length; i++) {
+      const [key, level] = riskEntries[i];
       const mult = typeof level === 'object' && level !== null && 'multiplier' in level ? level.multiplier : level;
       const time = typeof level === 'object' && level !== null && 'time' in level ? level.time : '';
-      lines.push(`  💰 ${key} → ${mult}x  Entry Time (${time})   ← initial entry`);
+      lines.push(`  ${key} → ${mult}x  Entry Time (${time})   ← initial entry`);
     }
 
     // Strategy Guide (compact)
@@ -305,7 +309,9 @@ export class SignalFormatter {
 
     // Risk Levels
     lines.push('', 'RISK LEVELS', '─────────────────');
-    for (const [key, level] of Object.entries(signal.riskLevels)) {
+    const riskEntriesDetailed = Object.entries(signal.riskLevels);
+    for (let i = 0; i < riskEntriesDetailed.length; i++) {
+      const [key, level] = riskEntriesDetailed[i];
       const mult = typeof level === 'object' && level !== null && 'multiplier' in level ? level.multiplier : level;
       const time = typeof level === 'object' && level !== null && 'time' in level ? level.time : '';
       lines.push(`  ${key}: ${mult}x  Entry Time (${time})   ← initial entry`);
