@@ -1,0 +1,12 @@
+{
+  "min_overall": 92.0,
+  "min_confluences": 8,
+  "thresholds": {
+    "structure": 90,
+    "technical": 90,
+    "liquidity": 90,
+    "zones": 85,
+    "volume_momentum": 85,
+    "candle_pattern": 80
+  }
+}
