@@ -295,22 +295,30 @@ export class SignalGenerator {
 
     if (confidence < TRADING_CONFIG.MIN_CONFIDENCE_SCORE) return null;
 
-    // Calculate risk levels based on timeframe-specific multipliers and intervals
-    // Converted from Python generate_risk_levels() reference
+    // Calculate risk levels based on confidence-based multipliers and timeframe-specific seconds offsets
+    // Converted from Python perfect_signal_engine.py / otc_blitz_engine.py reference
+    // Multipliers: confidence >= 90 → [2.2, 4.8, 10.5], >= 85 → [2.5, 5.5, 12.0], else → [2.8, 6.2, 13.5]
+    // Time offsets (seconds): 30s→[30,60,90], 45s→[45,90,135], 1m→[60,120,180], 2m→[120,240,360], 3m→[180,360,540], 5m→[300,600,900]
+    const confidencePct = confidence * 100;
+    const baseStake = 1; // $1 base stake
+    const multipliers = this.getConfidenceMultipliers(confidencePct);
     const entryDate = new Date(Date.now() + 4 * 60 * 1000);
-    const riskConfig = this.getRiskConfig(timeframe);
+    const timeOffsets = this.getTimeOffsets(timeframe);
     const riskLevels = {
       M1: {
-        multiplier: riskConfig.multipliers[0],
-        time: this.formatWATTime(entryDate),
+        multiplier: multipliers[0],
+        amount: +(multipliers[0] * baseStake).toFixed(1),
+        time: this.formatWATTime(new Date(entryDate.getTime() + timeOffsets[0] * 1000)),
       },
       M2: {
-        multiplier: riskConfig.multipliers[1],
-        time: this.formatWATTime(new Date(entryDate.getTime() + riskConfig.intervalMinutes * 1 * 60 * 1000)),
+        multiplier: multipliers[1],
+        amount: +(multipliers[1] * baseStake).toFixed(1),
+        time: this.formatWATTime(new Date(entryDate.getTime() + timeOffsets[1] * 1000)),
       },
       M3: {
-        multiplier: riskConfig.multipliers[2],
-        time: this.formatWATTime(new Date(entryDate.getTime() + riskConfig.intervalMinutes * 2 * 60 * 1000)),
+        multiplier: multipliers[2],
+        amount: +(multipliers[2] * baseStake).toFixed(1),
+        time: this.formatWATTime(new Date(entryDate.getTime() + timeOffsets[2] * 1000)),
       },
     };
 
@@ -528,40 +536,40 @@ export class SignalGenerator {
   }
 
   /**
-   * Get risk configuration (multipliers + interval) for a given timeframe.
-   * Converted from Python generate_risk_levels() reference.
+   * Get confidence-based martingale multipliers.
+   * Converted from Python perfect_signal_engine.py / otc_blitz_engine.py.
    *
-   * Each timeframe has specific:
-   * - multipliers: [M1, M2, M3] stake multiplier values
-   * - intervalMinutes: minutes between each Martingale level
+   * Confidence >= 90 → [2.2, 4.8, 10.5] (high confidence = lower recovery stakes)
+   * Confidence >= 85 → [2.5, 5.5, 12.0]
+   * Else             → [2.8, 6.2, 13.5] (lower confidence = higher recovery stakes)
    */
-  private getRiskConfig(timeframe: string): { multipliers: [number, number, number]; intervalMinutes: number } {
+  private getConfidenceMultipliers(confidencePct: number): [number, number, number] {
+    if (confidencePct >= 90) return [2.2, 4.8, 10.5];
+    if (confidencePct >= 85) return [2.5, 5.5, 12.0];
+    return [2.8, 6.2, 13.5];
+  }
+
+  /**
+   * Get martingale entry time offsets in seconds for each timeframe.
+   * Converted from Python perfect_signal_engine.py _calculate_entry_times().
+   *
+   * Each timeframe has specific second-based offsets for M1, M2, M3 entry times.
+   * These represent the cumulative seconds from the base entry time.
+   */
+  private getTimeOffsets(timeframe: string): [number, number, number] {
     const tf = timeframe.toLowerCase();
-
-    // 30-second and 45-second timeframes
-    if (tf === '30sec' || tf === '30s') {
-      return { multipliers: [0.4, 0.8, 1.5], intervalMinutes: 0.5 };
-    }
-    if (tf === '45sec' || tf === '45s') {
-      return { multipliers: [0.5, 1.0, 2.0], intervalMinutes: 0.75 };
-    }
-
-    // Map of all other timeframe configs
-    const riskConfigMap: Record<string, { multipliers: [number, number, number]; intervalMinutes: number }> = {
-      's3':  { multipliers: [0.5, 1.0, 2.0], intervalMinutes: 1 },
-      's15': { multipliers: [0.6, 1.2, 2.5], intervalMinutes: 1.5 },
-      's30': { multipliers: [0.65, 1.3, 2.8], intervalMinutes: 1.5 },
-      's45': { multipliers: [0.7, 1.4, 3.0], intervalMinutes: 1.5 },
-      '1m':  { multipliers: [0.7, 1.5, 3.2], intervalMinutes: 2 },
-      '2m':  { multipliers: [0.8, 1.8, 3.5], intervalMinutes: 3 },
-      '3m':  { multipliers: [0.9, 2.0, 4.0], intervalMinutes: 4 },
-      '5m':  { multipliers: [1.0, 2.2, 4.5], intervalMinutes: 5 },
-      '30m': { multipliers: [1.1, 2.5, 5.0], intervalMinutes: 15 },
-      '1h':  { multipliers: [1.2, 2.8, 5.5], intervalMinutes: 30 },
-      '4h':  { multipliers: [1.3, 3.0, 6.0], intervalMinutes: 60 },
+    const offsetMap: Record<string, [number, number, number]> = {
+      '30s':  [30, 60, 90],
+      '45s':  [45, 90, 135],
+      '1m':   [60, 120, 180],
+      '2m':   [120, 240, 360],
+      '3m':   [180, 360, 540],
+      '5m':   [300, 600, 900],
+      '15m':  [900, 1800, 2700],
+      '30m':  [1800, 3600, 5400],
+      '1h':   [3600, 7200, 10800],
     };
-
-    return riskConfigMap[tf] || { multipliers: [0.7, 1.5, 3.2], intervalMinutes: 2 };
+    return offsetMap[tf] || [60, 120, 180]; // default: same as 1m
   }
 
   /**

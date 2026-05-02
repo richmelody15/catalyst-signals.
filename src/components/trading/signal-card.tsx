@@ -216,18 +216,19 @@ export function SignalCard({ signal, onFeedback }: SignalCardProps) {
     : null;
 
   // Risk Levels — safe normalization
-  const riskLevels: Record<string, { multiplier: number; time: string }> = {};
+  const riskLevels: Record<string, { multiplier: number; time: string; amount: number }> = {};
   const rawRiskLevels = signal?.riskLevels;
   if (rawRiskLevels && typeof rawRiskLevels === 'object') {
     for (const [key, val] of Object.entries(rawRiskLevels)) {
       if (val != null && typeof val === 'object' && 'multiplier' in (val as object)) {
-        const obj = val as { multiplier?: unknown; time?: unknown };
+        const obj = val as { multiplier?: unknown; time?: unknown; amount?: unknown };
         riskLevels[key] = {
           multiplier: safeNum(obj.multiplier, 0),
-          time: typeof obj.time === 'string' ? obj.time : '--:-- WAT',
+          time: typeof obj.time === 'string' && obj.time ? obj.time : '--:-- WAT',
+          amount: safeNum(obj.amount, 0),
         };
       } else if (typeof val === 'number') {
-        riskLevels[key] = { multiplier: val, time: '--:-- WAT' };
+        riskLevels[key] = { multiplier: val, time: '--:-- WAT', amount: 0 };
       }
     }
   }
@@ -235,9 +236,8 @@ export function SignalCard({ signal, onFeedback }: SignalCardProps) {
   // ─── Copy Signal Handler ──────────────────────────────────────────
 
   const copySignal = async () => {
-    const riskLevelLines = Object.entries(riskLevels).map(([key, level], idx) => {
-      const entryLabel = idx === 0 ? '   ← initial entry' : '';
-      return `  ${key} → ${level.multiplier}x  Entry Time (${level.time})${entryLabel}`;
+    const riskLevelLines = Object.entries(riskLevels).map(([key, level]) => {
+      return `  ${key} │ ${level.multiplier}x │ $${level.amount} │ Entry: ${level.time}`;
     });
 
     const text = signal?.formatted?.emoji || [
@@ -502,13 +502,16 @@ export function SignalCard({ signal, onFeedback }: SignalCardProps) {
                 <div key={key} className="flex items-center justify-between bg-zinc-900/60 rounded px-2 py-0.5">
                   <div className="flex items-center gap-1.5">
                     <span className="text-[10px] font-bold text-yellow-400">{key}</span>
-                    <span className="text-[10px] text-zinc-500">→</span>
+                    <span className="text-[10px] text-zinc-600">│</span>
                     <span className="text-[10px] font-bold text-white">{level.multiplier}x</span>
+                    <span className="text-[10px] text-zinc-600">│</span>
+                    <span className="text-[10px] font-bold text-emerald-400">${level.amount}</span>
+                    <span className="text-[10px] text-zinc-600">│</span>
                   </div>
-                  <div className="flex items-center gap-1.5">
+                  <div className="flex items-center gap-1">
                     <Clock className="h-2.5 w-2.5 text-emerald-400" />
-                    <span className="text-[10px] text-emerald-400 font-mono font-bold">Entry Time ({level.time})</span>
-                    {idx === 0 && <span className="text-[8px] text-yellow-500/70">← initial entry</span>}
+                    <span className="text-[10px] text-emerald-400 font-mono font-bold">Entry: {level.time}</span>
+                    {idx === 0 && <span className="text-[8px] text-yellow-500/70 ml-1">← initial</span>}
                   </div>
                 </div>
               ))

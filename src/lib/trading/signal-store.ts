@@ -170,19 +170,20 @@ function normalizeEngineHealth(raw: unknown): Signal['engineHealth'] {
 /**
  * Normalize risk levels from API: accept both number[] and {multiplier, time}[]
  */
-function normalizeRiskLevels(raw: unknown): Record<string, { multiplier: number; time: string }> {
-  const result: Record<string, { multiplier: number; time: string }> = {};
+function normalizeRiskLevels(raw: unknown): Record<string, { multiplier: number; time: string; amount: number }> {
+  const result: Record<string, { multiplier: number; time: string; amount: number }> = {};
   if (!raw || typeof raw !== 'object') return result;
   try {
     for (const [key, val] of Object.entries(raw as Record<string, unknown>)) {
       if (val != null && typeof val === 'object' && 'multiplier' in (val as object)) {
-        const obj = val as { multiplier?: unknown; time?: unknown };
+        const obj = val as { multiplier?: unknown; time?: unknown; amount?: unknown };
         result[key] = {
           multiplier: typeof obj.multiplier === 'number' && isFinite(obj.multiplier as number) ? obj.multiplier as number : 0,
-          time: typeof obj.time === 'string' ? obj.time : '--:-- WAT',
+          time: typeof obj.time === 'string' && obj.time ? obj.time : '--:-- WAT',
+          amount: typeof obj.amount === 'number' && isFinite(obj.amount as number) ? obj.amount as number : 0,
         };
       } else if (typeof val === 'number' && isFinite(val)) {
-        result[key] = { multiplier: val, time: '--:-- WAT' };
+        result[key] = { multiplier: val, time: '--:-- WAT', amount: 0 };
       }
     }
   } catch { /* ignore malformed riskLevels */ }

@@ -83,8 +83,9 @@ export class SignalFormatter {
       const [key, level] = riskEntriesPlain[i];
       const mult = typeof level === 'object' && level !== null && 'multiplier' in level ? level.multiplier : level;
       const time = typeof level === 'object' && level !== null && 'time' in level ? level.time : '';
+      const amount = typeof level === 'object' && level !== null && 'amount' in level ? level.amount : 0;
       const entryLabel = i === 0 ? '   ← initial entry' : '';
-      lines.push(`  ${key} → ${mult}x  Entry Time (${time})${entryLabel}`);
+      lines.push(`  ${key} │ ${mult}x │ $${amount} │ Entry: ${time}${entryLabel}`);
     }
     lines.push('Note: Trade 1% - 3% of your capability and capital');
 
@@ -163,8 +164,9 @@ export class SignalFormatter {
       const [key, level] = riskEntries[i];
       const mult = typeof level === 'object' && level !== null && 'multiplier' in level ? level.multiplier : level;
       const time = typeof level === 'object' && level !== null && 'time' in level ? level.time : '';
+      const amount = typeof level === 'object' && level !== null && 'amount' in level ? level.amount : 0;
       const entryLabel = i === 0 ? '   ← initial entry' : '';
-      lines.push(`  ${key} → ${mult}x  Entry Time (${time})${entryLabel}`);
+      lines.push(`  ${key} │ ${mult}x │ $${amount} │ Entry: ${time}${entryLabel}`);
     }
     lines.push('Note: Trade 1% - 3% of your capability and capital');
 
@@ -336,8 +338,9 @@ export class SignalFormatter {
       const [key, level] = riskEntriesDetailed[i];
       const mult = typeof level === 'object' && level !== null && 'multiplier' in level ? level.multiplier : level;
       const time = typeof level === 'object' && level !== null && 'time' in level ? level.time : '';
+      const amount = typeof level === 'object' && level !== null && 'amount' in level ? level.amount : 0;
       const entryLabel = i === 0 ? '   ← initial entry' : '';
-      lines.push(`  ${key} → ${mult}x  Entry Time (${time})${entryLabel}`);
+      lines.push(`  ${key} │ ${mult}x │ $${amount} │ Entry: ${time}${entryLabel}`);
     }
     lines.push('  Note: Trade 1% - 3% of your capability and capital');
 

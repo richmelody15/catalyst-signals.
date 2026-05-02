@@ -180,7 +180,7 @@ export interface Signal {
   bbExpanding: boolean;
   adrStatus: string;
   riskReward: number;
-  riskLevels: Record<string, { multiplier: number; time: string }>;
+  riskLevels: Record<string, { multiplier: number; time: string; amount: number }>;
   signalQuality: string;
   checklistScore: number;
   platform: string;
