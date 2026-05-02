@@ -1,11 +1,12 @@
 """
 Precise Technical Indicator Calculator
 No NaN, no Inf — every value is guaranteed valid.
+Includes candlestick patterns: engulfing, rejection, volume profile.
 """
 import numpy as np
 import pandas as pd
 import logging
-from typing import Dict
+from typing import Dict, Tuple
 from backend.app.core.auto_fixer import AutoFixer
 
 logger = logging.getLogger(__name__)
@@ -100,6 +101,59 @@ class PreciseIndicators:
         atr_val = pd.Series(tr).ewm(alpha=1.0 / period, adjust=False).mean().iloc[-1]
         return float(atr_val) if not pd.isna(atr_val) else 0.001
 
+    # ============================================================
+    # CANDLESTICK PATTERN DETECTION
+    # ============================================================
+    @staticmethod
+    def engulfing(df: pd.DataFrame) -> Tuple[bool, str]:
+        """Detect bullish/bearish engulfing patterns."""
+        if len(df) < 2:
+            return False, 'none'
+        prev = df.iloc[-2]
+        curr = df.iloc[-1]
+        prev_body = abs(prev['close'] - prev['open'])
+        curr_body = abs(curr['close'] - curr['open'])
+        if curr_body < prev_body:
+            return False, 'none'
+        # Bullish engulfing
+        if prev['close'] < prev['open'] and curr['close'] > curr['open'] and \
+           curr['open'] <= prev['close'] and curr['close'] >= prev['open']:
+            return True, 'bullish'
+        # Bearish engulfing
+        if prev['close'] > prev['open'] and curr['close'] < curr['open'] and \
+           curr['open'] >= prev['close'] and curr['close'] <= prev['open']:
+            return True, 'bearish'
+        return False, 'none'
+
+    @staticmethod
+    def rejection(df: pd.DataFrame) -> Tuple[bool, str]:
+        """Detect rejection/pin-bar candlestick patterns."""
+        if len(df) < 1:
+            return False, 'none'
+        c = df.iloc[-1]
+        body = abs(c['close'] - c['open'])
+        rng = c['high'] - c['low']
+        if rng == 0:
+            return False, 'none'
+        upper_wick = c['high'] - max(c['open'], c['close'])
+        lower_wick = min(c['open'], c['close']) - c['low']
+        # Bearish rejection: long upper wick
+        if upper_wick > 2 * body and lower_wick < 0.3 * rng:
+            return True, 'bearish'
+        # Bullish rejection: long lower wick (hammer)
+        if lower_wick > 2 * body and upper_wick < 0.3 * rng:
+            return True, 'bullish'
+        return False, 'none'
+
+    @staticmethod
+    def volume_profile(df: pd.DataFrame) -> bool:
+        """Detect if current volume is a spike (>1.8x average)."""
+        vol = df['volume'].values
+        if len(vol) < 20:
+            return False
+        avg = np.mean(vol[-20:-1])
+        return bool(vol[-1] > avg * 1.8)
+
     @staticmethod
     def calculate_all(data: pd.DataFrame) -> dict:
         """Calculate all indicators with guaranteed valid output."""
@@ -119,11 +173,10 @@ class PreciseIndicators:
         ema200 = PreciseIndicators.ema(close, 200)
         atr_val = PreciseIndicators.atr(high, low, close)
 
-        # Volume spike
+        # Volume analysis
         avg_vol = float(np.mean(vol[-20:-1])) if len(vol) >= 21 else float(np.mean(vol))
-        vol_spike = bool(vol[-1] > avg_vol * 1.5) if avg_vol > 0 else False
+        vol_spike = bool(vol[-1] > avg_vol * 1.8) if avg_vol > 0 else False
 
-        # Volume trend
         if len(vol) >= 6:
             recent_avg = np.mean(vol[-3:])
             prev_avg = np.mean(vol[-6:-3])
@@ -142,11 +195,19 @@ class PreciseIndicators:
         # Squeeze
         squeeze = bb < 0.05
 
+        # Candlestick patterns
+        eng, eng_dir = PreciseIndicators.engulfing(data)
+        rej, rej_dir = PreciseIndicators.rejection(data)
+        vol_q = PreciseIndicators.volume_profile(data)
+
         return AutoFixer.fix_indicators({
             'rsi': rsi_val, 'stoch_k': stoch_k, 'stoch_d': stoch_d,
             'adx': adx_val, 'bb_width': bb, 'bb_width_prev': bb_prev,
             'ema50': ema50, 'ema200': ema200, 'atr': atr_val,
             'volatility': bb * 10,
             'volume_spike': vol_spike, 'volume_trend': vol_trend,
-            'current_price': price, 'momentum': momentum, 'squeeze': squeeze
+            'current_price': price, 'momentum': momentum, 'squeeze': squeeze,
+            'engulfing': eng, 'engulfing_dir': eng_dir,
+            'rejection': rej, 'rejection_dir': rej_dir,
+            'vol_quality': vol_q
         })

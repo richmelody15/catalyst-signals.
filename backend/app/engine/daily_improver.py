@@ -1,11 +1,12 @@
 """
 Daily Improver — Scheduled self-improvement tasks
 Runs daily to optimize filter weights based on recent performance data.
+Targets 95%+ win rate.
 """
 import sqlite3
 import logging
 from datetime import datetime, timedelta
-from typing import Dict
+from typing import Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -15,11 +16,12 @@ class DailyImprover:
     Runs daily improvement tasks:
     1. Review trade outcomes and adjust adaptive weights
     2. Identify best/worst performing pairs and timeframes
-    3. Optimize filter thresholds based on win rate
+    3. Optimize filter thresholds based on win rate (target: 95%)
     """
 
-    def __init__(self, db_path: str = "trading_performance.db"):
+    def __init__(self, db_path: str = "trading_performance.db", filter_obj=None):
         self.db_path = db_path
+        self.filter = filter_obj
 
     def run_daily_improvement(self):
         """Main entry point — called by the scheduler."""
@@ -27,6 +29,7 @@ class DailyImprover:
         try:
             self._review_and_adjust_weights()
             self._optimize_thresholds()
+            self._adjust_filter_for_95_target()
             self._cleanup_old_data()
         except Exception as e:
             logger.error(f"Daily improvement failed: {e}")
@@ -85,6 +88,55 @@ class DailyImprover:
                 wr = stats['wins'] / stats['total'] * 100
                 if wr < 50:
                     logger.warning(f"Low win rate: {key} = {wr:.1f}%")
+
+    def _adjust_filter_for_95_target(self):
+        """Adjust Ultra95Filter thresholds based on recent win rate."""
+        if self.filter is None:
+            return
+
+        wr = self._recent_win_rate(days=7)
+
+        if wr < 0.95:
+            # Tighten filters to improve win rate
+            self.filter.min_overall = min(98, self.filter.min_overall + 1.0)
+            self.filter.min_confluences = min(9, self.filter.min_confluences + 1)
+            logger.info(f"Win rate {wr:.2%} < 95% — tightening: min_overall={self.filter.min_overall}, confluences={self.filter.min_confluences}")
+        elif wr > 0.98:
+            # Win rate very high — can slightly relax to get more signals
+            total = self._total_trades(days=7)
+            if total > 50:  # Only relax with sufficient data
+                self.filter.min_overall = max(92, self.filter.min_overall - 0.5)
+                self.filter.min_confluences = max(7, self.filter.min_confluences - 1)
+                logger.info(f"Win rate {wr:.2%} > 98% with {total} trades — relaxing: min_overall={self.filter.min_overall}, confluences={self.filter.min_confluences}")
+
+    def _recent_win_rate(self, days: int = 7) -> float:
+        """Get win rate for recent trades."""
+        conn = sqlite3.connect(self.db_path)
+        cur = conn.cursor()
+        cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+        cur.execute("""
+            SELECT outcome FROM trades
+            WHERE outcome != 'pending' AND entry_time >= ?
+        """, (cutoff,))
+        rows = cur.fetchall()
+        conn.close()
+        if not rows:
+            return 0.0
+        wins = sum(1 for r in rows if r[0] == 'win')
+        return wins / len(rows)
+
+    def _total_trades(self, days: int = 7) -> int:
+        """Get total number of evaluated trades."""
+        conn = sqlite3.connect(self.db_path)
+        cur = conn.cursor()
+        cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+        cur.execute("""
+            SELECT COUNT(*) FROM trades
+            WHERE outcome != 'pending' AND entry_time >= ?
+        """, (cutoff,))
+        count = cur.fetchone()[0]
+        conn.close()
+        return count
 
     def _cleanup_old_data(self):
         """Remove old pending trades (>7 days)."""

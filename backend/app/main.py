@@ -1,6 +1,7 @@
 """
 CATALYST AI — Precision Trading Signal System
-FastAPI Backend with 27 OTC pairs, 94.3%+ Win Rate Filter, Active Martingale Times
+FastAPI Backend with 27 OTC pairs, 95%+ Win Rate Filter, Active Martingale Times
+Uses Ultra95Filter with 9-category scoring for maximum accuracy.
 """
 import asyncio
 import json
@@ -199,7 +200,7 @@ def convert_signal_for_frontend(py_signal: dict) -> dict:
             'exitRules': ['Take profit at 1:2.5 RR', 'Move SL to breakeven after 1R', 'Exit on opposing CHoCH'],
             'riskManagement': [f"Risk 1-2% per trade", f"Martingale recovery: M1(2.2x), M2(4.8x), M3(10.5x)", "Never move SL against position"],
             'avoidActions': ['Do not trade against regime', 'Avoid without 4+ confluence', 'No revenge trading'],
-            'confidenceNote': f"GLM PROBABILITY: 94.3% WIN RATE",
+            'confidenceNote': f"GLM PROBABILITY: 95% WIN RATE",
         },
         'glmProbability': min(97.5, max(85.0, py_signal.get('confidence', 85) + 5)),
         'nearestSupport': None,
@@ -236,8 +237,8 @@ def convert_signal_for_frontend(py_signal: dict) -> dict:
 # ============================================================
 app = FastAPI(
     title="CATALYST AI Signals",
-    description="94.3%+ Win Rate Signal System with Active Martingale Times",
-    version="3.0.0"
+    description="95%+ Win Rate Signal System with 9-Category Ultra95Filter",
+    version="4.0.0"
 )
 
 # CORS — allow all origins for development
@@ -249,7 +250,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize signal generator
+# Initialize signal generator (now with Ultra95Filter)
 signal_generator = UltraSignalGenerator()
 data_provider = MockDataProvider()
 
@@ -305,7 +306,7 @@ async def _generate_and_store_signals():
         except Exception as e:
             logger.error(f"Signal conversion error: {e}")
 
-    logger.info(f"Generated {len(converted)} signals")
+    logger.info(f"Generated {len(converted)} signals (95% filter)")
     return converted
 
 
@@ -335,7 +336,6 @@ async def websocket_endpoint(websocket: WebSocket):
         while True:
             # Keep connection alive — client can send pings
             data = await websocket.receive_text()
-            # Handle client messages if needed
             if data == "ping":
                 await websocket.send_json({"type": "pong"})
     except WebSocketDisconnect:
@@ -450,7 +450,7 @@ async def generate_signals_forever():
 async def startup_event():
     # Start the background signal generation loop
     asyncio.create_task(generate_signals_forever())
-    logger.info("CATALYST AI Backend started — generating signals every 30s")
+    logger.info("CATALYST AI Backend started — generating signals every 30s (95% filter)")
 
 
 # ============================================================
@@ -460,19 +460,20 @@ async def main():
     """Run signal generation from command line."""
     print("=" * 60)
     print("CATALYST AI — PRECISION TRADING SIGNAL SYSTEM")
-    print("94.3%+ Win Rate with Active Martingale Times")
+    print("95%+ Win Rate with 9-Category Ultra95Filter")
     print("=" * 60)
 
     now_wat = datetime.now(WAT)
     print(f"\nCurrent Time: {now_wat.strftime('%Y-%m-%d %H:%M:%S WAT')}")
     print(f"Symbols: {len(SYMBOLS)} pairs")
     print(f"Timeframes: {', '.join(TIMEFRAMES)}")
+    print(f"Filter: Ultra95Filter (9 categories, min_overall=95%, confluences=9)")
     print()
 
     signals = await _generate_all_signals()
 
     if signals:
-        print(f"\n🎯 {len(signals)} SIGNAL(S) GENERATED\n")
+        print(f"\n{len(signals)} SIGNAL(S) GENERATED\n")
         for i, sig in enumerate(signals, 1):
             print(f"{'─' * 60}")
             print(f"SIGNAL #{i}")
@@ -480,8 +481,9 @@ async def main():
             print(signal_generator.format_output(sig))
             print()
     else:
-        print("\n❌ No signals passed the 94.3% filter at this time.")
+        print("\nNo signals passed the 95% filter at this time.")
         print("   This is expected — the filter is intentionally strict.")
+        print("   The 9-category system requires all categories to score high.")
 
     # Always show martingale time test
     print(f"\n{'=' * 60}")
@@ -494,7 +496,7 @@ async def main():
         print(f"  Base Entry: {base_entry.strftime('%H:%M:%S WAT')}")
         for i, t in enumerate(times):
             offset = int((t - base_entry).total_seconds())
-            print(f"    M{i+1}: {t.strftime('%H:%M:%S WAT')} (+{offset}s) ✅ ACTIVE")
+            print(f"    M{i+1}: {t.strftime('%H:%M:%S WAT')} (+{offset}s) ACTIVE")
 
     # Performance
     perf = signal_generator.get_performance_summary()

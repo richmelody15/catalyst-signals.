@@ -1,17 +1,19 @@
 """
 Market Structure, Supply/Demand Zone, and Liquidity Analyzers
+Includes multi-timeframe alignment detection.
 """
 import numpy as np
 import pandas as pd
 import logging
 from typing import Dict, List
+from datetime import datetime
 from backend.app.core.auto_fixer import AutoFixer
 
 logger = logging.getLogger(__name__)
 
 
 class StructureAnalyzer:
-    """Smart Money Concepts market structure analysis."""
+    """Smart Money Concepts market structure analysis with multi-TF alignment."""
 
     @staticmethod
     def analyze(data: pd.DataFrame) -> dict:
@@ -23,6 +25,7 @@ class StructureAnalyzer:
         trend = 'neutral'
         bos = False
         choch = False
+        mlt_aligned = False
 
         if len(highs) >= 20:
             # Swing detection
@@ -58,6 +61,17 @@ class StructureAnalyzer:
             elif trend == 'bearish' and closes[-1] > np.max(highs[-5:-1]):
                 choch = True
 
+            # Multi-timeframe alignment check
+            if len(data) >= 40:
+                try:
+                    higher = data.resample('5min').agg({'high': 'max', 'low': 'min', 'close': 'last'}).dropna()
+                    if len(higher) >= 10:
+                        hh = higher['high'].values
+                        if higher['close'].iloc[-1] > max(hh[-5:-1]):
+                            mlt_aligned = True
+                except Exception:
+                    mlt_aligned = False
+
         # BOS pending (near structural level)
         bos_pending = False
         if not bos and len(highs) > 10:
@@ -82,7 +96,8 @@ class StructureAnalyzer:
             'bos_confirmed': bos,
             'choch_confirmed': choch,
             'bos_pending': bos_pending,
-            'choch_pending': choch_pending
+            'choch_pending': choch_pending,
+            'multi_tf_aligned': mlt_aligned
         }
 
 
@@ -153,7 +168,7 @@ class LiquidityDetector:
                 sweep = True
                 sweep_type = 'sell_side'
 
-        # Equal highs/lows detection
+        # Equal highs/lows detection (liquidity building)
         eq_high = len(highs) >= 3 and (max(highs) - min(highs)) < np.mean(highs) * 0.001
         eq_low = len(lows) >= 3 and (max(lows) - min(lows)) < np.mean(lows) * 0.001
 
