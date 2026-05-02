@@ -1,8 +1,28 @@
 // GET /api/v1/analytics/performance - Get performance analytics
+// Tries Python backend first, falls back to local engine
 import { NextResponse } from 'next/server';
 import { learningEngine, signalGenerator, ensureInitialized } from '@/lib/trading/engine-singleton';
 
+const PYTHON_BACKEND_URL = process.env.PYTHON_BACKEND_URL || 'http://127.0.0.1:8000';
+
 export async function GET() {
+  // Try Python backend first
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
+    const res = await fetch(`${PYTHON_BACKEND_URL}/api/v1/analytics/performance`, {
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+    if (res.ok) {
+      const data = await res.json();
+      return NextResponse.json(data);
+    }
+  } catch {
+    // Python backend unavailable, fall through to local
+  }
+
+  // Fallback to local engine
   try {
     ensureInitialized();
 

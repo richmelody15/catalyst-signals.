@@ -1,24 +1,40 @@
 'use client';
 
 import { useEffect, useRef, useCallback, useState } from 'react';
-import { io, Socket } from 'socket.io-client';
 import { useTradingStore } from './signal-store';
 import type { Signal } from './types';
 
 /**
- * WebSocket hook that connects to the signal-ws mini-service via socket.io.
- * Uses the Caddy gateway XTransformPort pattern to route to port 3003.
+ * WebSocket hook that connects to the Python backend WebSocket on port 8000.
+ * Falls back to the Node.js signal-ws service if Python backend is unavailable.
  *
- * The WS service pushes signals via 'new_signal' events every 8-15 seconds.
+ * The Python backend pushes signals via 'new_signal' events every ~30 seconds.
  * When a signal is received, it's normalized and added to the Zustand store.
  */
+
+const PYTHON_WS_URL = process.env.NEXT_PUBLIC_PYTHON_WS_URL || '';
+
 export function useSignalWebSocket() {
-  const socketRef = useRef<Socket | null>(null);
+  const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const reconnectCountRef = useRef(0);
   const { addSignal, setConnected, platform } = useTradingStore();
   const [backendAvailable, setBackendAvailable] = useState(false);
 
-  // Connect to signal-ws mini-service via socket.io through Caddy gateway
+  // Determine the Python backend WebSocket URL
+  function getPythonWsUrl(): string {
+    // If explicitly set via env var, use it
+    if (PYTHON_WS_URL) return PYTHON_WS_URL;
+
+    // Otherwise, construct from current location
+    if (typeof window === 'undefined') return '';
+
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    // Try port 8000 directly (Python backend)
+    const host = window.location.hostname || 'localhost';
+    return `${protocol}//${host}:8000/ws`;
+  }
+
   useEffect(() => {
     if (typeof window === 'undefined') return; // SSR guard
 
@@ -27,77 +43,96 @@ export function useSignalWebSocket() {
     function connect() {
       if (cancelled) return;
 
-      try {
-        // Use socket.io with XTransformPort for Caddy gateway routing
-        const socket = io('/?XTransformPort=3003', {
-          transports: ['websocket', 'polling'],
-          reconnection: true,
-          reconnectionAttempts: 20,
-          reconnectionDelay: 3000,
-          reconnectionDelayMax: 10000,
-          timeout: 10000,
-        });
+      const wsUrl = getPythonWsUrl();
+      if (!wsUrl) return;
 
-        socket.on('connect', () => {
+      try {
+        console.log('[WS] Connecting to Python backend:', wsUrl);
+        const ws = new WebSocket(wsUrl);
+
+        ws.onopen = () => {
           if (cancelled) return;
-          console.log('[WS] Connected to signal-ws service via socket.io');
+          console.log('[WS] Connected to Python backend');
           setConnected(true);
           setBackendAvailable(true);
+          reconnectCountRef.current = 0;
 
-          // Subscribe to current platform
-          socket.emit('subscribe', platform);
-        });
+          // Send ping to verify connection
+          try { ws.send('ping'); } catch { /* ignore */ }
+        };
 
-        socket.on('connected', (data) => {
-          if (cancelled) return;
-          console.log('[WS] Server welcome:', data);
-        });
-
-        socket.on('new_signal', (data: Record<string, unknown>) => {
+        ws.onmessage = (event) => {
           if (cancelled) return;
           try {
-            // The signal from WS service may have slightly different shape
-            // The store's normalizeSignal handles all edge cases
-            addSignal(data as unknown as Signal);
+            const data = JSON.parse(event.data);
+
+            // Handle pong response
+            if (data.type === 'pong') return;
+
+            // Handle new signal from Python backend
+            if (data.type === 'new_signal') {
+              const signalData = data.signal || data;
+
+              // The Python backend sends signals in frontend-compatible format
+              // but we still need to normalize the entry_time
+              if (signalData.entry_time && typeof signalData.entry_time === 'string') {
+                signalData.entryTime = signalData.entry_time;
+              }
+
+              // Map Python backend martingale to frontend riskLevels format
+              if (signalData.martingale && Array.isArray(signalData.martingale) && !signalData.riskLevels) {
+                const riskLevels: Record<string, { multiplier: number; time: string; amount: number }> = {};
+                for (const m of signalData.martingale) {
+                  const mEntryTime = m.entry_time;
+                  let timeStr = '--:-- WAT';
+                  if (typeof mEntryTime === 'string') {
+                    try {
+                      const d = new Date(mEntryTime);
+                      timeStr = d.toLocaleTimeString('en-GB', {
+                        hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Africa/Lagos',
+                      }) + ' WAT';
+                    } catch { /* ignore */ }
+                  }
+                  riskLevels[m.level || `M${riskLevels.length + 1}`] = {
+                    multiplier: m.multiplier || 0,
+                    amount: m.amount || 0,
+                    time: timeStr,
+                  };
+                }
+                signalData.riskLevels = riskLevels;
+              }
+
+              addSignal(signalData as unknown as Signal);
+            }
           } catch (e) {
-            console.warn('[WS] Failed to add signal:', e);
+            console.warn('[WS] Failed to parse message:', e);
           }
-        });
+        };
 
-        socket.on('platform_signal', (data: Record<string, unknown>) => {
+        ws.onclose = (event) => {
           if (cancelled) return;
-          try {
-            addSignal(data as unknown as Signal);
-          } catch (e) {
-            console.warn('[WS] Failed to add platform signal:', e);
-          }
-        });
-
-        socket.on('heartbeat', (data) => {
-          // Connection alive — could update UI with client count etc.
-        });
-
-        socket.on('feedback_recorded', (data) => {
-          console.log('[WS] Feedback recorded:', data);
-        });
-
-        socket.on('disconnect', (reason) => {
-          if (cancelled) return;
-          console.log('[WS] Disconnected:', reason);
+          console.log('[WS] Disconnected:', event.code, event.reason);
           setConnected(false);
           setBackendAvailable(false);
-        });
 
-        socket.on('connect_error', (error) => {
+          // Exponential backoff reconnection
+          reconnectCountRef.current++;
+          const delay = Math.min(3000 * Math.pow(1.5, reconnectCountRef.current - 1), 30000);
+          reconnectTimerRef.current = setTimeout(() => {
+            if (!cancelled) connect();
+          }, delay);
+        };
+
+        ws.onerror = (error) => {
           if (cancelled) return;
-          console.warn('[WS] Connection error:', error.message);
+          console.warn('[WS] Connection error');
           setConnected(false);
           setBackendAvailable(false);
-        });
+        };
 
-        socketRef.current = socket;
+        wsRef.current = ws;
       } catch (err) {
-        console.warn('[WS] Failed to initialize socket.io:', err);
+        console.warn('[WS] Failed to initialize:', err);
         setConnected(false);
         setBackendAvailable(false);
 
@@ -115,24 +150,26 @@ export function useSignalWebSocket() {
       if (reconnectTimerRef.current) {
         clearTimeout(reconnectTimerRef.current);
       }
-      if (socketRef.current) {
-        socketRef.current.disconnect();
-        socketRef.current = null;
+      if (wsRef.current) {
+        wsRef.current.close();
+        wsRef.current = null;
       }
     };
   }, [addSignal, setConnected, platform]);
 
-  // Request signal from WS service
+  // Request signal from backend
   const requestSignal = useCallback(() => {
-    if (socketRef.current && socketRef.current.connected) {
-      socketRef.current.emit('request_signal');
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      try { wsRef.current.send('request_signal'); } catch { /* ignore */ }
     }
   }, []);
 
-  // Submit feedback to WS service
+  // Submit feedback to backend
   const submitFeedback = useCallback((signalId: string, outcome: 'win' | 'loss') => {
-    if (socketRef.current && socketRef.current.connected) {
-      socketRef.current.emit('signal_feedback', { signalId, outcome });
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      try {
+        wsRef.current.send(JSON.stringify({ type: 'feedback', signalId, outcome }));
+      } catch { /* ignore */ }
     }
   }, []);
 

@@ -1,6 +1,9 @@
 // POST /api/v1/signals/evaluate - Submit signal outcome for learning
+// Tries Python backend first, falls back to local engine
 import { NextResponse } from 'next/server';
 import { learningEngine } from '@/lib/trading/engine-singleton';
+
+const PYTHON_BACKEND_URL = process.env.PYTHON_BACKEND_URL || 'http://127.0.0.1:8000';
 
 export async function POST(request: Request) {
   try {
@@ -21,6 +24,22 @@ export async function POST(request: Request) {
       );
     }
 
+    // Try to record in Python backend
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 3000);
+      await fetch(`${PYTHON_BACKEND_URL}/api/v1/signals/evaluate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ signalId, outcome }),
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
+    } catch {
+      // Python backend unavailable, still record locally
+    }
+
+    // Also record in local learning engine
     await learningEngine.processOutcome(
       signalId,
       outcome,

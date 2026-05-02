@@ -1,10 +1,42 @@
-// POST /api/v1/signals/generate - Generate new signals (for demo/simulation)
+// POST /api/v1/signals/generate - Generate new signals
+// Tries Python backend first, falls back to local engine
 import { NextResponse } from 'next/server';
 import { signalGenerator, marketSimulator, ensureInitialized } from '@/lib/trading/engine-singleton';
 import { TRADING_PAIRS, TIMEFRAMES } from '@/lib/trading/types';
 import type { Signal } from '@/lib/trading/types';
 
+const PYTHON_BACKEND_URL = process.env.PYTHON_BACKEND_URL || 'http://127.0.0.1:8000';
+
 export async function POST(request: Request) {
+  // Try Python backend first
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
+    const res = await fetch(`${PYTHON_BACKEND_URL}/api/v1/signals/generate`, {
+      method: 'POST',
+      signal: controller.signal,
+      headers: { 'Content-Type': 'application/json' },
+    });
+    clearTimeout(timeout);
+    if (res.ok) {
+      const data = await res.json();
+      if (data.signals && Array.isArray(data.signals) && data.signals.length > 0) {
+        // Python backend signals are already in frontend-compatible format
+        return NextResponse.json({
+          success: true,
+          signalsGenerated: data.signalsGenerated,
+          signals: data.signals,
+          source: 'python-backend',
+          timestamp: data.timestamp || new Date().toISOString(),
+        });
+      }
+    }
+  } catch {
+    // Python backend unavailable, fall through to local
+    console.log('[generate] Python backend unavailable, using local engine');
+  }
+
+  // Fallback to local engine
   try {
     ensureInitialized();
 
@@ -55,6 +87,7 @@ export async function POST(request: Request) {
       success: true,
       signalsGenerated: newSignals.length,
       signals: safeSignals,
+      source: 'local-engine',
       timestamp: new Date().toISOString(),
     });
   } catch (error) {
@@ -65,6 +98,7 @@ export async function POST(request: Request) {
       success: true,
       signalsGenerated: fallback ? 1 : 0,
       signals: fallback ? [safeSerializeSignal(fallback)] : [],
+      source: 'fallback',
       timestamp: new Date().toISOString(),
     });
   }
@@ -113,24 +147,6 @@ function generateDemoSignal(): Signal {
       exitRules: ['Target opposite boundary', 'Exit on break of range with volume', 'Take profit at 1:2 R:R minimum'],
       riskManagement: ['Risk 1% per trade', 'Stops outside range boundary', 'GLM Probability: 94.3% win rate'],
       avoidActions: ['Do not use trend-following strategies', 'Avoid breakout entries without volume'],
-    },
-    volatile: {
-      entryRules: ['Reduce position size', 'Wait for volatility contraction', 'Focus on liquidity sweeps and rejection wicks'],
-      exitRules: ['Use wider take profit targets', 'Exit on any opposing structure break', 'Take partial profits early'],
-      riskManagement: ['Reduce position size by 50%', 'Use wider stops', 'GLM Probability: 94.3% win rate'],
-      avoidActions: ['Do not over-leverage in volatile conditions', 'Avoid trading without 94.3%+ filter'],
-    },
-    breakout: {
-      entryRules: ['Enter on retest of broken level', 'Confirm with volume and BOS', 'Use breakout range height for target'],
-      exitRules: ['Target measured move from breakout', 'Trail stop below breakout level', 'Exit if price fails to hold above breakout'],
-      riskManagement: ['Risk 1-2% per trade', 'Stop below breakout candle', 'GLM Probability: 94.3% win rate'],
-      avoidActions: ['Do not chase the breakout candle', 'Avoid entering without retest confirmation'],
-    },
-    quiet: {
-      entryRules: ['Do not trade inside the range', 'Set breakout alerts at boundaries', 'Prepare orders above/below range'],
-      exitRules: ['Target breakout measured move', 'Use range width for projection', 'Exit on failed breakout'],
-      riskManagement: ['Minimal risk until breakout', 'Use tight stops on breakout entries', 'GLM Probability: 94.3% win rate'],
-      avoidActions: ['Do not force trades in quiet markets', 'Avoid low-volume entries'],
     },
   };
 
