@@ -1,6 +1,7 @@
 'use client';
 
-import { useState, useEffect, useCallback, ComponentType } from 'react';
+import React from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -17,32 +18,58 @@ import {
   LayoutDashboard,
   BarChart3,
   Clock,
-  Settings,
   Zap,
   Activity,
 } from 'lucide-react';
 
-/**
- * Safe wrapper around SignalCard that catches rendering errors per-card.
- * Prevents one broken signal from crashing the entire page.
- */
-function SafeSignalCard({ signal, onFeedback }: { signal: Signal; onFeedback?: (signalId: string, outcome: 'win' | 'loss') => void }) {
-  try {
-    return <SignalCard signal={signal} onFeedback={onFeedback} />;
-  } catch (err) {
-    console.error('SignalCard render error:', err);
-    return (
-      <div className="border border-red-400/30 bg-red-400/5 rounded-lg p-3 text-center">
-        <p className="text-xs text-red-400">Signal render error — data may be incomplete</p>
-        <p className="text-[10px] text-zinc-600 mt-1">{signal.tradePair || 'Unknown'} • {signal.direction || 'N/A'}</p>
-      </div>
-    );
+// ─── Per-Card Error Boundary ──────────────────────────────────────
+// React render errors can ONLY be caught by class-based Error Boundaries.
+// try/catch around JSX does NOT work — the error propagates through the
+// React reconciler and crashes the entire page.
+
+interface CardErrorBoundaryState {
+  hasError: boolean;
+  error: Error | null;
+}
+
+class CardErrorBoundary extends React.Component<
+  { children: React.ReactNode; fallback?: React.ReactNode },
+  CardErrorBoundaryState
+> {
+  constructor(props: { children: React.ReactNode; fallback?: React.ReactNode }) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error: Error): CardErrorBoundaryState {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: Error, info: React.ErrorInfo) {
+    console.error('[CardErrorBoundary] Signal card render error:', error, info.componentStack);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      if (this.props.fallback) return this.props.fallback;
+      return (
+        <div className="border border-red-400/30 bg-red-400/5 rounded-lg p-4 text-center">
+          <p className="text-xs text-red-400">Signal render error — data may be incomplete</p>
+          <button
+            className="text-[10px] text-zinc-500 hover:text-white mt-1 underline"
+            onClick={() => this.setState({ hasError: false, error: null })}
+          >
+            Retry
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
   }
 }
 
 export default function Home() {
   // Client-side hydration guard — prevents SSR/client mismatch
-  // for dynamic content (WebSocket state, dates, etc.)
   const [isClient, setIsClient] = useState(false);
 
   const {
@@ -134,9 +161,13 @@ export default function Home() {
       clearTimeout(timeout);
       if (res.ok) {
         const data = await res.json();
-        if (data.signals) {
+        if (data.signals && Array.isArray(data.signals)) {
           for (const signal of data.signals) {
-            addSignal(signal);
+            try {
+              addSignal(signal);
+            } catch (e) {
+              console.error('[Home] Failed to add signal:', e);
+            }
           }
         }
       }
@@ -289,8 +320,17 @@ export default function Home() {
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
                 {signals.map((signal, index) => (
-                  <div key={signal.id} className="signal-enter" style={{ animationDelay: `${index * 50}ms` }}>
-                    <SafeSignalCard signal={signal} onFeedback={handleFeedback} />
+                  <div key={signal.id || `sig-${index}`} className="signal-enter" style={{ animationDelay: `${index * 50}ms` }}>
+                    <CardErrorBoundary
+                      fallback={
+                        <div className="border border-yellow-500/30 bg-zinc-900/80 rounded-lg p-4">
+                          <p className="text-xs text-yellow-400">Signal data incomplete — refreshing...</p>
+                          <p className="text-[10px] text-zinc-600 mt-1">{signal.tradePair || 'Unknown'} • {signal.direction || 'N/A'}</p>
+                        </div>
+                      }
+                    >
+                      <SignalCard signal={signal} onFeedback={handleFeedback} />
+                    </CardErrorBoundary>
                   </div>
                 ))}
               </div>
