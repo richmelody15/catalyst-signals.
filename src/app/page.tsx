@@ -82,7 +82,7 @@ export default function Home() {
     addSignal,
   } = useTradingStore();
 
-  const { requestSignal, submitFeedback } = useSignalWebSocket();
+  const { requestSignal, submitFeedback, backendAvailable } = useSignalWebSocket();
   const [activeTab, setActiveTab] = useState('signals');
   const [isGenerating, setIsGenerating] = useState(false);
 
@@ -152,21 +152,52 @@ export default function Home() {
   const generateSignals = useCallback(async () => {
     setIsGenerating(true);
     try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 15000);
-      const res = await fetch('/api/v1/signals/generate?XTransformPort=3000', {
-        method: 'POST',
-        signal: controller.signal,
-      });
-      clearTimeout(timeout);
-      if (res.ok) {
-        const data = await res.json();
-        if (data.signals && Array.isArray(data.signals)) {
-          for (const signal of data.signals) {
-            try {
-              addSignal(signal);
-            } catch (e) {
-              console.error('[Home] Failed to add signal:', e);
+      // Try Python backend first
+      const PYTHON_BACKEND_HTTP = process.env.NEXT_PUBLIC_PYTHON_BACKEND_HTTP || 'http://localhost:8000';
+      let signalsFromBackend = false;
+
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 5000);
+        const res = await fetch(`${PYTHON_BACKEND_HTTP}/api/signals/${platform}`, {
+          signal: controller.signal,
+        });
+        clearTimeout(timeout);
+        if (res.ok) {
+          const data = await res.json();
+          if (data.signals && Array.isArray(data.signals) && data.signals.length > 0) {
+            for (const signal of data.signals) {
+              try {
+                addSignal(signal);
+              } catch (e) {
+                console.error('[Home] Failed to add backend signal:', e);
+              }
+            }
+            signalsFromBackend = true;
+          }
+        }
+      } catch {
+        // Python backend not available — fall through to internal generation
+      }
+
+      // Fallback: Use internal Next.js signal generator
+      if (!signalsFromBackend) {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 15000);
+        const res = await fetch('/api/v1/signals/generate?XTransformPort=3000', {
+          method: 'POST',
+          signal: controller.signal,
+        });
+        clearTimeout(timeout);
+        if (res.ok) {
+          const data = await res.json();
+          if (data.signals && Array.isArray(data.signals)) {
+            for (const signal of data.signals) {
+              try {
+                addSignal(signal);
+              } catch (e) {
+                console.error('[Home] Failed to add signal:', e);
+              }
             }
           }
         }
@@ -176,7 +207,7 @@ export default function Home() {
     } finally {
       setIsGenerating(false);
     }
-  }, [addSignal]);
+  }, [addSignal, platform]);
 
   const handleFeedback = useCallback(
     async (signalId: string, outcome: 'win' | 'loss') => {

@@ -1,79 +1,104 @@
 'use client';
 
-import { useEffect, useRef, useCallback } from 'react';
+import { useEffect, useRef, useCallback, useState } from 'react';
 import { useTradingStore } from './signal-store';
 import type { Signal } from './types';
 
-// Lazy-load socket.io only when needed to avoid SSR issues
-let _io: typeof import('socket.io-client').io | null = null;
-async function getIO() {
-  if (!_io) {
-    try {
-      const mod = await import('socket.io-client');
-      _io = mod.io;
-    } catch {
-      // socket.io-client not available
-      return null;
-    }
-  }
-  return _io;
-}
+// Backend URL configuration
+const PYTHON_BACKEND_WS = process.env.NEXT_PUBLIC_PYTHON_BACKEND_WS || 'ws://localhost:8000/ws';
+const PYTHON_BACKEND_HTTP = process.env.NEXT_PUBLIC_PYTHON_BACKEND_HTTP || 'http://localhost:8000';
 
+/**
+ * WebSocket hook that connects to the Python FastAPI backend.
+ * Supports both native WebSocket (for Python backend) and socket.io fallback.
+ *
+ * The Python backend pushes signals via native WebSocket at /ws endpoint.
+ * When a signal is received, it's normalized and added to the Zustand store.
+ */
 export function useSignalWebSocket() {
-  const socketRef = useRef<ReturnType<typeof import('socket.io-client').io> | null>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+  const reconnectTimerRef = useRef<NodeJS.Timeout | null>(null);
   const { addSignal, setConnected, platform } = useTradingStore();
+  const [backendAvailable, setBackendAvailable] = useState(false);
 
+  // Connect to Python backend native WebSocket
   useEffect(() => {
+    if (typeof window === 'undefined') return; // SSR guard
+
     let cancelled = false;
 
-    async function connect() {
-      const ioFn = await getIO();
-      if (cancelled || !ioFn) return;
+    function connect() {
+      if (cancelled) return;
 
       try {
-        const socket = ioFn('/?XTransformPort=3003', {
-          transports: ['websocket', 'polling'],
-          reconnection: true,
-          reconnectionAttempts: 5,
-          reconnectionDelay: 5000,
-          timeout: 10000,
-        });
+        const ws = new WebSocket(PYTHON_BACKEND_WS);
 
-        socketRef.current = socket;
+        ws.onopen = () => {
+          if (cancelled) return;
+          console.log('[WS] Connected to Python backend');
+          setConnected(true);
+          setBackendAvailable(true);
+        };
 
-        socket.on('connect', () => {
-          if (!cancelled) {
-            console.log('Connected to signal server');
-            setConnected(true);
-            socket.emit('subscribe', platform);
+        ws.onmessage = (event) => {
+          if (cancelled) return;
+          try {
+            const data = JSON.parse(event.data);
+
+            // Handle new_signal event from Python backend
+            if (data.type === 'new_signal' && data.signal) {
+              addSignal(data.signal as Signal);
+            }
+
+            // Handle signals batch event
+            if (data.type === 'signals' && Array.isArray(data.signals)) {
+              for (const signal of data.signals) {
+                try {
+                  addSignal(signal as Signal);
+                } catch (e) {
+                  console.warn('[WS] Failed to add signal:', e);
+                }
+              }
+            }
+
+            // Handle pong
+            if (data.type === 'pong') {
+              // Connection alive
+            }
+          } catch (e) {
+            console.warn('[WS] Failed to parse message:', e);
           }
-        });
+        };
 
-        socket.on('disconnect', () => {
-          if (!cancelled) {
-            console.log('Disconnected from signal server');
-            setConnected(false);
-          }
-        });
+        ws.onclose = () => {
+          if (cancelled) return;
+          console.log('[WS] Disconnected from Python backend');
+          setConnected(false);
+          setBackendAvailable(false);
 
-        socket.on('connect_error', (err: Error) => {
-          if (!cancelled) {
-            console.warn('WebSocket connection error (non-fatal):', err.message);
-            setConnected(false);
-          }
-        });
+          // Reconnect after 3 seconds
+          reconnectTimerRef.current = setTimeout(() => {
+            if (!cancelled) connect();
+          }, 3000);
+        };
 
-        socket.on('new_signal', (signal: Signal) => {
-          if (!cancelled) {
-            addSignal(signal);
-          }
-        });
+        ws.onerror = (error) => {
+          if (cancelled) return;
+          console.warn('[WS] Connection error:', error);
+          setConnected(false);
+          setBackendAvailable(false);
+        };
 
-        socket.on('heartbeat', () => {
-          // Heartbeat received, connection is alive
-        });
+        wsRef.current = ws;
       } catch (err) {
-        console.warn('Failed to initialize WebSocket (non-fatal):', err);
+        console.warn('[WS] Failed to initialize WebSocket:', err);
+        setConnected(false);
+        setBackendAvailable(false);
+
+        // Retry after 5 seconds
+        reconnectTimerRef.current = setTimeout(() => {
+          if (!cancelled) connect();
+        }, 5000);
       }
     }
 
@@ -81,31 +106,36 @@ export function useSignalWebSocket() {
 
     return () => {
       cancelled = true;
-      try {
-        socketRef.current?.emit('unsubscribe', platform);
-        socketRef.current?.disconnect();
-      } catch {
-        // Ignore cleanup errors
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
       }
-      socketRef.current = null;
+      if (wsRef.current) {
+        wsRef.current.close();
+        wsRef.current = null;
+      }
     };
   }, [addSignal, setConnected, platform]);
 
+  // Request signal from Python backend
   const requestSignal = useCallback(() => {
-    try {
-      socketRef.current?.emit('request_signal');
-    } catch {
-      // WebSocket not available
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'request_signal' }));
     }
   }, []);
 
+  // Submit feedback to Python backend
   const submitFeedback = useCallback((signalId: string, outcome: 'win' | 'loss') => {
-    try {
-      socketRef.current?.emit('signal_feedback', { signalId, outcome });
-    } catch {
-      // WebSocket not available
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'feedback', signalId, outcome }));
     }
+
+    // Also send to Python backend REST API
+    fetch(`${PYTHON_BACKEND_HTTP}/api/signals/${signalId}/close?outcome=${outcome}`, {
+      method: 'POST',
+    }).catch(() => {
+      // Silently fail — backend may not be available
+    });
   }, []);
 
-  return { requestSignal, submitFeedback };
+  return { requestSignal, submitFeedback, backendAvailable };
 }

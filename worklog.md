@@ -1,30 +1,25 @@
 ---
-Task ID: 2
+Task ID: 3
 Agent: Main Agent
-Task: Fix martingale risk levels to show correct, active WAT entry times in Next.js frontend
+Task: Integrate Python FastAPI backend with Next.js frontend
 
 Work Log:
-- Identified root cause: martingale time calculation was using intervalMinutes-based approach with incorrect small multipliers
-- Updated types.ts: Added `amount` field to riskLevels type: `Record<string, { multiplier: number; time: string; amount: number }>`
-- Rewrote signal-generator.ts martingale calculation:
-  - Replaced getRiskConfig() with getConfidenceMultipliers() and getTimeOffsets()
-  - Confidence-based multipliers: >= 90 → [2.2, 4.8, 10.5], >= 85 → [2.5, 5.5, 12.0], else → [2.8, 6.2, 13.5]
-  - Seconds-based time offsets: 30s→[30,60,90], 45s→[45,90,135], 1m→[60,120,180], 2m→[120,240,360], 3m→[180,360,540], 5m→[300,600,900]
-  - Added dollar amount calculation: amount = multiplier * baseStake
-- Updated signal-card.tsx martingale display format: `M1 │ 2.7x │ $2.7 │ Entry: 22:29 WAT`
-- Updated signal-formatter.ts all 4 formats (plain, emoji, compact, detailed) with new pipe-delimited format
-- Updated signal-store.ts normalizeRiskLevels() to include `amount` field and validate time strings are non-empty
-- Enhanced self-learning.ts with AdaptiveWeights class from Python ultra_signal_engine.py:
-  - 8-category weight system matching 94.3% WinRateOptimizer (market_structure 20%, technical_alignment 15%, etc.)
-  - ±0.005 learning rate per trade outcome
-  - Weight normalization to maintain sum = 1.0
-  - Evolution tracking and performance by pair/timeframe
+- Updated Python backend main.py with 27 OTC trading pairs, expanded MockDataProvider with realistic base prices
+- Added convert_signal_for_frontend() function to transform Python engine signals into Next.js-compatible format
+- Added dual WebSocket endpoints: /ws (real-time push) and /ws/signals (30s batch push)
+- Added background signal generation loop (30s scan cycle) with automatic WebSocket broadcast
+- Added REST API endpoints: GET /api/signals/{platform}, POST /api/signals/{id}/close, GET /api/performance
+- Created DailyImprover module (backend/app/engine/daily_improver.py) for scheduled weight optimization
+- Created requirements.txt with all Python dependencies
+- Rewrote use-signal-websocket.ts to use native WebSocket (replaces incompatible socket.io-client)
+- Added auto-reconnect with 3-second retry, signal parsing for both new_signal and signals batch events
+- Updated page.tsx generateSignals() to try Python backend first, then fallback to internal Next.js generator
 - Build verified: `npx next build` compiles successfully
 - API verified: Signal generation returns correct martingale data with active WAT times
 
 Stage Summary:
-- Martingale risk levels now display: `M1 │ 2.7x │ $2.7 │ Entry: 07:04 WAT`
-- Times are calculated using correct seconds-based offsets from Python reference
-- Multipliers are confidence-based (matching Python otc_blitz_engine.py)
-- Self-learning AdaptiveWeights system integrated with 8 scoring categories
-- All builds and API tests pass successfully
+- Python backend outputs signals in Next.js-compatible JSON format
+- Frontend connects to Python backend via native WebSocket at ws://localhost:8000/ws
+- Dual-source signal generation: Python backend (primary) + Next.js internal (fallback)
+- All martingale entry times are correct, active, and displayed in WAT format
+- Full integration ready for deployment
