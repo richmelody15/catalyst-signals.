@@ -55,6 +55,20 @@ const BASE_PRICES: Record<string, number> = {
 
 let signalCounter = 0;
 
+function formatWATTime(date: Date): string {
+  try {
+    const time = date.toLocaleTimeString('en-GB', {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+      timeZone: 'Africa/Lagos',
+    });
+    return `${time} WAT`;
+  } catch {
+    return '--:-- WAT';
+  }
+}
+
 function generateSignal() {
   const pair = TRADING_PAIRS[Math.floor(Math.random() * TRADING_PAIRS.length)];
   const timeframe = TIMEFRAMES[Math.floor(Math.random() * TIMEFRAMES.length)];
@@ -62,16 +76,17 @@ function generateSignal() {
   const basePrice = BASE_PRICES[pair] || 100;
   const confidence = 85 + Math.random() * 13;
   const trend = direction === 'BUY' ? 'Bullish' : 'Bearish';
+  const isBuy = direction === 'BUY';
   const bosConfirmed = Math.random() > 0.4;
   const chochConfirmed = Math.random() > 0.6;
   const fvgActive = Math.random() > 0.5;
   const liquiditySweep = Math.random() > 0.5;
   const volumeHigh = Math.random() > 0.4;
   const bbExpanding = Math.random() > 0.5;
-  const rsiValue = direction === 'BUY'
+  const rsiValue = isBuy
     ? 20 + Math.random() * 20
     : 70 + Math.random() * 20;
-  const stochK = direction === 'BUY'
+  const stochK = isBuy
     ? 10 + Math.random() * 25
     : 70 + Math.random() * 25;
 
@@ -91,7 +106,6 @@ function generateSignal() {
     quiet: 'Market is in a low-activity consolidation phase.',
   };
 
-  // Strategy guide per regime
   const strategyGuides: Record<string, { entryRules: string[]; exitRules: string[]; riskManagement: string[]; avoidActions: string[] }> = {
     strong_trend: {
       entryRules: ['Enter on pullback to demand/supply zone', 'Confirm with BOS retest', 'Use FVG fill as entry zone'],
@@ -133,13 +147,22 @@ function generateSignal() {
 
   const guide = strategyGuides[marketRegime] || strategyGuides.weak_trend;
 
+  // Calculate proper risk levels with time offsets
+  const entryTime = new Date(Date.now() + 4 * 60 * 1000);
+  const timeOffsets: Record<string, [number, number, number]> = {
+    '30s': [30, 60, 90], '45s': [45, 90, 135], '1m': [60, 120, 180],
+    '2m': [120, 240, 360], '3m': [180, 360, 540], '5m': [300, 600, 900],
+  };
+  const offsets = timeOffsets[timeframe] || [60, 120, 180];
+  const multipliers = confidence >= 90 ? [2.2, 4.8, 10.5] : confidence >= 85 ? [2.5, 5.5, 12.0] : [2.8, 6.2, 13.5];
+
   signalCounter++;
 
   return {
     id: `SIG-${Date.now()}-${signalCounter}`,
     tradePair: pair,
     timer: `${timeframe} (OTC)`,
-    entryTime: new Date(Date.now() + 4 * 60 * 1000).toISOString(),
+    entryTime: entryTime.toISOString(),
     direction,
     confidence: +confidence.toFixed(1),
     marketCondition: bbExpanding ? 'High Volatility' : 'Normal',
@@ -149,16 +172,16 @@ function generateSignal() {
     fvgActive,
     liquiditySweep,
     volumeHigh,
-    zoneType: direction === 'BUY' ? 'Demand + Order Block' : 'Supply + Order Block',
+    zoneType: isBuy ? 'Demand + Order Block' : 'Supply + Order Block',
     rsiValue: +rsiValue.toFixed(1),
-    stochasticBull: direction === 'BUY' && stochK < 30,
+    stochasticBull: isBuy && stochK < 30,
     bbExpanding,
     adrStatus: 'Within range',
     riskReward: 2.5,
     riskLevels: {
-      M1: +(2.2 * (1 + Math.random() * 0.3)).toFixed(1),
-      M2: +(4.8 * (1 + Math.random() * 0.3)).toFixed(1),
-      M3: +(10.5 * (1 + Math.random() * 0.3)).toFixed(1),
+      M1: { multiplier: multipliers[0], amount: +multipliers[0].toFixed(1), time: formatWATTime(new Date(entryTime.getTime() + offsets[0] * 1000)) },
+      M2: { multiplier: multipliers[1], amount: +multipliers[1].toFixed(1), time: formatWATTime(new Date(entryTime.getTime() + offsets[1] * 1000)) },
+      M3: { multiplier: multipliers[2], amount: +multipliers[2].toFixed(1), time: formatWATTime(new Date(entryTime.getTime() + offsets[2] * 1000)) },
     },
     signalQuality: 'HIGH PROBABILITY ONLY',
     checklistScore: +(94.3 + Math.random() * 5).toFixed(1),
@@ -177,8 +200,36 @@ function generateSignal() {
       avoidActions: guide.avoidActions,
       confidenceNote: `GLM PROBABILITY: 94.3% WIN RATE — This signal has passed the strict quality filter. Only signals meeting 14-point checklist criteria with weighted score ≥ 94.3% are displayed. Combined confluence factors validate this ${direction} entry in a ${regimeLabel} market regime.`,
     },
-    // GLM Probability — 94.3% win rate
+    // GLM Probability
     glmProbability: 94.3,
+    // GLM Smart Money Engine
+    glmSmartMoney: {
+      price: basePrice,
+      structure: isBuy ? 'BOS_UP' : 'BOS_DOWN',
+      liquidity: isBuy ? 'BUY_SWEEP' : 'SELL_SWEEP',
+      breakout: isBuy ? 'CONFIRMED_BREAKOUT_BUY' : 'CONFIRMED_BREAKDOWN_SELL',
+      signal: isBuy ? 'VALID_BUY' : 'VALID_SELL',
+      labels: {
+        structure: isBuy ? 'Break of Structure ↑' : 'Break of Structure ↓',
+        liquidity: isBuy ? 'Buy Side Sweep' : 'Sell Side Sweep',
+        breakout: isBuy ? 'Confirmed Breakout' : 'Confirmed Breakdown',
+        signal: isBuy ? 'Valid Buy Signal' : 'Valid Sell Signal',
+      },
+      structureHistory: [],
+      liquidityHistory: [],
+    },
+    // Engine Health
+    engineHealth: { errorsRecovered: 0, fallbacksUsed: 0, recoveryRate: 100, lastError: null },
+    // Support/Resistance (null for demo)
+    nearestSupport: null,
+    nearestResistance: null,
+    supportZone: { start: null, end: null },
+    resistanceZone: { start: null, end: null },
+    // MTF Confluence (null for demo)
+    mtfConfluence: null,
+    // S/D Zone (null for demo)
+    nearestSDZone: null,
+    zoneInteraction: null,
   };
 }
 
@@ -228,11 +279,11 @@ io.on('connection', (socket) => {
   });
 });
 
-// Auto-generate signals every 8-15 seconds
+// Auto-generate signals every 10-20 seconds
 let signalInterval: ReturnType<typeof setTimeout>;
 
 function scheduleNextSignal() {
-  const delay = 8000 + Math.random() * 7000;
+  const delay = 10000 + Math.random() * 10000;
   signalInterval = setTimeout(() => {
     const signal = generateSignal();
 
