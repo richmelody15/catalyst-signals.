@@ -22,6 +22,9 @@ import {
   Activity,
   Sparkles,
   Radio,
+  Target,
+  TrendingUp,
+  AlertCircle,
 } from 'lucide-react';
 
 // ─── Per-Card Error Boundary ──────────────────────────────────────
@@ -91,7 +94,6 @@ export default function Home() {
   // Generate initial signals on mount
   useEffect(() => {
     if (!isClient) return;
-    // Auto-generate a signal after a short delay so the page isn't empty
     const timer = setTimeout(() => {
       generateSignals();
     }, 2000);
@@ -208,9 +210,9 @@ export default function Home() {
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
-      {/* Header */}
-      <header className="sticky top-0 z-50 border-b border-zinc-800/50 bg-zinc-950/80 backdrop-blur-xl">
-        <div className="max-w-7xl mx-auto px-4 py-3">
+      {/* Header with gradient */}
+      <header className="sticky top-0 z-50 header-gradient backdrop-blur-xl">
+        <div className="max-w-7xl mx-auto px-4 py-4">
           <PlatformHeader
             platform={platform}
             isConnected={isConnected}
@@ -225,75 +227,91 @@ export default function Home() {
       <main className="flex-1 max-w-7xl mx-auto px-4 py-6 w-full">
         {/* Navigation Tabs */}
         <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
-          <TabsList className="bg-zinc-900/60 border border-zinc-800">
-            <TabsTrigger
-              value="signals"
-              className="text-xs data-[state=active]:bg-emerald-400/10 data-[state=active]:text-emerald-400"
-            >
-              <LayoutDashboard className="h-3.5 w-3.5 mr-1.5" />
-              Live Signals
-            </TabsTrigger>
-            <TabsTrigger
-              value="analytics"
-              className="text-xs data-[state=active]:bg-emerald-400/10 data-[state=active]:text-emerald-400"
-            >
-              <BarChart3 className="h-3.5 w-3.5 mr-1.5" />
-              Analytics
-            </TabsTrigger>
-            <TabsTrigger
-              value="history"
-              className="text-xs data-[state=active]:bg-emerald-400/10 data-[state=active]:text-emerald-400"
-            >
-              <Clock className="h-3.5 w-3.5 mr-1.5" />
-              History
-            </TabsTrigger>
-          </TabsList>
+          <div className="flex items-center justify-between">
+            <TabsList className="bg-zinc-900/60 border border-zinc-800">
+              <TabsTrigger
+                value="signals"
+                className="text-xs data-[state=active]:bg-emerald-400/10 data-[state=active]:text-emerald-400"
+              >
+                <LayoutDashboard className="h-3.5 w-3.5 mr-1.5" />
+                Live Signals
+              </TabsTrigger>
+              <TabsTrigger
+                value="analytics"
+                className="text-xs data-[state=active]:bg-emerald-400/10 data-[state=active]:text-emerald-400"
+              >
+                <BarChart3 className="h-3.5 w-3.5 mr-1.5" />
+                Analytics
+              </TabsTrigger>
+              <TabsTrigger
+                value="history"
+                className="text-xs data-[state=active]:bg-emerald-400/10 data-[state=active]:text-emerald-400"
+              >
+                <Clock className="h-3.5 w-3.5 mr-1.5" />
+                History
+              </TabsTrigger>
+            </TabsList>
+
+            <div className="flex items-center gap-2">
+              <Button
+                size="sm"
+                className="h-8 text-xs generate-gradient text-black font-bold rounded-full px-5"
+                onClick={generateSignals}
+                disabled={isGenerating}
+              >
+                <Zap className="h-3.5 w-3.5 mr-1.5" />
+                {isGenerating ? 'Analyzing...' : 'Generate Signal'}
+              </Button>
+            </div>
+          </div>
 
           {/* Live Signals Tab */}
           <TabsContent value="signals" className="space-y-4">
             {/* Quick Stats Bar */}
             <div className="flex items-center gap-3 flex-wrap">
-              <div className="flex items-center gap-2 bg-zinc-900/60 rounded-lg px-3 py-1.5 border border-zinc-800">
+              <div className="flex items-center gap-2 glass-card rounded-lg px-3 py-2">
                 <Activity className="h-3 w-3 text-emerald-400" />
                 <span className="text-[10px] text-zinc-500">Active</span>
                 <span className="text-xs font-bold text-emerald-400">{signals.length}</span>
               </div>
-              <div className="flex items-center gap-2 bg-zinc-900/60 rounded-lg px-3 py-1.5 border border-zinc-800">
+              <div className="flex items-center gap-2 glass-card rounded-lg px-3 py-2">
                 <Radio className="h-3 w-3 text-yellow-400" />
                 <span className="text-[10px] text-zinc-500">Platform</span>
                 <span className="text-xs font-bold text-white">
                   {platform === 'iq-option' ? 'IQ Option' : 'Pocket Option'}
                 </span>
               </div>
-              <div className="flex items-center gap-2 bg-zinc-900/60 rounded-lg px-3 py-1.5 border border-zinc-800">
+              <div className="flex items-center gap-2 glass-card rounded-lg px-3 py-2">
                 <Sparkles className="h-3 w-3 text-yellow-400" />
-                <span className="text-[10px] text-zinc-500">GLM</span>
+                <span className="text-[10px] text-zinc-500">GLM Filter</span>
                 <span className="text-xs font-bold text-yellow-400">94.3%</span>
               </div>
+              <div className="flex items-center gap-2 glass-card rounded-lg px-3 py-2">
+                <Target className="h-3 w-3 text-cyan-400" />
+                <span className="text-[10px] text-zinc-500">Pairs</span>
+                <span className="text-xs font-bold text-cyan-400">28</span>
+              </div>
               {isConnected && (
-                <div className="flex items-center gap-2 bg-emerald-400/5 rounded-lg px-3 py-1.5 border border-emerald-400/20">
+                <div className="flex items-center gap-2 bg-emerald-400/5 rounded-lg px-3 py-2 border border-emerald-400/20">
                   <div className="h-1.5 w-1.5 bg-emerald-400 rounded-full animate-pulse" />
-                  <span className="text-[10px] text-emerald-400">Live Feed</span>
+                  <span className="text-[10px] text-emerald-400 font-medium">Live Feed</span>
                 </div>
               )}
-              <div className="ml-auto">
-                <Button
-                  size="sm"
-                  className="h-8 text-xs bg-emerald-400/10 text-emerald-400 hover:bg-emerald-400/20 border border-emerald-400/20"
-                  onClick={generateSignals}
-                  disabled={isGenerating}
-                >
-                  <Zap className="h-3.5 w-3.5 mr-1.5" />
-                  {isGenerating ? 'Analyzing...' : 'Generate Signal'}
-                </Button>
-              </div>
+              {lastSignalTime && (
+                <div className="flex items-center gap-1.5 text-[10px] text-zinc-600">
+                  <Clock className="h-2.5 w-2.5" />
+                  Last: {lastSignalTime.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Africa/Lagos' })} WAT
+                </div>
+              )}
             </div>
 
             {/* Signal Grid */}
             {signals.length === 0 ? (
-              <div className="flex flex-col items-center justify-center py-20 space-y-4">
+              <div className="flex flex-col items-center justify-center py-24 space-y-4">
                 <div className="relative">
-                  <Activity className="h-16 w-16 text-zinc-700" />
+                  <div className="w-20 h-20 rounded-full bg-zinc-900/60 border border-zinc-800 flex items-center justify-center">
+                    <Activity className="h-8 w-8 text-zinc-700" />
+                  </div>
                   <div className="absolute -top-1 -right-1 h-4 w-4 bg-emerald-400/50 rounded-full animate-pulse" />
                 </div>
                 <div className="text-center space-y-2">
@@ -303,15 +321,25 @@ export default function Home() {
                     Signals meeting the 94.3% quality threshold will appear here in real-time.
                   </p>
                 </div>
-                <Button
-                  size="sm"
-                  className="bg-emerald-400/10 text-emerald-400 hover:bg-emerald-400/20 border border-emerald-400/20"
-                  onClick={generateSignals}
-                  disabled={isGenerating}
-                >
-                  <Zap className="h-3.5 w-3.5 mr-1.5" />
-                  {isGenerating ? 'Analyzing Market...' : 'Generate Demo Signal'}
-                </Button>
+                <div className="flex gap-2">
+                  <Button
+                    size="sm"
+                    className="generate-gradient text-black font-bold rounded-full px-5"
+                    onClick={generateSignals}
+                    disabled={isGenerating}
+                  >
+                    <Zap className="h-3.5 w-3.5 mr-1.5" />
+                    {isGenerating ? 'Analyzing Market...' : 'Generate Signal'}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="border-emerald-400/30 text-emerald-400 hover:bg-emerald-400/10 rounded-full px-5"
+                    onClick={requestSignal}
+                  >
+                    Demo Signal
+                  </Button>
+                </div>
               </div>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
@@ -357,11 +385,8 @@ export default function Home() {
             </div>
             <div className="flex items-center gap-3">
               <span className="text-[10px] text-zinc-600">
-                28 pairs - 6 timeframes
+                28 pairs &middot; 6 timeframes &middot; 94.3% Filter
               </span>
-              <Badge variant="outline" className="text-[9px] h-4 border-zinc-800 text-zinc-600">
-                94.3% Filter Active
-              </Badge>
               {isConnected && (
                 <Badge className="text-[9px] h-4 bg-emerald-400/10 text-emerald-400 border border-emerald-400/20 border-0">
                   Live

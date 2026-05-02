@@ -44,37 +44,37 @@
 
 :root {
   --radius: 0.625rem;
-  --background: oklch(0.08 0.02 260);
+  --background: oklch(0.04 0.02 270);
   --foreground: oklch(0.95 0.01 260);
-  --card: oklch(0.13 0.02 260);
+  --card: oklch(0.10 0.02 270);
   --card-foreground: oklch(0.95 0.01 260);
-  --popover: oklch(0.13 0.02 260);
+  --popover: oklch(0.10 0.02 270);
   --popover-foreground: oklch(0.95 0.01 260);
   --primary: oklch(0.72 0.17 155);
   --primary-foreground: oklch(0.13 0.02 260);
-  --secondary: oklch(0.22 0.02 260);
+  --secondary: oklch(0.18 0.02 270);
   --secondary-foreground: oklch(0.95 0.01 260);
-  --muted: oklch(0.18 0.02 260);
+  --muted: oklch(0.15 0.02 270);
   --muted-foreground: oklch(0.6 0.02 260);
-  --accent: oklch(0.22 0.02 260);
+  --accent: oklch(0.18 0.02 270);
   --accent-foreground: oklch(0.95 0.01 260);
   --destructive: oklch(0.55 0.2 25);
   --destructive-foreground: oklch(0.95 0.01 260);
-  --border: oklch(0.22 0.02 260);
-  --input: oklch(0.22 0.02 260);
+  --border: oklch(0.20 0.02 270);
+  --input: oklch(0.20 0.02 270);
   --ring: oklch(0.72 0.17 155);
   --chart-1: oklch(0.72 0.17 155);
   --chart-2: oklch(0.6 0.2 25);
   --chart-3: oklch(0.75 0.15 80);
   --chart-4: oklch(0.65 0.15 250);
   --chart-5: oklch(0.7 0.15 300);
-  --sidebar: oklch(0.1 0.02 260);
+  --sidebar: oklch(0.08 0.02 270);
   --sidebar-foreground: oklch(0.95 0.01 260);
   --sidebar-primary: oklch(0.72 0.17 155);
   --sidebar-primary-foreground: oklch(0.13 0.02 260);
-  --sidebar-accent: oklch(0.22 0.02 260);
+  --sidebar-accent: oklch(0.18 0.02 270);
   --sidebar-accent-foreground: oklch(0.95 0.01 260);
-  --sidebar-border: oklch(0.22 0.02 260);
+  --sidebar-border: oklch(0.20 0.02 270);
   --sidebar-ring: oklch(0.72 0.17 155);
 }
 
@@ -157,16 +157,100 @@
 /* Buy signal card left border glow */
 .border-l-emerald-400 {
   border-left-color: oklch(0.72 0.17 155) !important;
-  box-shadow: inset 4px 0 8px -4px rgba(52, 211, 153, 0.15);
+  box-shadow: inset 4px 0 12px -4px rgba(52, 211, 153, 0.2);
 }
 
 /* Sell signal card left border glow */
 .border-l-red-400 {
   border-left-color: oklch(0.6 0.2 25) !important;
-  box-shadow: inset 4px 0 8px -4px rgba(248, 113, 113, 0.15);
+  box-shadow: inset 4px 0 12px -4px rgba(248, 113, 113, 0.2);
+}
+
+/* Gradient header background */
+.header-gradient {
+  background: linear-gradient(135deg, oklch(0.08 0.04 270) 0%, oklch(0.15 0.06 260) 50%, oklch(0.10 0.04 270) 100%);
+  border-bottom: 1px solid oklch(0.25 0.03 270);
+}
+
+/* Platform selector active state */
+.platform-active {
+  background: linear-gradient(135deg, oklch(0.72 0.17 155), oklch(0.65 0.14 200));
+  color: oklch(0.10 0.02 260);
+  font-weight: 700;
+}
+
+/* Gradient generate button */
+.generate-gradient {
+  background: linear-gradient(135deg, oklch(0.72 0.17 155), oklch(0.65 0.14 200));
+  transition: all 0.3s ease;
+}
+
+.generate-gradient:hover {
+  opacity: 0.9;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(52, 211, 153, 0.25);
+}
+
+.generate-gradient:active {
+  transform: translateY(0);
+}
+
+/* Status badge pulse */
+.status-online {
+  background: rgba(52, 211, 153, 0.1);
+  border: 1px solid rgba(52, 211, 153, 0.5);
+  animation: emerald-pulse 2s ease-in-out infinite;
+}
+
+/* Glassmorphism card effect */
+.glass-card {
+  background: rgba(15, 15, 30, 0.8);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.05);
 }
 
 /* Smooth hover transitions for cards */
 [data-state="active"] {
   transition: all 0.2s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* Animated background particles (subtle) */
+@keyframes float {
+  0%, 100% { transform: translateY(0px); }
+  50% { transform: translateY(-5px); }
+}
+
+.float-animation {
+  animation: float 3s ease-in-out infinite;
+}
+
+/* Confidence bar animation */
+@keyframes confidence-fill {
+  from { width: 0; }
+  to { width: var(--confidence-width, 0%); }
+}
+
+.confidence-bar-animated {
+  animation: confidence-fill 1s ease-out forwards;
+}
+
+/* Card hover effect */
+.signal-card-hover {
+  transition: all 0.3s ease;
+}
+
+.signal-card-hover:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 25px rgba(0, 0, 0, 0.3);
+}
+
+/* New signal highlight */
+@keyframes signal-highlight {
+  0% { box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.4); }
+  50% { box-shadow: 0 0 0 8px rgba(52, 211, 153, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(52, 211, 153, 0); }
+}
+
+.signal-highlight {
+  animation: signal-highlight 1.5s ease-out;
 }

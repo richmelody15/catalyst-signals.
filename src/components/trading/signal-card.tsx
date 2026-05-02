@@ -316,7 +316,7 @@ export function SignalCard({ signal, onFeedback }: SignalCardProps) {
   // ─── Render ──────────────────────────────────────────────────────
 
   return (
-    <Card className={`border-l-4 ${borderColor} ${bgGlow} bg-zinc-900/80 backdrop-blur-sm hover:bg-zinc-900 transition-all duration-300 group`}>
+    <Card className={`border-l-4 ${borderColor} ${bgGlow} bg-zinc-900/80 backdrop-blur-sm hover:bg-zinc-900/90 signal-card-hover transition-all duration-300 group`}>
       <CardHeader className="pb-3 pt-4 px-4">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -491,37 +491,36 @@ export function SignalCard({ signal, onFeedback }: SignalCardProps) {
         )}
 
         {/* Risk Levels — Martingale Recovery */}
-        <div className="rounded-lg p-2 border border-yellow-500/20 bg-zinc-800/40">
-          <div className="flex items-center gap-1.5 mb-1.5">
-            <Shield className="h-3.5 w-3.5 text-yellow-500" />
-            <span className="text-[10px] text-zinc-500 uppercase tracking-wider">Martingale Recovery (Risk Level)</span>
+        <div className="rounded-lg p-3 border border-yellow-500/20 bg-gradient-to-b from-yellow-400/5 to-transparent">
+          <div className="flex items-center justify-between mb-2">
+            <div className="flex items-center gap-1.5">
+              <Shield className="h-3.5 w-3.5 text-yellow-500" />
+              <span className="text-[10px] font-bold text-yellow-400 uppercase tracking-wider">MARTINGALE RECOVERY</span>
+            </div>
+            <span className="text-[8px] text-yellow-500/50 uppercase">Risk Level</span>
           </div>
-          <div className="space-y-1">
+          <div className="space-y-1.5">
             {Object.keys(riskLevels).length > 0 ? (
               Object.entries(riskLevels).map(([key, level], idx) => (
-                <div key={key} className="flex items-center justify-between bg-zinc-900/60 rounded px-2 py-0.5">
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-[10px] font-bold text-yellow-400">{key}</span>
-                    <span className="text-[10px] text-zinc-600">│</span>
+                <div key={key} className="flex items-center justify-between bg-zinc-900/80 rounded-lg px-3 py-1.5 border border-zinc-800/50">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] font-bold text-yellow-400 bg-yellow-400/10 px-1.5 py-0.5 rounded">{key}</span>
                     <span className="text-[10px] font-bold text-white">{level.multiplier}x</span>
-                    <span className="text-[10px] text-zinc-600">│</span>
                     <span className="text-[10px] font-bold text-emerald-400">${level.amount}</span>
-                    <span className="text-[10px] text-zinc-600">│</span>
                   </div>
                   <div className="flex items-center gap-1">
                     <Clock className="h-2.5 w-2.5 text-emerald-400" />
-                    <span className="text-[10px] text-emerald-400 font-mono font-bold">Entry: {level.time}</span>
-                    {idx === 0 && <span className="text-[8px] text-yellow-500/70 ml-1">← initial</span>}
+                    <span className="text-[10px] text-emerald-400 font-mono font-bold">{level.time}</span>
                   </div>
                 </div>
               ))
             ) : (
-              <div className="text-[10px] text-zinc-600 text-center py-1">
+              <div className="text-[10px] text-zinc-600 text-center py-2">
                 Risk levels will appear when signal is generated
               </div>
             )}
           </div>
-          <p className="text-[8px] text-zinc-600 mt-1.5">Trade 1% - 3% of your capability and capital</p>
+          <p className="text-[8px] text-yellow-500/40 mt-2 text-center">Trade 1% - 3% of your capability and capital</p>
         </div>
 
         {/* GLM Smart Money Engine */}

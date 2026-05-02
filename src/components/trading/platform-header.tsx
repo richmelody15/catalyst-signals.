@@ -2,13 +2,12 @@
 
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
   Wifi,
   WifiOff,
   RefreshCw,
-  Bell,
-  Signal,
+  Rocket,
+  Activity,
 } from 'lucide-react';
 
 interface PlatformHeaderProps {
@@ -27,71 +26,100 @@ export function PlatformHeader({
   onRefresh,
 }: PlatformHeaderProps) {
   return (
-    <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-      <div className="flex items-center gap-3">
-        <div className="flex items-center gap-2">
+    <div className="flex flex-col gap-4">
+      {/* Top Row: Logo + Status */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          {/* Logo Icon */}
           <div className="relative">
-            <Signal className="h-7 w-7 text-emerald-400" />
-            <div className="absolute -top-0.5 -right-0.5 h-2.5 w-2.5 bg-emerald-400 rounded-full animate-pulse" />
+            <div className="generate-gradient rounded-xl p-2">
+              <Rocket className="h-5 w-5 text-black" />
+            </div>
+            {isConnected && (
+              <div className="absolute -top-0.5 -right-0.5 h-2.5 w-2.5 bg-emerald-400 rounded-full animate-pulse" />
+            )}
           </div>
           <div>
-            <h1 className="text-lg font-bold text-white tracking-tight">
-              CATALYST AI
+            <h1 className="text-xl font-bold text-white tracking-tight">
+              CATALYST<span className="text-emerald-400">AI</span>
             </h1>
             <p className="text-[10px] text-zinc-500 uppercase tracking-widest">
-              Smart Money • AI-Powered • 94.3% Filter
+              Smart Money &middot; AI-Powered &middot; 94.3% Filter
             </p>
           </div>
         </div>
+
+        <div className="flex items-center gap-3">
+          {/* Signal Count */}
+          <div className="flex items-center gap-1.5 bg-zinc-900/60 rounded-lg px-3 py-1.5 border border-zinc-800">
+            <Activity className="h-3 w-3 text-emerald-400" />
+            <span className="text-[10px] text-zinc-500">Active</span>
+            <span className="text-xs font-bold text-emerald-400">{signalCount}</span>
+          </div>
+
+          {/* Connection Status Badge */}
+          {isConnected ? (
+            <div className="status-online rounded-full px-3 py-1 flex items-center gap-1.5">
+              <Wifi className="h-3.5 w-3.5 text-emerald-400" />
+              <span className="text-[10px] font-medium text-emerald-400">Online</span>
+            </div>
+          ) : (
+            <div className="flex items-center gap-1.5 bg-red-400/5 border border-red-400/20 rounded-full px-3 py-1">
+              <WifiOff className="h-3.5 w-3.5 text-red-400" />
+              <span className="text-[10px] font-medium text-red-400">Offline</span>
+            </div>
+          )}
+        </div>
       </div>
 
-      <div className="flex items-center gap-2">
-        {/* Connection Status */}
-        <div className="flex items-center gap-1.5">
-          {isConnected ? (
-            <Wifi className="h-3.5 w-3.5 text-emerald-400" />
-          ) : (
-            <WifiOff className="h-3.5 w-3.5 text-red-400" />
-          )}
-          <span className={`text-[10px] ${isConnected ? 'text-emerald-400' : 'text-red-400'}`}>
-            {isConnected ? 'Live' : 'Offline'}
-          </span>
+      {/* Platform Selector Row */}
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          {/* IQ Option Button */}
+          <button
+            onClick={() => onPlatformChange('iq-option')}
+            className={`px-5 py-2 rounded-full text-sm font-semibold transition-all duration-300 border ${
+              platform === 'iq-option'
+                ? 'platform-active border-emerald-400/50'
+                : 'bg-zinc-900/60 text-zinc-400 border-zinc-800 hover:bg-zinc-800/60 hover:text-zinc-300'
+            }`}
+          >
+            🎯 IQ Option
+          </button>
+
+          {/* Pocket Option Button */}
+          <button
+            onClick={() => onPlatformChange('pocket-option')}
+            className={`px-5 py-2 rounded-full text-sm font-semibold transition-all duration-300 border ${
+              platform === 'pocket-option'
+                ? 'platform-active border-emerald-400/50'
+                : 'bg-zinc-900/60 text-zinc-400 border-zinc-800 hover:bg-zinc-800/60 hover:text-zinc-300'
+            }`}
+          >
+            💼 Pocket Option
+          </button>
+
+          {/* Platform Label */}
+          <div className="ml-2 flex items-center gap-1.5">
+            <span className="text-[10px] text-zinc-600">Platform:</span>
+            <span className="text-xs font-bold text-emerald-400">
+              {platform === 'iq-option' ? 'IQ Option' : 'Pocket Option'}
+            </span>
+          </div>
         </div>
 
-        {/* Signal Count */}
-        <Badge variant="outline" className="text-[10px] h-5 border-zinc-700 text-zinc-400">
-          <Bell className="h-2.5 w-2.5 mr-1" />
-          {signalCount}
-        </Badge>
-
-        {/* Platform Tabs */}
-        <Tabs value={platform} onValueChange={(v) => onPlatformChange(v as 'iq-option' | 'pocket-option')}>
-          <TabsList className="h-7 bg-zinc-800/80 border border-zinc-700">
-            <TabsTrigger
-              value="iq-option"
-              className="text-[10px] h-5 px-2 data-[state=active]:bg-emerald-400/20 data-[state=active]:text-emerald-400"
-            >
-              IQ Option
-            </TabsTrigger>
-            <TabsTrigger
-              value="pocket-option"
-              className="text-[10px] h-5 px-2 data-[state=active]:bg-emerald-400/20 data-[state=active]:text-emerald-400"
-            >
-              Pocket Option
-            </TabsTrigger>
-          </TabsList>
-        </Tabs>
-
-        {/* Refresh Button */}
-        <Button
-          variant="outline"
-          size="sm"
-          className="h-7 text-[10px] border-zinc-700 text-zinc-400 hover:bg-zinc-800 hover:text-white"
-          onClick={onRefresh}
-        >
-          <RefreshCw className="h-3 w-3 mr-1" />
-          Refresh
-        </Button>
+        <div className="flex items-center gap-2">
+          {/* Refresh Button */}
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-8 text-xs border-zinc-700 text-zinc-400 hover:bg-zinc-800 hover:text-white rounded-full px-4"
+            onClick={onRefresh}
+          >
+            <RefreshCw className="h-3.5 w-3.5 mr-1.5" />
+            Refresh
+          </Button>
+        </div>
       </div>
     </div>
   );
