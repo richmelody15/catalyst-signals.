@@ -77,3 +77,44 @@ Stage Summary:
 - Added 4 chart types to analytics panel (Area, Bar, Pie, Radar)
 - All components compile cleanly with no lint errors
 - Full signal generation pipeline working end-to-end
+---
+Task ID: 2
+Agent: Main Agent
+Task: Implement Python backend components in TypeScript (UltraFilter, DailyImprover, Candle Patterns, Structure/Zones/Liquidity)
+
+Work Log:
+- Created /src/lib/trading/ultra-filter.ts — UltraFilter with 6-category scoring matching Python UltraFilter.check()
+  - Categories: structure(90), technical(90), liquidity(90), zones(85), volume_momentum(85), candle_pattern(80)
+  - minOverall: 92.0, minConfluences: 8
+  - adjustThresholds() for DailyImprover integration (tighten if wr < 94.3%, relax if wr > 97%)
+  - adjustFeatureThresholds() for per-feature correlation-based adjustment
+- Created /src/lib/trading/daily-improver.ts — DailyImprover with adaptive threshold adjustment
+  - Records trades with feature scores
+  - run() adjusts UltraFilter thresholds based on 7-day win rate
+  - getRecentWinRate(), getTradeCounts(), getAdjustmentLog()
+- Enhanced /src/lib/trading/indicators.ts with candle pattern detection
+  - detectEngulfing() — bullish/bearish engulfing patterns
+  - detectRejection() — pin bar patterns (bullish/bearish)
+  - detectVolumeProfile() — volume spike detection (1.8x average)
+  - detectVolumeTrend() — increasing/decreasing/normal volume trends
+  - calculateMomentum() — percentage change over N bars
+  - calculateBBWidthPrev() — BB width for expansion/contraction detection
+- Created /src/lib/trading/structure-zones-liquidity.ts
+  - StructureAnalyzer — trend detection, BOS, CHoCH, multi-TF alignment (matching Python)
+  - ZonesAnalyzer — supply/demand detection, order blocks, FVG (matching Python)
+  - LiquidityAnalyzer — liquidity sweeps, liquidity building (matching Python)
+- Updated signal-generator.ts to integrate:
+  - UltraFilter check after direction determination
+  - StructureAnalyzer, ZonesAnalyzer, LiquidityAnalyzer for Python-compatible inputs
+  - Enhanced candle pattern detection (engulfing, rejection, volume_profile, momentum)
+- All lint checks pass
+- API verified: signals generated with UltraFilter quality filtering active
+- Backend config saved to /backend/config/trade_config_95.yaml
+
+Stage Summary:
+- UltraFilter (94.3% filter) fully implemented with 6-category scoring
+- DailyImprover with adaptive threshold adjustment implemented
+- Candle pattern detection (engulfing, rejection, volume profile) added to indicators
+- Structure/Zones/Liquidity analyzers matching Python code created
+- Signal generator now uses UltraFilter as quality gate
+- API produces filtered signals with correct confidence scoring

@@ -12,6 +12,8 @@ import { SignalFormatter } from './signal-formatter';
 import { bugFixer } from './bug-fixer';
 import { TRADING_CONFIG, type Signal, type MarketData, type MTFConfluence, type SupplyDemandZone, type ZoneInteraction, type GLMSmartMoneyResult } from './types';
 import { GLM_SmartMoneyEngine } from './glm-smart-money';
+import { ultraFilter } from './ultra-filter';
+import { StructureAnalyzer, ZonesAnalyzer, LiquidityAnalyzer } from './structure-zones-liquidity';
 
 let signalCounter = 0;
 
@@ -23,6 +25,8 @@ export class SignalGenerator {
   private signalFormatter = new SignalFormatter();
   private glmSmartMoney = new GLM_SmartMoneyEngine();
   private generatedSignals: Signal[] = [];
+  // UltraFilter integration — uses 6-category scoring from Python UltraFilter
+  private useUltraFilter = true;
 
   // ─── Bug-fixer wrapped methods ──────────────────────────────────
 
@@ -105,6 +109,19 @@ export class SignalGenerator {
     const fvgs = PriceActionAnalyzer.detectFVG(closePrices);
     const structure = PriceActionAnalyzer.detectBosChoch(highPrices, lowPrices, closePrices);
     const liquidity = PriceActionAnalyzer.detectLiquiditySweep(highPrices, lowPrices, volumes);
+
+    // ── Python Structure/Zones/Liquidity Analysis (UltraFilter inputs) ──
+    const pyStructure = StructureAnalyzer.analyze({ high: highPrices, low: lowPrices, close: closePrices });
+    const pyZones = ZonesAnalyzer.detect({ high: highPrices, low: lowPrices, close: closePrices, open: openPrices });
+    const pyLiquidity = LiquidityAnalyzer.analyze({ high: highPrices, low: lowPrices, close: closePrices });
+
+    // ── Enhanced Candle Pattern Detection ──
+    const engulfing = TechnicalIndicators.detectEngulfing(openPrices, highPrices, lowPrices, closePrices);
+    const rejection = TechnicalIndicators.detectRejection(openPrices, highPrices, lowPrices, closePrices);
+    const volQuality = TechnicalIndicators.detectVolumeProfile(volumes);
+    const volTrend = TechnicalIndicators.detectVolumeTrend(volumes);
+    const momentum = TechnicalIndicators.calculateMomentum(closePrices);
+    const bbWidthPrev = TechnicalIndicators.calculateBBWidthPrev(closePrices);
 
     // ── GLM Smart Money Engine ──
     const glmResult = this.glmSmartMoney.analyze(
@@ -224,6 +241,38 @@ export class SignalGenerator {
     else if (sellSignals > buySignals && sellSignals >= 3) direction = 'SELL';
 
     if (!direction) return null;
+
+    // ── Run UltraFilter (Python 94.3% filter with 6-category scoring) ──
+    let ultraFilterResult: import('./ultra-filter').UltraFilterResult | null = null;
+    if (this.useUltraFilter) {
+      ultraFilterResult = ultraFilter.check(
+        {
+          rsi,
+          stochK,
+          stochD,
+          adx,
+          bbWidth,
+          bbWidthPrev,
+          ema50: emaShort,
+          ema200: emaLong,
+          atr,
+          volumeSpike: volumes[volumes.length - 1] > (volumes.slice(-20).reduce((a, b) => a + b, 0) / Math.min(20, volumes.length)) * 1.5,
+          volumeTrend: volTrend,
+          volQuality,
+          momentum,
+          engulfing: engulfing.detected,
+          engulfingDir: engulfing.direction,
+          rejection: rejection.detected,
+          rejectionDir: rejection.direction,
+        },
+        pyStructure,
+        pyLiquidity,
+        pyZones
+      );
+
+      // If UltraFilter rejects the signal, return null
+      if (!ultraFilterResult.passed) return null;
+    }
 
     // ── Prepare data for quality check ──
     const supplyDemandZones = [

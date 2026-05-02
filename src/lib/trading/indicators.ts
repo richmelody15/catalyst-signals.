@@ -200,4 +200,145 @@ export class TechnicalIndicators {
     const recentTr = trList.slice(-period);
     return recentTr.reduce((a, b) => a + b, 0) / recentTr.length;
   }
+
+  // ── Candle Pattern Detection (from Python Indicators) ───────────
+
+  /**
+   * Detect engulfing candlestick pattern.
+   * Returns { detected, direction } where direction is 'bullish' or 'bearish'.
+   *
+   * Bullish engulfing: previous candle bearish, current candle bullish,
+   *   current body engulfs previous body.
+   * Bearish engulfing: previous candle bullish, current candle bearish,
+   *   current body engulfs previous body.
+   */
+  static detectEngulfing(
+    opens: number[],
+    highs: number[],
+    lows: number[],
+    closes: number[]
+  ): { detected: boolean; direction: 'bullish' | 'bearish' | 'none' } {
+    if (closes.length < 2) return { detected: false, direction: 'none' };
+
+    const prevClose = closes[closes.length - 2];
+    const prevOpen = opens[opens.length - 2];
+    const currClose = closes[closes.length - 1];
+    const currOpen = opens[opens.length - 1];
+
+    const prevBody = Math.abs(prevClose - prevOpen);
+    const currBody = Math.abs(currClose - currOpen);
+
+    // Current body must be larger than previous
+    if (currBody < prevBody) return { detected: false, direction: 'none' };
+
+    // Bullish engulfing: prev bearish, curr bullish, curr engulfs prev
+    if (
+      prevClose < prevOpen && // prev bearish
+      currClose > currOpen && // curr bullish
+      currOpen <= prevClose && // curr open below prev close
+      currClose >= prevOpen    // curr close above prev open
+    ) {
+      return { detected: true, direction: 'bullish' };
+    }
+
+    // Bearish engulfing: prev bullish, curr bearish, curr engulfs prev
+    if (
+      prevClose > prevOpen && // prev bullish
+      currClose < currOpen && // curr bearish
+      currOpen >= prevClose && // curr open above prev close
+      currClose <= prevOpen    // curr close below prev open
+    ) {
+      return { detected: true, direction: 'bearish' };
+    }
+
+    return { detected: false, direction: 'none' };
+  }
+
+  /**
+   * Detect rejection (pin bar) candlestick pattern.
+   * Returns { detected, direction } where direction is 'bullish' or 'bearish'.
+   *
+   * Bearish rejection: long upper wick (>2x body), short lower wick (<30% range)
+   * Bullish rejection: long lower wick (>2x body), short upper wick (<30% range)
+   */
+  static detectRejection(
+    opens: number[],
+    highs: number[],
+    lows: number[],
+    closes: number[]
+  ): { detected: boolean; direction: 'bullish' | 'bearish' | 'none' } {
+    if (closes.length < 1) return { detected: false, direction: 'none' };
+
+    const currOpen = opens[opens.length - 1];
+    const currHigh = highs[highs.length - 1];
+    const currLow = lows[lows.length - 1];
+    const currClose = closes[closes.length - 1];
+
+    const body = Math.abs(currClose - currOpen);
+    const range = currHigh - currLow;
+
+    if (range === 0) return { detected: false, direction: 'none' };
+
+    const upperWick = currHigh - Math.max(currOpen, currClose);
+    const lowerWick = Math.min(currOpen, currClose) - currLow;
+
+    // Bearish rejection: long upper wick
+    if (upperWick > 2 * body && lowerWick < 0.3 * range) {
+      return { detected: true, direction: 'bearish' };
+    }
+
+    // Bullish rejection: long lower wick
+    if (lowerWick > 2 * body && upperWick < 0.3 * range) {
+      return { detected: true, direction: 'bullish' };
+    }
+
+    return { detected: false, direction: 'none' };
+  }
+
+  /**
+   * Detect volume profile spike.
+   * Returns true if current volume > 1.8x the 20-period average.
+   */
+  static detectVolumeProfile(volumes: number[], lookback: number = 20): boolean {
+    if (volumes.length < lookback + 1) return false;
+    const avg = volumes.slice(-lookback - 1, -1).reduce((a, b) => a + b, 0) / lookback;
+    return avg > 0 && volumes[volumes.length - 1] > avg * 1.8;
+  }
+
+  /**
+   * Detect volume trend (increasing, decreasing, or normal).
+   * Compares recent 3-bar average to prior 3-bar average.
+   */
+  static detectVolumeTrend(volumes: number[]): 'increasing' | 'decreasing' | 'normal' {
+    if (volumes.length < 6) return 'normal';
+    const recentAvg = volumes.slice(-3).reduce((a, b) => a + b, 0) / 3;
+    const priorAvg = volumes.slice(-6, -3).reduce((a, b) => a + b, 0) / 3;
+    if (recentAvg > priorAvg * 1.1) return 'increasing';
+    if (recentAvg < priorAvg * 0.9) return 'decreasing';
+    return 'normal';
+  }
+
+  /**
+   * Calculate momentum (percentage change over N bars).
+   */
+  static calculateMomentum(prices: number[], bars: number = 10): number {
+    if (prices.length < bars + 1) return 0;
+    const current = prices[prices.length - 1];
+    const past = prices[prices.length - 1 - bars];
+    if (past === 0) return 0;
+    return ((current - past) / past) * 100;
+  }
+
+  /**
+   * Calculate BB width for previous period (for expansion/contraction detection).
+   */
+  static calculateBBWidthPrev(prices: number[], period: number = 20): number {
+    if (prices.length < period + 1) return 0.1;
+    const prevPrices = prices.slice(-period - 1, -1);
+    const sma = prevPrices.reduce((a, b) => a + b, 0) / period;
+    if (sma === 0) return 0.1;
+    const variance = prevPrices.reduce((sum, p) => sum + Math.pow(p - sma, 2), 0) / period;
+    const std = Math.sqrt(variance);
+    return (4 * std) / sma;
+  }
 }
