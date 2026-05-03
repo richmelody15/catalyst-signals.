@@ -250,12 +250,17 @@ def detect_divergence(close, rsi_array, direction):
     return False
 
 def select_best_pairs():
+    """Return the most predictable OTC pairs for current session."""
     now = datetime.now(pytz.UTC)
     hour = now.hour
-    if 8 <= hour < 10: return ['EURUSD-OTC','GBPUSD-OTC','EURGBP-OTC']
-    if 13 <= hour < 15: return ['XAUUSD-OTC','USDCAD-OTC','EURJPY-OTC']
-    if 15 <= hour < 17: return ['BTCUSD-OTC','USDBRL-OTC','USDMXN-OTC']
-    return ['EURUSD-OTC']
+    if 8 <= hour < 10:
+        return ['EURUSD-OTC','GBPUSD-OTC','EURGBP-OTC']
+    elif 13 <= hour < 15:
+        return ['XAUUSD-OTC','USDCAD-OTC','EURJPY-OTC']
+    elif 15 <= hour < 17:
+        return ['BTCUSD-OTC','USDBRL-OTC','USDMXN-OTC']
+    else:
+        return ['EURUSD-OTC']   # quiet hours fallback
 
 
 # ═══════════════════════════════════════════════════════════
@@ -618,17 +623,17 @@ function buildPairs(){
 }
 
 async function fetchSig(){
-  try{const res=await fetchWithRetry(API+'/signal?platform='+platform+'&pair='+activePair+'&timeframe='+tf);
-  const data=await res.json();if(data.formatted_signal){signalCache[activePair]=data;lastSig=data;renderSig(data);setStatus('live');}
-  else{signalCache[activePair]=null;renderNo('No SMC-grade setup');setStatus('live');}}
+  try{const res=await fetchWithRetry(API+'/signal?platform='+platform+'&timeframe='+tf);
+  const data=await res.json();if(data.formatted_signal){lastSig=data;renderSig(data);setStatus('live');}
+  else{renderNo('No SMC-grade setup');setStatus('live');}}
   catch(e){renderNo('Backend offline');setStatus('offline');}
 }
 
 async function scanAll(){
   const btn=document.getElementById('scanBtn');btn.disabled=true;btn.textContent='Scanning...';let found=0;
-  for(const p of ALL_PAIRS){try{const res=await fetchWithRetry(API+'/signal?platform='+platform+'&pair='+p+'&timeframe='+tf);
+  for(const p of ALL_PAIRS){try{const res=await fetchWithRetry(API+'/signal/'+p+'?platform='+platform+'&timeframe='+tf);
   const d=await res.json();if(d.formatted_signal){signalCache[p]=d;found++;}else{signalCache[p]=null;}}catch(e){signalCache[p]=null;}}
-  btn.disabled=false;btn.textContent='Scan ('+found+' signals)';renderSig(signalCache[activePair]);hideWake();
+  btn.disabled=false;btn.textContent='Scan ('+found+' signals)';renderSig(signalCache[activePair]||lastSig);hideWake();
 }
 
 function renderSig(s){
@@ -681,14 +686,8 @@ async def health():
     }
 
 
-@app.get("/signal")
-async def get_signal(platform: str = "iq", pair: str = "EURUSD-OTC", timeframe: str = "1m"):
-    if platform == 'iq' and timeframe not in IQ_TIMEFRAMES:
-        raise HTTPException(400, f"IQ timeframes: {IQ_TIMEFRAMES}")
-    if platform == 'pocket' and timeframe not in PO_TIMEFRAMES:
-        raise HTTPException(400, f"Pocket timeframes: {PO_TIMEFRAMES}")
-
-    # Simulated data (replace with live broker API)
+def generate_simulated_market(pair):
+    """Generate simulated multi-timeframe market data for a pair."""
     np.random.seed(hash(pair) % 2**32)
     trend = np.linspace(0, 0.0004 if 'UP' in pair else -0.0004, 200) + np.random.randn(200)*0.0001
     close = 1.0 + trend
@@ -711,10 +710,45 @@ async def get_signal(platform: str = "iq", pair: str = "EURUSD-OTC", timeframe: 
             'volume': np.random.randint(50, 200, 200).astype(float)
         })
 
-    market = {'1m': make_df(0), '3m': make_df(1), '5m': make_df(2)}
+    return {'1m': make_df(0), '3m': make_df(1), '5m': make_df(2)}
+
+
+@app.get("/signal")
+async def high_confidence_signal(platform: str = "iq", timeframe: str = "1m"):
+    """Auto-scan session pairs and return the highest-confidence signal."""
+    if platform == 'iq' and timeframe not in IQ_TIMEFRAMES:
+        raise HTTPException(400, f"IQ timeframes: {IQ_TIMEFRAMES}")
+    if platform == 'pocket' and timeframe not in PO_TIMEFRAMES:
+        raise HTTPException(400, f"Pocket timeframes: {PO_TIMEFRAMES}")
+
+    best_signal = None
+    best_confidence = 0
+    pairs = select_best_pairs()
+
+    for pair in pairs:
+        market = generate_simulated_market(pair)  # replace with live broker API
+        sig = engine.generate(market, pair, platform, timeframe)
+        if sig and sig['confidence'] > best_confidence:
+            best_signal = sig
+            best_confidence = sig['confidence']
+
+    if not best_signal:
+        raise HTTPException(404, "No high-confidence signal across session pairs")
+    return best_signal
+
+
+@app.get("/signal/{pair}")
+async def get_signal_for_pair(pair: str, platform: str = "iq", timeframe: str = "1m"):
+    """Get signal for a specific pair."""
+    if platform == 'iq' and timeframe not in IQ_TIMEFRAMES:
+        raise HTTPException(400, f"IQ timeframes: {IQ_TIMEFRAMES}")
+    if platform == 'pocket' and timeframe not in PO_TIMEFRAMES:
+        raise HTTPException(400, f"Pocket timeframes: {PO_TIMEFRAMES}")
+
+    market = generate_simulated_market(pair)  # replace with live broker API
     sig = engine.generate(market, pair, platform, timeframe)
     if not sig:
-        raise HTTPException(404, "No SMC-grade signal - strict 10-filter gate not passed")
+        raise HTTPException(404, f"No SMC-grade signal for {pair}")
     return sig
 
 
