@@ -1,6 +1,6 @@
 fastapi
-uvicorn[standard]
-httpx>=0.25.0
+uvicorn
+httpx
 pandas
 numpy
 pytz

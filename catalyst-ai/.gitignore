@@ -1,0 +1,7 @@
+venv/
+__pycache__/
+*.pyc
+*.db
+.env
+trading.db
+trading_performance.db
