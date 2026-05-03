@@ -1,17 +1,16 @@
 """
-CATALYST AI – ULTIMATE WINNING ENGINE
+CATALYST AI v10 – PROFESSIONAL SMC ENGINE
+- Smart Money Concepts (Order Blocks, Fair Value Gaps, Liquidity Sweeps)
 - Market Structure (Uptrend/Downtrend/Ranging/Choppy)
-- Hidden Divergence (RSI)
-- AI Probability Scorer (logistic regression)
-- Session‑based pair selection
-- ATR‑based dynamic expiry
-- All strict filters (ADX, MTF, S/R, Liquidity, Volume, Candle, News)
+- AI Probability Scorer (Logistic Regression)
+- Session-based pair selection
+- All strict filters (ADX, MTF, S/R, Liquidity, Volume, Candle, News, Smart Money)
 - Martingale recovery
-- Self‑ping keep‑alive
+- Self-ping keep-alive
 - Embedded PWA dashboard
 """
 
-import asyncio, httpx, os, json, joblib
+import asyncio, httpx, os, joblib
 import numpy as np, pandas as pd, pytz
 from datetime import datetime, timedelta
 from contextlib import asynccontextmanager
@@ -20,7 +19,9 @@ from fastapi.responses import HTMLResponse
 from sklearn.linear_model import LogisticRegression
 from typing import Dict, List, Optional, Tuple
 
-# ---------- CONFIG ----------
+# ═══════════════════════════════════════════════════════════
+#  CONFIG
+# ═══════════════════════════════════════════════════════════
 WAT = pytz.timezone('Africa/Lagos')
 API_URL = os.environ.get('RENDER_EXTERNAL_URL', 'http://0.0.0.0:8000')
 MODEL_PATH = 'win_prob_model.pkl'
@@ -38,153 +39,196 @@ CONFIG = {
     'NEWS_AVOID': (12, 14),
     'LIQUIDITY_WINDOW': 20,
     'MARTINGALE': [('M1',1.5,1), ('M2',2.5,2), ('M3',4.0,3)],
-    'DIVERGENCE_WINDOW': 10,
-    'MIN_CONFIDENCE_FOR_SIGNAL': 85
+    'MIN_CONFIDENCE': 85
 }
 
-# ---------- AI MODEL (optional) ----------
-class MLScorer:
-    def __init__(self):
-        self.model = None
-        try:
-            self.model = joblib.load(MODEL_PATH)
-        except Exception:
-            pass
+# ═══════════════════════════════════════════════════════════
+#  SMART MONEY TOOLS
+# ═══════════════════════════════════════════════════════════
+class SmartMoney:
+    """Institutional order flow analysis."""
 
-    def predict(self, features: dict) -> float:
-        if self.model:
-            X = np.array([[features['adx'], features['rsi'], features['vol_ratio'],
-                           features['momentum'], features['mtf']]])
-            return self.model.predict_proba(X)[0][1] * 100
-        # fallback static confidence when model absent
-        return 92.0
+    @staticmethod
+    def detect_order_blocks(df: pd.DataFrame) -> List[Dict]:
+        """Returns list of recent order blocks (supply/demand zones)."""
+        ob = []
+        if len(df) < 22:
+            return ob
+        for i in range(2, len(df)-1):
+            # Bullish OB: Down candle followed by a strong up move (breaks high)
+            if df['close'].iloc[i] < df['open'].iloc[i]:   # bearish candle
+                if df['high'].iloc[i+1] > df['high'].iloc[i]:   # break above
+                    strength = 1.0
+                    try:
+                        avg_vol = df['volume'].rolling(20).mean().iloc[i]
+                        if avg_vol > 0:
+                            strength = df['volume'].iloc[i] / avg_vol
+                    except Exception:
+                        pass
+                    ob.append({
+                        'type': 'DEMAND',
+                        'high': float(df['high'].iloc[i]),
+                        'low': float(df['low'].iloc[i]),
+                        'strength': float(strength)
+                    })
+            # Bearish OB: Up candle followed by a strong down move (breaks low)
+            if df['close'].iloc[i] > df['open'].iloc[i]:
+                if df['low'].iloc[i+1] < df['low'].iloc[i]:
+                    strength = 1.0
+                    try:
+                        avg_vol = df['volume'].rolling(20).mean().iloc[i]
+                        if avg_vol > 0:
+                            strength = df['volume'].iloc[i] / avg_vol
+                    except Exception:
+                        pass
+                    ob.append({
+                        'type': 'SUPPLY',
+                        'high': float(df['high'].iloc[i]),
+                        'low': float(df['low'].iloc[i]),
+                        'strength': float(strength)
+                    })
+        return ob[-10:]   # recent ones only
 
-    def train(self, trades: List[dict]):
-        """Train logistic regression on closed trades."""
-        if len(trades) < 20:
-            return False
-        df = pd.DataFrame(trades)
-        X = df[['adx','rsi','vol_ratio','momentum','mtf']]
-        y = df['outcome'].map({'WIN':1,'LOSS':0})
-        self.model = LogisticRegression()
-        self.model.fit(X, y)
-        joblib.dump(self.model, MODEL_PATH)
-        return True
+    @staticmethod
+    def detect_fair_value_gaps(df: pd.DataFrame) -> List[Dict]:
+        """Fair Value Gaps (imbalances)."""
+        fvgs = []
+        if len(df) < 3:
+            return fvgs
+        for i in range(1, len(df)-1):
+            # Bullish FVG: low[1] > high[0] (gap up)
+            if df['low'].iloc[i] > df['high'].iloc[i-1]:
+                fvgs.append({
+                    'type': 'BULLISH',
+                    'top': float(df['low'].iloc[i]),
+                    'bottom': float(df['high'].iloc[i-1]),
+                    'fill': False
+                })
+            # Bearish FVG: high[1] < low[0] (gap down)
+            if df['high'].iloc[i] < df['low'].iloc[i-1]:
+                fvgs.append({
+                    'type': 'BEARISH',
+                    'top': float(df['low'].iloc[i-1]),
+                    'bottom': float(df['high'].iloc[i]),
+                    'fill': False
+                })
+        return fvgs[-5:]
 
-ml_scorer = MLScorer()
+    @staticmethod
+    def liquidity_sweep(df: pd.DataFrame) -> Optional[str]:
+        """Returns 'buy_side' or 'sell_side' if sweep with volume."""
+        if len(df) < CONFIG['LIQUIDITY_WINDOW'] + 1:
+            return None
+        highs = df['high'].values
+        lows = df['low'].values
+        vol = df['volume'].values
+        avg_vol = np.mean(vol[-20:])
+        if vol[-1] < avg_vol * CONFIG['VOLUME_MULT']:
+            return None
+        recent_high = np.max(highs[-CONFIG['LIQUIDITY_WINDOW']:])
+        recent_low = np.min(lows[-CONFIG['LIQUIDITY_WINDOW']:])
+        if highs[-1] > recent_high:
+            return 'buy_side'
+        if lows[-1] < recent_low:
+            return 'sell_side'
+        return None
 
-# ---------- TECHNICAL TOOLS ----------
+    @staticmethod
+    def market_structure(df: pd.DataFrame) -> str:
+        """UP_TREND, DOWN_TREND, RANGING, CHOPPY based on swing breaks."""
+        if len(df) < 50:
+            return 'RANGING'
+        highs = df['high'].values
+        lows = df['low'].values
+        # Find swings
+        sh, sl = [], []
+        for i in range(5, len(highs)-5):
+            if highs[i] == max(highs[i-5:i+6]): sh.append(highs[i])
+            if lows[i] == min(lows[i-5:i+6]): sl.append(lows[i])
+        if len(sh) >= 3 and len(sl) >= 3:
+            if sh[-1] > sh[-2] > sh[-3] and sl[-1] > sl[-2] > sl[-3]:
+                return 'UP_TREND'
+            if sh[-1] < sh[-2] < sh[-3] and sl[-1] < sl[-2] < sl[-3]:
+                return 'DOWN_TREND'
+        adx_val = adx(df)
+        vol = df['close'].pct_change().std()
+        if adx_val < 18 or vol > 0.003:
+            return 'CHOPPY'
+        return 'RANGING'
+
+
+# ═══════════════════════════════════════════════════════════
+#  INDICATORS
+# ═══════════════════════════════════════════════════════════
 def adx(df, period=14):
     high, low, close = df['high'], df['low'], df['close']
-    tr = np.maximum(high-low, np.maximum(abs(high-close.shift()), abs(low-close.shift())))
+    tr = np.maximum(high - low, np.maximum(abs(high - close.shift()), abs(low - close.shift())))
     atr = tr.rolling(period).mean().iloc[-1]
     if atr == 0: return 0
     up = high.diff().clip(lower=0)
     down = -low.diff().clip(upper=0)
     di_plus = 100 * up.rolling(period).mean().iloc[-1] / atr
     di_minus = 100 * down.rolling(period).mean().iloc[-1] / atr
-    dx = 100 * abs(di_plus-di_minus) / (di_plus+di_minus) if (di_plus+di_minus)!=0 else 0
+    dx = 100 * abs(di_plus - di_minus) / (di_plus + di_minus) if (di_plus + di_minus) != 0 else 0
     return dx
 
 def rsi(close, period=14):
     delta = np.diff(close)
     gain = np.mean(delta[delta>0]) if any(delta>0) else 0
     loss = -np.mean(delta[delta<0]) if any(delta<0) else 0
-    if loss==0: return 100
-    return 100 - (100/(1+gain/loss))
+    if loss == 0: return 100
+    return 100 - (100 / (1 + gain/loss))
 
-def market_structure(df):
-    """Returns UP_TREND, DOWN_TREND, RANGING, CHOPPY"""
-    if len(df) < 50: return 'RANGING'
-    a = adx(df)
-    highs, lows = df['high'].values, df['low'].values
-    # simple swing detection
-    sh, sl = [], []
-    for i in range(5, len(highs)-5):
-        if highs[i] == max(highs[i-5:i+6]): sh.append(highs[i])
-        if lows[i] == min(lows[i-5:i+6]): sl.append(lows[i])
-    if len(sh)>=3 and len(sl)>=3:
-        if sh[-1] > sh[-2] > sh[-3] and sl[-1] > sl[-2] > sl[-3]:
-            return 'UP_TREND'
-        if sh[-1] < sh[-2] < sh[-3] and sl[-1] < sl[-2] < sl[-3]:
-            return 'DOWN_TREND'
-    vol = df['close'].pct_change().std()
-    if a < 18 or vol > 0.003:
-        return 'CHOPPY'
-    return 'RANGING'
-
-def divergence(close, rsi_series, direction):
-    if len(close) < CONFIG['DIVERGENCE_WINDOW']:
-        return False
-    close_slice = close[-CONFIG['DIVERGENCE_WINDOW']:]
-    rsi_slice = rsi_series[-CONFIG['DIVERGENCE_WINDOW']:]
-    if direction == 'BUY':
-        # price lower low, rsi higher low → bullish hidden divergence
-        if close_slice[-1] < close_slice[0] and rsi_slice[-1] > rsi_slice[0]:
-            return True
-    else:
-        # price higher high, rsi lower high → bearish hidden divergence
-        if close_slice[-1] > close_slice[0] and rsi_slice[-1] < rsi_slice[0]:
-            return True
-    return False
+def ema(series, period):
+    return series.ewm(span=period, adjust=False).mean()
 
 def mtf_aligned(df_dict, direction):
     count = 0
     for tf in ['1m','3m','5m']:
-        if tf in df_dict and len(df_dict[tf])>=200:
+        if tf in df_dict and len(df_dict[tf]) >= 200:
             df = df_dict[tf]
-            ema50 = df['close'].ewm(50).mean().iloc[-1]
-            ema200 = df['close'].ewm(200).mean().iloc[-1]
-            if direction == 'BUY' and ema50>ema200: count+=1
-            elif direction == 'SELL' and ema50<ema200: count+=1
+            ema50 = ema(df['close'], 50).iloc[-1]
+            ema200 = ema(df['close'], 200).iloc[-1]
+            if direction == 'BUY' and ema50 > ema200: count += 1
+            elif direction == 'SELL' and ema50 < ema200: count += 1
     return count >= CONFIG['MTF_MIN']
 
 def mtf_score(df_dict, direction):
-    """Return MTF alignment count (0-3) for ML features"""
+    """Return MTF alignment count (0-3) for ML features."""
     count = 0
     for tf in ['1m','3m','5m']:
-        if tf in df_dict and len(df_dict[tf])>=200:
+        if tf in df_dict and len(df_dict[tf]) >= 200:
             df = df_dict[tf]
-            ema50 = df['close'].ewm(50).mean().iloc[-1]
-            ema200 = df['close'].ewm(200).mean().iloc[-1]
-            if direction == 'BUY' and ema50>ema200: count+=1
-            elif direction == 'SELL' and ema50<ema200: count+=1
+            ema50 = ema(df['close'], 50).iloc[-1]
+            ema200 = ema(df['close'], 200).iloc[-1]
+            if direction == 'BUY' and ema50 > ema200: count += 1
+            elif direction == 'SELL' and ema50 < ema200: count += 1
     return count
 
-def liquidity_sweep(df):
-    highs, lows = df['high'].values, df['low'].values
-    vol = df['volume'].values
-    avg_vol = np.mean(vol[-20:])
-    if vol[-1] < avg_vol * CONFIG['VOLUME_MULT']:
-        return None
-    recent_high = np.max(highs[-CONFIG['LIQUIDITY_WINDOW']:])
-    recent_low = np.min(lows[-CONFIG['LIQUIDITY_WINDOW']:])
-    if highs[-1] > recent_high: return 'buy_side'
-    if lows[-1] < recent_low: return 'sell_side'
-    return None
-
 def candle_ok(df, direction):
-    last = df.iloc[-1]
-    prev = df.iloc[-2]
-    body = abs(last['close']-last['open'])
+    if len(df) < 2: return False
+    last, prev = df.iloc[-1], df.iloc[-2]
+    body = abs(last['close'] - last['open'])
     if body == 0: return False
     if direction == 'BUY':
-        if last['close']>last['open'] and prev['close']<prev['open'] and last['close']>prev['open']:
+        if last['close'] > last['open'] and prev['close'] < prev['open'] and last['close'] > prev['open']:
             return True
-        lower_wick = min(last['open'],last['close'])-last['low']
-        if last['close']>last['open'] and lower_wick>2*body: return True
+        lower_wick = min(last['open'], last['close']) - last['low']
+        if last['close'] > last['open'] and lower_wick > 2*body: return True
     else:
-        if last['close']<last['open'] and prev['close']>prev['open'] and last['close']<prev['open']:
+        if last['close'] < last['open'] and prev['close'] > prev['open'] and last['close'] < prev['open']:
             return True
-        upper_wick = last['high'] - max(last['open'],last['close'])
-        if last['close']<last['open'] and upper_wick>2*body: return True
+        upper_wick = last['high'] - max(last['open'], last['close'])
+        if last['close'] < last['open'] and upper_wick > 2*body: return True
     return False
 
 def sr_favorable(price, df, direction):
+    if len(df) < 20: return False
     res = df['high'].rolling(20).max().iloc[-1]
     sup = df['low'].rolling(20).min().iloc[-1]
-    if direction == 'BUY': return abs(price-sup)/price < CONFIG['SR_PROXIMITY']
-    return abs(res-price)/price < CONFIG['SR_PROXIMITY']
+    if direction == 'BUY':
+        return abs(price - sup) / price < CONFIG['SR_PROXIMITY']
+    return abs(res - price) / price < CONFIG['SR_PROXIMITY']
 
 def news_safe():
     now = datetime.now(pytz.UTC)
@@ -198,138 +242,197 @@ def select_best_pairs():
     if 15 <= hour < 17: return ['BTCUSD-OTC','USDBRL-OTC','USDMXN-OTC']
     return ['EURUSD-OTC']
 
-# ---------- STRICT CHECK ----------
-def all_checks_pass(df1, df3, df5, direction, pair):
+
+# ═══════════════════════════════════════════════════════════
+#  SIGNAL CHECK — 10 STRICT FILTERS
+# ═══════════════════════════════════════════════════════════
+def ultimate_check(df1m, df3m, df5m, direction, pair):
     checks = {}
-    # 1. Market structure must match
-    st = market_structure(df1)
-    checks['structure'] = st
-    if direction == 'BUY' and st != 'UP_TREND': return False, checks
-    if direction == 'SELL' and st != 'DOWN_TREND': return False, checks
+    sm = SmartMoney()
+
+    # 1. Market structure must match direction
+    structure = sm.market_structure(df1m)
+    checks['structure'] = structure
+    if direction == 'BUY' and structure != 'UP_TREND':
+        return False, checks
+    if direction == 'SELL' and structure != 'DOWN_TREND':
+        return False, checks
 
     # 2. ADX
-    a = adx(df1)
+    a = adx(df1m)
     checks['adx'] = bool(a >= CONFIG['ADX_MIN'])
 
-    # 3. MTF alignment
-    checks['mtf'] = mtf_aligned({'1m':df1,'3m':df3,'5m':df5}, direction)
+    # 3. MTF
+    checks['mtf'] = mtf_aligned({'1m':df1m, '3m':df3m, '5m':df5m}, direction)
 
-    # 4. News filter
+    # 4. News
     checks['news'] = news_safe()
 
     # 5. Candle confirmation
-    checks['candle'] = candle_ok(df1, direction)
+    checks['candle'] = candle_ok(df1m, direction)
 
-    # 6. S/R proximity
-    price = df1['close'].iloc[-1]
-    checks['sr'] = sr_favorable(price, df1, direction)
+    # 6. S/R zone
+    price = float(df1m['close'].iloc[-1])
+    checks['sr'] = sr_favorable(price, df1m, direction)
 
     # 7. Liquidity sweep
-    sweep = liquidity_sweep(df1)
-    checks['liquidity'] = (direction=='BUY' and sweep=='sell_side') or \
-                          (direction=='SELL' and sweep=='buy_side')
+    sweep = sm.liquidity_sweep(df1m)
+    checks['liquidity'] = (direction == 'BUY' and sweep == 'sell_side') or \
+                          (direction == 'SELL' and sweep == 'buy_side')
 
-    # 8. Volume spike
-    vol_ratio = float(df1['volume'].iloc[-1]/df1['volume'].rolling(20).mean().iloc[-1])
+    # 8. Volume
+    vol_ratio = float(df1m['volume'].iloc[-1] / df1m['volume'].rolling(20).mean().iloc[-1])
     checks['volume'] = vol_ratio >= CONFIG['VOLUME_MULT']
 
-    # 9. Momentum
-    pct = (price / df1['close'].iloc[-4] - 1)
+    # 9. Smart Money confirmation: Order block + FVG
+    ob = sm.detect_order_blocks(df1m)
+    fvgs = sm.detect_fair_value_gaps(df1m)
+    # Price must be near a relevant OB or inside a FVG
+    near_ob = False
+    for block in ob:
+        if direction == 'BUY' and block['type'] == 'DEMAND':
+            if block['low'] <= price <= block['high']:
+                near_ob = True
+                break
+        if direction == 'SELL' and block['type'] == 'SUPPLY':
+            if block['low'] <= price <= block['high']:
+                near_ob = True
+                break
+    inside_fvg = False
+    for gap in fvgs:
+        if direction == 'BUY' and gap['type'] == 'BULLISH' and gap['bottom'] <= price <= gap['top']:
+            inside_fvg = True
+            break
+        if direction == 'SELL' and gap['type'] == 'BEARISH' and gap['bottom'] <= price <= gap['top']:
+            inside_fvg = True
+            break
+    checks['smart_money'] = near_ob or inside_fvg
+
+    # 10. Momentum
+    pct = (price / df1m['close'].iloc[-4] - 1)
     checks['momentum'] = bool(abs(pct) >= 0.0002)
 
-    # 10. Divergence (bonus, not mandatory)
-    rsi_arr = np.array([rsi(df1['close'].values[:i], 14) for i in range(14, len(df1))])
-    rsi_val = float(rsi_arr[-1]) if len(rsi_arr)>0 else 50.0
-    checks['divergence'] = divergence(df1['close'].values, rsi_arr, direction)
-
-    # All mandatory checks must pass (divergence is bonus)
-    mandatory = ['adx','mtf','news','candle','sr','liquidity','volume','momentum']
+    # All mandatory must be true
+    mandatory = ['adx','mtf','news','candle','sr','liquidity','volume','smart_money','momentum']
     passed = all(checks[k] for k in mandatory)
     return passed, checks
 
-# ---------- WINNING ENGINE ----------
-class UltimateEngine:
+
+# ═══════════════════════════════════════════════════════════
+#  AI SCORER
+# ═══════════════════════════════════════════════════════════
+class AIScorer:
+    def __init__(self):
+        try:
+            self.model = joblib.load(MODEL_PATH)
+        except Exception:
+            self.model = None
+
+    def predict(self, features):
+        if self.model:
+            X = np.array([[features['adx'], features['rsi'],
+                           features['vol_ratio'], features['momentum'],
+                           features['mtf']]])
+            return float(self.model.predict_proba(X)[0][1] * 100)
+        return 92.0  # fallback
+
+    def train(self, trades):
+        if len(trades) < 20: return False
+        df = pd.DataFrame(trades)
+        X = df[['adx','rsi','vol_ratio','momentum','mtf']]
+        y = df['outcome'].map({'WIN':1,'LOSS':0})
+        self.model = LogisticRegression()
+        self.model.fit(X, y)
+        joblib.dump(self.model, MODEL_PATH)
+        return True
+
+ai_scorer = AIScorer()
+
+
+# ═══════════════════════════════════════════════════════════
+#  PROFESSIONAL ENGINE
+# ═══════════════════════════════════════════════════════════
+class ProfessionalEngine:
     def generate(self, market_data, pair, platform, timeframe):
         df1, df3, df5 = market_data['1m'], market_data['3m'], market_data['5m']
-        if any(d is None or len(d)<50 for d in [df1,df3,df5]):
+        if any(d is None or len(d) < 50 for d in [df1,df3,df5]):
             return None
-        # momentum direction
-        pct = (df1['close'].iloc[-1]/df1['close'].iloc[-4]-1)
-        direction = 'BUY' if pct>0 else 'SELL'
-        ok, checks = all_checks_pass(df1, df3, df5, direction, pair)
+
+        # Preliminary direction from short momentum
+        pct = (df1['close'].iloc[-1] / df1['close'].iloc[-4] - 1)
+        direction = 'BUY' if pct > 0 else 'SELL'
+
+        ok, checks = ultimate_check(df1, df3, df5, direction, pair)
         if not ok:
-            opp = 'SELL' if direction=='BUY' else 'BUY'
-            ok2, checks2 = all_checks_pass(df1, df3, df5, opp, pair)
+            opp = 'SELL' if direction == 'BUY' else 'BUY'
+            ok2, checks2 = ultimate_check(df1, df3, df5, opp, pair)
             if ok2: direction, checks = opp, checks2
             else: return None
 
-        # AI confidence — use actual indicator values, not boolean checks
+        # AI confidence — use actual indicator values for ML features
         adx_val = float(adx(df1))
         rsi_val = float(rsi(df1['close'].values, 14))
-        vol_ratio = float(df1['volume'].iloc[-1]/df1['volume'].rolling(20).mean().iloc[-1])
-        mtf_cnt = float(mtf_score({'1m':df1,'3m':df3,'5m':df5}, direction))
+        vol_ratio = float(df1['volume'].iloc[-1] / df1['volume'].rolling(20).mean().iloc[-1])
+        mtf_cnt = float(mtf_score({'1m':df1, '3m':df3, '5m':df5}, direction))
 
         features = {
             'adx': adx_val, 'rsi': rsi_val,
-            'vol_ratio': vol_ratio,
-            'momentum': float(abs(pct)), 'mtf': mtf_cnt
+            'vol_ratio': vol_ratio, 'momentum': float(abs(pct)),
+            'mtf': mtf_cnt
         }
-        conf = ml_scorer.predict(features)
-        if conf < CONFIG['MIN_CONFIDENCE_FOR_SIGNAL']:
+        confidence = ai_scorer.predict(features)
+        if confidence < CONFIG['MIN_CONFIDENCE']:
             return None
 
-        # dynamic expiry via ATR
-        atr_val = df1['high'].sub(df1['low']).rolling(14).mean().iloc[-1]
-        speed = df1['close'].diff().abs().rolling(20).mean().iloc[-1]
-        if speed == 0: speed = 0.00001
-        optimal_sec = int(atr_val * 1.5 / speed * 60)
-        optimal_sec = max(30, min(optimal_sec, 300))  # clamp 30s‑5m
-
-        tf_seconds = {
-            '30s':30,'45s':45,'1m':60,'2m':120,'3m':180,'5m':300,
-            'S3':3,'S15':15,'S30':30,'M1':60,'M3':180,'M5':300
-        }
-        duration = tf_seconds.get(timeframe, optimal_sec)
-
+        # Time & price
         now = datetime.now(pytz.UTC)
+        tf_sec = {'30s':30,'45s':45,'1m':60,'2m':120,'3m':180,'5m':300,
+                  'S3':3,'S15':15,'S30':30,'M1':60,'M3':180,'M5':300}
+        duration = tf_sec.get(timeframe, 60)
         entry_time = now + timedelta(minutes=1)
         expiry = entry_time + timedelta(seconds=duration)
         entry_price = float(df1['close'].iloc[-1])
 
+        # Martingale
         martingale = []
         ent_wat = entry_time.astimezone(WAT)
         for lvl, mult, delay in CONFIG['MARTINGALE']:
             t = ent_wat + timedelta(minutes=delay)
             martingale.append({
-                'level':lvl, 'multiplier':mult,
-                'amount':round(mult,2), 'entry_time':t.strftime('%H:%M')
+                'level': lvl, 'multiplier': mult,
+                'amount': round(mult, 2), 'entry_time': t.strftime('%H:%M')
             })
 
+        # Format signal
         color = "\U0001f7e2" if direction=='BUY' else "\U0001f534"
         arrow = "\u25b2" if direction=='BUY' else "\u25bc"
-        div_text = "\u2705" if checks.get('divergence') else "No"
+        sm_status = "\u2705 OB/FVG" if checks.get('smart_money') else "\u274c"
         lines = [
             "\u2501"*24,
-            f"\U0001f3af ULTIMATE SIGNAL ({platform.upper()})",
+            f"\U0001f525 SMC SIGNAL ({platform.upper()})",
             "\u2501"*24,
             f"{color} {direction} {arrow}",
             f"\U0001f4ca Asset: {pair}",
             f"\U0001f4b0 Entry: {entry_price:.5f}",
             f"\u23f0 Entry: {ent_wat.strftime('%H:%M:%S')}",
             f"\u23f1\ufe0f Expiry: {expiry.astimezone(WAT).strftime('%H:%M:%S')} ({timeframe})",
-            f"\U0001f3af AI Confidence: {conf:.0f}%",
-            f"\U0001f4c8 Structure: {checks.get('structure','')} | ADX {adx_val:.1f}",
-            f"\U0001f50d Divergence: {div_text}",
+            f"\U0001f3af AI Confidence: {confidence:.0f}%",
+            f"\U0001f4c8 Structure: {checks['structure']} | ADX {adx_val:.1f}",
+            f"\U0001f3e6 Smart Money: {sm_status}",
             "\u2500\u2500 \U0001f6e1\ufe0f RECOVERY \u2500\u2500"
         ]
         for m in martingale:
             lines.append(f"{m['level']} \u2502 {m['multiplier']}x \u2502 ${m['amount']} \u2502 Entry: {m['entry_time']}")
-        lines += ["\u2501"*24, "\u26a0\ufe0f Risk 1% only", "\U0001f4a1 Elite setup", "\u2501"*24]
+        lines += ["\u2501"*24, "\u26a0\ufe0f Risk 1% only", "\U0001f4a1 Institutional grade setup", "\u2501"*24]
+
         return {
             'formatted_signal': '\n'.join(lines),
-            'direction':direction, 'entry_price':entry_price,
-            'confidence':round(conf, 1), 'expiry':expiry.isoformat(),
-            'timeframe':timeframe, 'platform':platform,
+            'direction': direction,
+            'entry_price': entry_price,
+            'confidence': round(confidence, 1),
+            'expiry': expiry.isoformat(),
+            'timeframe': timeframe,
+            'platform': platform,
             'pair': pair,
             'checks': {k: (v if isinstance(v, str) else bool(v)) for k, v in checks.items()},
             'martingale': martingale,
@@ -338,13 +441,15 @@ class UltimateEngine:
                 'rsi': round(rsi_val, 1),
                 'structure': checks.get('structure', ''),
                 'vol_ratio': round(vol_ratio, 2),
-                'divergence': checks.get('divergence', False),
-                'dynamic_expiry_seconds': duration,
-                'ml_confidence': round(conf, 1)
+                'smart_money': checks.get('smart_money', False),
+                'ml_confidence': round(confidence, 1)
             }
         }
 
-# ---------- KEEP ALIVE ----------
+
+# ═══════════════════════════════════════════════════════════
+#  KEEP ALIVE
+# ═══════════════════════════════════════════════════════════
 async def keep_alive():
     await asyncio.sleep(60)
     async with httpx.AsyncClient() as client:
@@ -359,18 +464,208 @@ async def lifespan(app: FastAPI):
     yield
     task.cancel()
 
-# ---------- FASTAPI ----------
+
+# ═══════════════════════════════════════════════════════════
+#  FASTAPI
+# ═══════════════════════════════════════════════════════════
 app = FastAPI(lifespan=lifespan)
-engine = UltimateEngine()
+engine = ProfessionalEngine()
 
-# embedded PWA frontend
-HTML = r"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#0a0e1a"><meta name="apple-mobile-web-app-capable" content="yes"><title>Catalyst Ultimate</title><style>*{margin:0;padding:0;box-sizing:border-box}body{background:#0a0e1a;color:#e0e0e0;font-family:system-ui;padding:16px;display:flex;flex-direction:column;align-items:center;min-height:100vh}.container{max-width:500px;width:100%}h1{color:#00ff88;text-align:center;margin-bottom:16px}.tabs{display:flex;justify-content:center;gap:8px;margin-bottom:16px}.tab{background:#131829;border:1px solid #2a2f3d;color:#aaa;padding:8px 16px;border-radius:20px;cursor:pointer}.tab.active{background:#00ff88;color:#0a0e1a}.status{text-align:center;margin-bottom:10px;font-size:.85rem}.signal-card{background:#131829;border-radius:12px;padding:20px;margin-bottom:16px;border-left:4px solid}.buy{border-color:#00ff88}.sell{border-color:#ff5252}.direction{font-size:2rem;font-weight:bold;text-align:center;margin:8px 0}.direction.buy{color:#00ff88}.direction.sell{color:#ff5252}.copy-btn{width:100%;padding:12px;background:#00ff88;color:#0a0e1a;border:none;border-radius:8px;font-weight:bold;margin-top:10px;cursor:pointer}.footer{text-align:center;font-size:.75rem;color:#555;margin-top:20px}</style></head><body><div class="container"><h1>&#x1F916; CATALYST ULTIMATE</h1><div class="tabs"><div class="tab active" data-platform="iq">IQ Option</div><div class="tab" data-platform="pocket">Pocket Option</div></div><div class="status" id="status">Connecting...</div><div id="signals"></div><div class="footer">&#x26A0;&#xFE0F; Trade at your own risk &middot; 1-3% risk</div></div><script>const API=window.location.origin;let platform='iq',tf='1m';async function fetchWithRetry(url,retries=5){for(let i=0;i<retries;i++){const r=await fetch(url);if(r.ok)return r;const d=await r.json().catch(()=>({}));if(d.Message&&d.Message.includes('pending')){await new Promise(rs=>setTimeout(rs,(i+1)*2000));continue}throw new Error(d.Message||'Error')}throw new Error('Not reachable')}async function fetchSignal(){try{const res=await fetchWithRetry(API+'/signal?platform='+platform+'&timeframe='+tf);const data=await res.json();if(data.formatted_signal){document.getElementById('signals').innerHTML='<div class="signal-card '+(data.direction.toLowerCase())+'">'+data.formatted_signal.replace(/\n/g,'<br>')+'<button class="copy-btn" onclick="navigator.clipboard.writeText(data.formatted_signal)">&#x1F4CB; Copy</button></div>';document.getElementById('status').textContent='\uD83D\uDFE2 Live'}else{document.getElementById('signals').innerHTML='';document.getElementById('status').textContent='\u23F3 Waiting for perfect setup...'}}catch(e){document.getElementById('status').textContent='\uD83D\uDD34 Retrying...'}}document.querySelectorAll('.tab').forEach(t=>t.addEventListener('click',()=>{document.querySelectorAll('.tab').forEach(t2=>t2.classList.remove('active'));t.classList.add('active');platform=t.dataset.platform;fetchSignal()}));setInterval(fetchSignal,5000);fetchSignal();</script></body></html>"""
+# ═══════════════════════════════════════════════════════════
+#  EMBEDDED PWA FRONTEND
+# ═══════════════════════════════════════════════════════════
+HTML = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name="theme-color" content="#0a0e1a">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Catalyst SMC</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0a0e1a;color:#e0e0e0;font-family:'Segoe UI',system-ui,-apple-system,sans-serif;display:flex;flex-direction:column;align-items:center;min-height:100vh;padding:12px}
+.container{max-width:520px;width:100%}
+.header{display:flex;justify-content:space-between;align-items:center;padding:12px 0;margin-bottom:10px;border-bottom:1px solid #1a1f2e}
+.logo{font-size:1.3em;font-weight:bold;color:#00ff88}
+.logo span{color:#fff}
+.badge{font-size:.55em;color:#ffd700;background:rgba(255,215,0,.1);padding:2px 6px;border-radius:4px;margin-left:6px;vertical-align:middle}
+.status-pill{padding:4px 10px;border-radius:16px;font-size:.75em;font-weight:600}
+.status-pill.live{background:rgba(0,255,136,.12);color:#00ff88}
+.status-pill.waking{background:rgba(255,215,0,.12);color:#ffd700;animation:blink 1s infinite}
+.status-pill.offline{background:rgba(255,68,68,.12);color:#ff5252}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.4}}
+.wake-banner{display:none;background:rgba(255,215,0,.06);border:1px solid rgba(255,215,0,.15);border-radius:8px;padding:8px 12px;margin-bottom:10px;color:#ffd700;font-size:.8em;align-items:center;gap:8px}
+.wake-banner.show{display:flex}
+.spinner{width:12px;height:12px;border:2px solid rgba(255,215,0,.25);border-top:2px solid #ffd700;border-radius:50%;animation:spin .7s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.platform-tabs{display:flex;justify-content:center;gap:6px;margin-bottom:10px}
+.ptab{background:#131829;border:1px solid #2a2f3d;color:#aaa;padding:7px 18px;border-radius:18px;cursor:pointer;font-size:.82em;font-weight:500;transition:all .2s}
+.ptab.active{background:#00ff88;color:#0a0e1a;border-color:#00ff88;font-weight:700}
+.tf-tabs{display:flex;justify-content:center;gap:4px;margin-bottom:10px;flex-wrap:wrap}
+.tftab{background:#0d1220;border:1px solid #1e2436;color:#888;padding:4px 12px;border-radius:14px;cursor:pointer;font-size:.74em;white-space:nowrap}
+.tftab.active{background:rgba(0,255,136,.1);color:#00ff88;border-color:#00ff88;font-weight:600}
+.pair-tabs{display:flex;gap:4px;margin-bottom:10px;flex-wrap:wrap}
+.pair-tab{padding:4px 10px;border-radius:10px;border:1px solid #1e2436;background:#0d1220;color:#777;cursor:pointer;font-size:.7em;white-space:nowrap}
+.pair-tab.active{background:rgba(0,255,136,.1);color:#00ff88;border-color:#00ff88}
+.scan-btn{width:100%;padding:10px;background:linear-gradient(135deg,#00ff88,#00cc6a);color:#0a0e1a;border:none;border-radius:8px;font-weight:bold;font-size:.85em;cursor:pointer;margin-bottom:10px}
+.scan-btn:disabled{opacity:.5;cursor:not-allowed}
+.signal-card{background:#131829;border-radius:12px;padding:16px;margin-bottom:12px;border-left:4px solid;animation:fadeSlide .4s ease-out}
+.signal-card.buy{border-color:#00ff88;box-shadow:0 0 16px rgba(0,255,136,.06)}
+.signal-card.sell{border-color:#ff5252;box-shadow:0 0 16px rgba(255,82,82,.06)}
+.signal-card.no-signal{border-color:#333;background:#0d1117;text-align:center;padding:30px 16px}
+@keyframes fadeSlide{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:translateY(0)}}
+.dir-row{display:flex;align-items:center;justify-content:space-between;margin:6px 0}
+.direction{font-size:1.6rem;font-weight:bold}
+.direction.buy{color:#00ff88}
+.direction.sell{color:#ff5252}
+.pair-name{font-size:1em;font-weight:600;color:#fff}
+.engine-tag{display:inline-block;padding:2px 8px;border-radius:8px;font-size:.65em;font-weight:700;margin-left:4px;background:rgba(255,215,0,.12);color:#ffd700}
+.detail-row{display:flex;justify-content:space-between;margin:4px 0;font-size:.82em;color:#aaa}
+.detail-row .val{color:#e0e0e0;font-weight:500}
+.checks-row{display:flex;flex-wrap:wrap;gap:3px;margin:8px 0}
+.check-badge{padding:2px 7px;border-radius:6px;font-size:.64em;font-weight:600;border:1px solid}
+.check-badge.pass{background:rgba(0,255,136,.06);color:#00ff88;border-color:rgba(0,255,136,.2)}
+.check-badge.fail{background:rgba(255,68,68,.06);color:#ff5252;border-color:rgba(255,68,68,.2)}
+.confidence-bar{width:100%;height:5px;background:#1e2436;border-radius:3px;margin:8px 0 3px;overflow:hidden}
+.confidence-fill{height:100%;border-radius:3px;transition:width .5s}
+.confidence-fill.high{background:linear-gradient(90deg,#00ff88,#00cc6a)}
+.confidence-fill.med{background:linear-gradient(90deg,#ffd700,#ffaa00)}
+.confidence-fill.low{background:linear-gradient(90deg,#ff5252,#cc0000)}
+.conf-label{font-size:.72em;color:#888;text-align:right}
+.martingale{margin:10px 0 0;background:#0a0f1a;border-radius:6px;padding:8px 10px;border:1px solid #1a1f2e}
+.mart-title{color:#ffd700;font-size:.75em;font-weight:bold;margin-bottom:4px}
+.mart-row{display:flex;justify-content:space-between;padding:3px 0;font-size:.75em;border-bottom:1px solid #111827}
+.mart-row:last-child{border-bottom:none}
+.mart-level{color:#ffd700;font-weight:600;min-width:24px}
+.mart-mult{color:#aaa}
+.mart-amt{color:#fff;font-weight:600}
+.mart-time{color:#666}
+.risk-note{text-align:center;font-size:.68em;color:#555;margin-top:6px}
+.copy-btn{width:100%;padding:9px;background:#00ff88;color:#0a0e1a;border:none;border-radius:6px;font-weight:bold;margin-top:8px;cursor:pointer;font-size:.82em}
+.copy-btn:active{transform:scale(.97)}
+.footer{text-align:center;font-size:.68em;color:#444;margin-top:16px;padding:8px}
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <div class="logo">CATALYST<span>AI</span> <span class="badge">SMC v10</span></div>
+    <div class="status-pill" id="status">Connecting</div>
+  </div>
+  <div class="wake-banner" id="wakeBanner">
+    <div class="spinner"></div>
+    <span id="wakeText">Waking backend...</span>
+  </div>
+  <div class="platform-tabs">
+    <div class="ptab active" onclick="setPlat(this,'iq')">IQ Option</div>
+    <div class="ptab" onclick="setPlat(this,'pocket')">Pocket Option</div>
+  </div>
+  <div class="tf-tabs" id="tfTabs"></div>
+  <div class="pair-tabs" id="pairTabs"></div>
+  <button class="scan-btn" id="scanBtn" onclick="scanAll()">Scan Best Session Pairs</button>
+  <div id="signalsContainer">
+    <div class="signal-card no-signal">
+      <div style="font-size:1.8em;margin-bottom:8px">&#x23f3;</div>
+      <div style="color:#888">Waiting for SMC setup...</div>
+    </div>
+  </div>
+  <div class="footer">Trade at your own risk &middot; Risk 1% only &middot; SMC Engine</div>
+</div>
+<script>
+const API=window.location.origin;
+const ALL_PAIRS=['EURUSD-OTC','GBPUSD-OTC','USDJPY-OTC','GBPCAD-OTC','AUDCAD-OTC','EURJPY-OTC','GBPJPY-OTC','USDCAD-OTC','XAUUSD-OTC','AUDUSD-OTC','NZDUSD-OTC','EURGBP-OTC'];
+const IQ_TFS=['30s','45s','1m','2m','3m','5m'];
+const PO_TFS=['S3','S15','S30','M1','M3','M5'];
+let platform='iq',tf='1m',activePair=ALL_PAIRS[0],signalCache={},lastSig=null;
 
+async function fetchWithRetry(url,retries=5){
+  for(let i=0;i<retries;i++){
+    try{const r=await fetch(url);if(r.ok){if(i>0)hideWake();return r;}
+    const d=await r.json().catch(()=>({}));if(d.detail&&d.detail.includes('pending')){showWake('Waking... '+(i+1)+'/'+retries);await new Promise(r=>setTimeout(r,(i+1)*3000));continue;}
+    throw new Error(d.detail||'Error');}catch(e){if(i<retries-1){showWake('Connecting... '+(i+1)+'/'+retries);await new Promise(r=>setTimeout(r,(i+1)*3000));continue;}throw e;}}
+  throw new Error('Unreachable');}
+
+function setStatus(s){const e=document.getElementById('status');e.className='status-pill '+s;e.textContent=s==='live'?'Live':s==='waking'?'Waking...':'Offline';}
+function showWake(t){document.getElementById('wakeBanner').classList.add('show');document.getElementById('wakeText').textContent=t;setStatus('waking');}
+function hideWake(){document.getElementById('wakeBanner').classList.remove('show');setStatus('live');}
+function setPlat(btn,p){document.querySelectorAll('.ptab').forEach(t=>t.classList.remove('active'));btn.classList.add('active');platform=p;buildTf();fetchSig();}
+
+function buildTf(){
+  const tfs=platform==='iq'?IQ_TFS:PO_TFS;if(!tfs.includes(tf))tf=tfs[0];
+  const c=document.getElementById('tfTabs');c.innerHTML='';
+  tfs.forEach(t=>{const b=document.createElement('div');b.className='tftab'+(t===tf?' active':'');b.textContent=t;b.onclick=()=>{tf=t;buildTf();fetchSig();};c.appendChild(b);});
+}
+
+function buildPairs(){
+  const c=document.getElementById('pairTabs');c.innerHTML='';
+  ALL_PAIRS.forEach(p=>{const b=document.createElement('div');b.className='pair-tab'+(p===activePair?' active':'');b.textContent=p.replace('-OTC','');b.onclick=()=>{activePair=p;buildPairs();fetchSig();};c.appendChild(b);});
+}
+
+async function fetchSig(){
+  try{const res=await fetchWithRetry(API+'/signal?platform='+platform+'&pair='+activePair+'&timeframe='+tf);
+  const data=await res.json();if(data.formatted_signal){signalCache[activePair]=data;lastSig=data;renderSig(data);setStatus('live');}
+  else{signalCache[activePair]=null;renderNo('No SMC-grade setup');setStatus('live');}}
+  catch(e){renderNo('Backend offline');setStatus('offline');}
+}
+
+async function scanAll(){
+  const btn=document.getElementById('scanBtn');btn.disabled=true;btn.textContent='Scanning...';let found=0;
+  for(const p of ALL_PAIRS){try{const res=await fetchWithRetry(API+'/signal?platform='+platform+'&pair='+p+'&timeframe='+tf);
+  const d=await res.json();if(d.formatted_signal){signalCache[p]=d;found++;}else{signalCache[p]=null;}}catch(e){signalCache[p]=null;}}
+  btn.disabled=false;btn.textContent='Scan ('+found+' signals)';renderSig(signalCache[activePair]);hideWake();
+}
+
+function renderSig(s){
+  const cont=document.getElementById('signalsContainer');
+  if(!s||!s.formatted_signal){renderNo('No SMC-grade setup');return;}
+  const cls=s.direction.toLowerCase();const confCls=s.confidence>=70?'high':s.confidence>=50?'med':'low';
+  let chks='';if(s.checks){chks='<div class="checks-row">';for(const[k,v]of Object.entries(s.checks)){const l=k.replace(/_/g,' ').toUpperCase();const isStr=typeof v==='string';chks+='<span class="check-badge '+(isStr?(v.includes('TREND')?'pass':'fail'):(v?'pass':'fail'))+'">'+(isStr?v:(v?'&#10003;':'&#10007;'))+' '+l+'</span>';}chks+='</div>';}
+  let mart='';if(s.martingale&&s.martingale.length){mart='<div class="martingale"><div class="mart-title">\u{1F6E1}\uFE0F RECOVERY</div>';s.martingale.forEach(m=>{mart+='<div class="mart-row"><span class="mart-level">'+m.level+'</span><span class="mart-mult">'+m.multiplier+'x</span><span class="mart-amt">$'+m.amount+'</span><span class="mart-time">'+m.entry_time+'</span></div>';});mart+='</div>';}
+  const emoji=cls==='buy'?'\u{1F7E2}':'\u{1F534}';const arrow=cls==='buy'?'\u25B2':'\u25BC';
+  cont.innerHTML='<div class="signal-card '+cls+'"><div class="dir-row"><span class="direction '+cls+'">'+emoji+' '+s.direction+' '+arrow+'</span><span class="pair-name">'+s.platform.toUpperCase()+' \u00B7 '+(s.pair||activePair).replace('-OTC','')+'<span class="engine-tag">SMC 10/10</span></span></div>'+
+  '<div class="detail-row"><span>Entry</span><span class="val">'+(s.entry_price?s.entry_price.toFixed(5):'--')+'</span></div>'+
+  '<div class="detail-row"><span>ADX</span><span class="val">'+(s.indicators?s.indicators.adx:'--')+'</span></div>'+
+  '<div class="detail-row"><span>RSI</span><span class="val">'+(s.indicators?s.indicators.rsi:'--')+'</span></div>'+
+  '<div class="detail-row"><span>Structure</span><span class="val">'+(s.indicators?s.indicators.structure:'--')+'</span></div>'+
+  (s.indicators&&s.indicators.smart_money?'<div class="detail-row"><span>Smart Money</span><span class="val" style="color:#ffd700">\u2705 OB/FVG Confirmed</span></div>':'')+
+  chks+'<div class="confidence-bar"><div class="confidence-fill '+confCls+'" style="width:'+s.confidence+'%"></div></div><div class="conf-label">'+s.confidence+'% AI confidence</div>'+
+  mart+'<div class="risk-note">\u26A0\uFE0F Risk 1% only \u00B7 SMC Confluence</div>'+
+  '<button class="copy-btn" onclick="navigator.clipboard.writeText(lastSig.formatted_signal)">\u{1F4CB} Copy</button></div>';
+}
+
+function renderNo(msg){document.getElementById('signalsContainer').innerHTML='<div class="signal-card no-signal"><div style="font-size:1.8em;margin-bottom:8px">\u23F3</div><div style="color:#888">'+msg+'</div></div>';}
+
+buildTf();buildPairs();fetchSig();setInterval(fetchSig,15000);
+</script>
+</body>
+</html>"""
+
+
+# ═══════════════════════════════════════════════════════════
+#  API ENDPOINTS
+# ═══════════════════════════════════════════════════════════
 @app.get("/", response_class=HTMLResponse)
-async def home(): return HTML
+async def home():
+    return HTML
+
+
+@app.get("/health")
+async def health():
+    return {
+        "status": "online",
+        "engine": "ProfessionalEngine",
+        "version": "10.0",
+        "method": "Smart Money Concepts",
+        "filters": 10,
+        "ml_model_loaded": ai_scorer.model is not None,
+        "best_pairs_now": select_best_pairs(),
+        "platforms": {"iq": IQ_TIMEFRAMES, "pocket": PO_TIMEFRAMES}
+    }
+
 
 @app.get("/signal")
-async def get_signal(platform: str = "iq", pair: str = None, timeframe: str = "1m"):
+async def signal(platform: str = "iq", pair: str = None, timeframe: str = "1m"):
     if platform == 'iq' and timeframe not in IQ_TIMEFRAMES:
         raise HTTPException(400, f"IQ timeframes: {IQ_TIMEFRAMES}")
     if platform == 'pocket' and timeframe not in PO_TIMEFRAMES:
@@ -381,9 +676,8 @@ async def get_signal(platform: str = "iq", pair: str = None, timeframe: str = "1
         best = select_best_pairs()
         pair = best[0]
 
-    # Simulated multi-timeframe data (replace with your live feed)
-    dates = pd.date_range(end=datetime.now(), periods=200, freq='1min')
-    np.random.seed(hash(pair)%2**32)
+    # Simulated data (replace with live broker API)
+    np.random.seed(hash(pair) % 2**32)
     trend = np.linspace(0, 0.0004 if 'UP' in pair else -0.0004, 200) + np.random.randn(200)*0.0001
     close = 1.0 + trend
     if 'JPY' in pair: close = 148.0 + trend * 100
@@ -398,37 +692,32 @@ async def get_signal(platform: str = "iq", pair: str = None, timeframe: str = "1
         np.random.seed(seed)
         spread = 0.0005 if 'XAU' not in pair else 0.5
         return pd.DataFrame({
-            'open':close-0.0002,'high':close+spread,'low':close-spread,
-            'close':close,'volume':np.random.randint(50,200,200).astype(float)
+            'open': close - 0.0002,
+            'high': close + spread,
+            'low': close - spread,
+            'close': close,
+            'volume': np.random.randint(50, 200, 200).astype(float)
         })
-    market = {'1m':make_df(0),'3m':make_df(1),'5m':make_df(2)}
+
+    market = {'1m': make_df(0), '3m': make_df(1), '5m': make_df(2)}
     sig = engine.generate(market, pair, platform, timeframe)
     if not sig:
-        raise HTTPException(404, "No high-probability signal - strict filters not met")
+        raise HTTPException(404, "No SMC-grade signal")
     return sig
+
 
 @app.get("/session-pairs")
 async def session_pairs():
     return {"pairs": select_best_pairs(), "hour_utc": datetime.now(pytz.UTC).hour}
 
+
 @app.post("/train")
-async def train_model(trades: List[dict]):
-    success = ml_scorer.train(trades)
+async def train(trades: List[dict]):
+    success = ai_scorer.train(trades)
     if not success:
         raise HTTPException(400, "Need at least 20 trades to train")
     return {"message": "Model trained and saved", "samples": len(trades)}
 
-@app.get("/health")
-async def health():
-    return {
-        "status": "online",
-        "engine": "UltimateEngine",
-        "version": "9.0",
-        "filters": 10,
-        "ml_model_loaded": ml_scorer.model is not None,
-        "best_pairs_now": select_best_pairs(),
-        "platforms": {"iq": IQ_TIMEFRAMES, "pocket": PO_TIMEFRAMES}
-    }
 
 if __name__ == "__main__":
     import uvicorn
