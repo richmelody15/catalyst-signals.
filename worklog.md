@@ -22,3 +22,31 @@ Stage Summary:
 - Backend keep-alive pings every 600s after 60s startup delay
 - GitHub Actions pings every 10 min as external wake-up
 - Production URL: https://catalyst-backend.onrender.com
+
+---
+Task ID: 2
+Agent: Main
+Task: Integrate OTC Blitz Scalper Engine + rebuild main.py as self-contained production app
+
+Work Log:
+- Created app/engine/otc_scalper.py — standalone OTCScalperEngine class
+- Rewrote main.py as self-contained single-file production app (v5.0):
+  - OTCScalperEngine with 5 momentum filters (volume, momentum, RSI, ADX, session)
+  - Embedded HTML frontend with fetchWithRetry (cold-start safe)
+  - Keep-alive via httpx self-ping (600s interval, 60s startup delay)
+  - CORS middleware for Vercel cross-origin
+  - /signal/scalp (single pair) + /signal/scalp/all (9-pair scan)
+  - /health endpoint for monitoring
+  - PWA manifest at /manifest.json
+- Updated requirements.txt (dropped apscheduler, simplified deps)
+- Created app/__init__.py + app/engine/__init__.py for proper package
+- Frontend features: pair tabs, scan-all button, confidence bar, martingale table
+- Copied all production files to /home/z/my-project/download/
+
+Stage Summary:
+- main.py is now a complete self-contained app (no dependency on catalyst_ai.py)
+- OTCScalperEngine targets 2-min expiry momentum scalps on 9 OTC pairs
+- Frontend embedded in main.py — single Render service serves both API + UI
+- fetchWithRetry: 5 retries with 3s→15s progressive delay for Render cold starts
+- Keep-alive: httpx self-ping every 600s using RENDER_EXTERNAL_URL env var
+- Files in download: catalyst-main.py, otc_scalper.py, catalyst-requirements.txt, catalyst-render.yaml
