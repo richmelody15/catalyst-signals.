@@ -1,13 +1,10 @@
 services:
   - type: web
-    name: catalyst-backend
+    name: catalyst-scalper
     env: python
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    plan: free
     envVars:
       - key: PYTHON_VERSION
         value: "3.11"
-      - key: KEEP_ALIVE_URL
-        sync: false
-      - key: KEEP_ALIVE_INTERVAL
-        value: "600"

@@ -50,3 +50,28 @@ Stage Summary:
 - fetchWithRetry: 5 retries with 3s→15s progressive delay for Render cold starts
 - Keep-alive: httpx self-ping every 600s using RENDER_EXTERNAL_URL env var
 - Files in download: catalyst-main.py, otc_scalper.py, catalyst-requirements.txt, catalyst-render.yaml
+
+---
+Task ID: 3
+Agent: Main
+Task: Upgrade to dual-platform scalper (IQ Option + Pocket Option) with timeframe validation
+
+Work Log:
+- Rewrote main.py v5.1 with dual-platform support:
+  - OTCScalper class (renamed from OTCScalperEngine) with generate_signal() method
+  - IQ Option timeframes: 30s, 45s, 1m, 2m, 3m, 5m
+  - Pocket Option timeframes: S3, S15, S30, M1, M3, M5
+  - /signal endpoint with platform+timeframe validation
+  - /signal/all for batch scanning
+- Frontend redesigned with platform tabs, timeframe tabs (per-platform), pair tabs
+- Updated render.yaml with new service name: catalyst-scalper
+- Updated otc_scalper.py module to match dual-platform engine
+- Copy button on signal cards for clipboard copy
+- fetchWithRetry still handles Render cold starts (5 retries)
+
+Stage Summary:
+- main.py is a complete dual-platform scalper (IQ + Pocket Option)
+- Endpoint: GET /signal?platform=iq&pair=EURUSD-OTC&timeframe=1m
+- Timeframe validation rejects invalid TF per platform
+- Service name: catalyst-scalper on Render free tier
+- URL: https://catalyst-scalper.onrender.com
