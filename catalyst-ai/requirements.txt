@@ -6,3 +6,5 @@ numpy
 pytz
 scikit-learn
 joblib
+iqoptionapi
+pocketoptionapi

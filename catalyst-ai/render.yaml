@@ -1,7 +1,16 @@
 services:
   - type: web
-    name: catalyst-ultimate
+    name: catalyst-blitz
     env: python
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     plan: free
+envVars:
+  - key: IQ_EMAIL
+    sync: false
+  - key: IQ_PASSWORD
+    sync: false
+  - key: PO_SSID
+    sync: false
+  - key: PO_DEMO
+    value: "1"

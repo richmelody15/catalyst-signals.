@@ -1,17 +1,19 @@
 """
-CATALYST AI v11 – ULTIMATE SMC + STRICT ENGINE
+CATALYST AI v12 – LIVE BLITZ ENGINE
+- Live broker data (IQ Option + Pocket Option) with simulated fallback
+- OTC-optimized Blitz CONFIG (faster ADX, wider zones, shorter windows)
 - Smart Money Concepts (Order Blocks, Fair Value Gaps, Liquidity Sweeps)
 - Market Structure (Uptrend/Downtrend/Ranging/Choppy)
 - Hidden RSI Divergence (bonus confidence boost)
-- AI Probability Scorer (Logistic Regression with divergence/SMC bonuses)
-- Session-based pair selection
-- 10 Strict Filters + 1 Bonus (divergence)
+- AI Probability Scorer (Logistic Regression with bonuses)
+- Platform-aware filters (volume skipped for Pocket Option)
+- Auto-scan session pairs
 - Martingale recovery
 - Self-ping keep-alive
 - Embedded PWA dashboard
 """
 
-import asyncio, httpx, os, joblib
+import asyncio, httpx, os, joblib, time as time_module
 import numpy as np, pandas as pd, pytz
 from datetime import datetime, timedelta
 from contextlib import asynccontextmanager
@@ -19,6 +21,19 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from sklearn.linear_model import LogisticRegression
 from typing import Dict, List, Optional, Tuple
+
+# Optional broker API imports (graceful fallback if not installed)
+try:
+    from iqoptionapi.stable_api import IQ_Option
+    HAS_IQ = True
+except ImportError:
+    HAS_IQ = False
+
+try:
+    from pocketoptionapi.stable_api import PocketOption
+    HAS_PO = True
+except ImportError:
+    HAS_PO = False
 
 # ═══════════════════════════════════════════════════════════
 #  CONFIG
@@ -30,19 +45,135 @@ MODEL_PATH = 'model.pkl'
 IQ_TIMEFRAMES   = ['30s','45s','1m','2m','3m','5m']
 PO_TIMEFRAMES   = ['S3','S15','S30','M1','M3','M5']
 
+# ⚡ Optimised for OTC Blitz (quick, strong moves)
 CONFIG = {
-    'ADX_MIN': 25,
-    'VOLUME_MULT': 1.5,
-    'RSI_LIMIT': 70,
-    'RSI_FLOOR': 30,
-    'MTF_MIN': 2,
-    'SR_PROXIMITY': 0.005,
+    'ADX_MIN': 20,                 # slightly lower – OTC trends can spike fast
+    'VOLUME_MULT': 1.3,            # OTC volume can be erratic
+    'RSI_OB': 65,                  # tighter overbought
+    'RSI_OS': 35,                  # tighter oversold
+    'MTF_MIN': 2,                  # keep strict
+    'SR_PROXIMITY': 0.008,         # wider zone for fast markets
     'NEWS_AVOID': (12, 14),
-    'LIQUIDITY_WINDOW': 20,
+    'LIQUIDITY_WINDOW': 15,        # shorter lookback for sweeps
+    'MOMENTUM_MIN': 0.0003,        # require slightly more move
     'MARTINGALE': [('M1',1.5,1), ('M2',2.5,2), ('M3',4.0,3)],
-    'DIVERGENCE_WINDOW': 10,
-    'MIN_CONFIDENCE': 80
+    'MIN_CONFIDENCE': 80,
+    'DIVERGENCE_WINDOW': 10
 }
+
+
+# ═══════════════════════════════════════════════════════════
+#  LIVE DATA FEED
+# ═══════════════════════════════════════════════════════════
+class LiveDataFeed:
+    """Connects to IQ Option and Pocket Option APIs with graceful fallback."""
+
+    def __init__(self):
+        self.iq = None
+        self.po = None
+        self._connect_all()
+
+    def _connect_all(self):
+        # IQ Option
+        iq_email = os.getenv('IQ_EMAIL', '')
+        iq_pass = os.getenv('IQ_PASSWORD', '')
+        if HAS_IQ and iq_email and iq_pass:
+            try:
+                self.iq = IQ_Option(iq_email, iq_pass)
+                check, reason = self.iq.connect()
+                if check:
+                    self.iq.change_balance('PRACTICE')
+                    print("✅ IQ Option connected (PRACTICE)")
+                else:
+                    print(f"⚠️ IQ Option login failed: {reason}")
+                    self.iq = None
+            except Exception as e:
+                print(f"⚠️ IQ Option error: {e}")
+                self.iq = None
+        else:
+            print("ℹ️ IQ Option: no credentials or library not installed – using simulated data")
+
+        # Pocket Option
+        po_ssid = os.getenv('PO_SSID', '')
+        if HAS_PO and po_ssid:
+            try:
+                demo = os.getenv('PO_DEMO', '1') == '1'
+                self.po = PocketOption(po_ssid, demo)
+                self.po.connect()
+                print("✅ Pocket Option connected")
+            except Exception as e:
+                print(f"⚠️ Pocket Option error: {e}")
+                self.po = None
+        else:
+            print("ℹ️ Pocket Option: no SSID or library not installed – using simulated data")
+
+    @property
+    def is_live(self, platform='iq'):
+        if platform == 'iq':
+            return self.iq is not None
+        return self.po is not None
+
+    def get_candles(self, platform, pair, timeframe_sec, count=200):
+        """Fetch OHLCV DataFrame. Falls back to simulated data on error."""
+        try:
+            if platform == 'iq' and self.iq is not None:
+                return self._get_iq_candles(pair, timeframe_sec, count)
+            elif platform == 'pocket' and self.po is not None:
+                return self._get_po_candles(pair, timeframe_sec, count)
+        except Exception as e:
+            print(f"⚠️ Live data error for {pair}: {e}")
+
+        # Fallback to simulated data
+        return self._generate_simulated(pair, count)
+
+    def _get_iq_candles(self, pair, timeframe_sec, count):
+        end = time_module.time()
+        candles = self.iq.get_candles(pair, timeframe_sec, count, end)
+        df = pd.DataFrame(candles)
+        if not df.empty:
+            df = df.rename(columns={
+                'open': 'open', 'high': 'high',
+                'low': 'low', 'close': 'close', 'volume': 'volume'
+            })
+        return df
+
+    def _get_po_candles(self, pair, timeframe_sec, count):
+        end = int(time_module.time())
+        start = end - (count * timeframe_sec)
+        candles = self.po.get_history(pair, timeframe_sec, start, end)
+        df = pd.DataFrame(candles)
+        if not df.empty:
+            df = df.rename(columns={
+                'open': 'open', 'high': 'high',
+                'low': 'low', 'close': 'close'
+            })
+            # Pocket Option does NOT provide volume – generate pseudo volume
+            if 'volume' not in df.columns or df['volume'].isna().all():
+                df['volume'] = ((df['high'] - df['low']) * 10000).astype(int)
+        return df
+
+    def _generate_simulated(self, pair, count=200):
+        """Simulated data fallback when broker APIs are unavailable."""
+        np.random.seed(hash(pair) % 2**32)
+        trend = np.linspace(0, 0.0004 if 'UP' in pair else -0.0004, count) + np.random.randn(count)*0.0001
+        close = 1.0 + trend
+        if 'JPY' in pair: close = 148.0 + trend * 100
+        elif 'XAU' in pair: close = 2350.0 + trend * 10000
+        elif 'BTC' in pair: close = 65000.0 + trend * 50000
+        elif 'BRL' in pair: close = 5.0 + trend
+        elif 'MXN' in pair: close = 17.0 + trend * 10
+        elif 'GBP' in pair or 'CAD' in pair: close = 1.35 + trend
+        elif 'AUD' in pair: close = 0.65 + trend
+
+        spread = 0.0005 if 'XAU' not in pair else 0.5
+        return pd.DataFrame({
+            'open': close - 0.0002,
+            'high': close + spread,
+            'low': close - spread,
+            'close': close,
+            'volume': np.random.randint(50, 200, count).astype(float)
+        })
+
 
 # ═══════════════════════════════════════════════════════════
 #  INDICATORS
@@ -70,25 +201,19 @@ def rsi(close, period=14):
 # ═══════════════════════════════════════════════════════════
 #  MARKET STRUCTURE
 # ═══════════════════════════════════════════════════════════
-def market_structure(df) -> str:
-    """Returns UP_TREND, DOWN_TREND, RANGING, CHOPPY"""
-    if len(df) < 50:
-        return 'RANGING'
-    highs = df['high'].values
-    lows = df['low'].values
+def market_structure(df):
+    if len(df) < 50: return 'RANGING'
+    highs, lows = df['high'].values, df['low'].values
     sh, sl = [], []
     for i in range(5, len(highs) - 5):
         if highs[i] == max(highs[i-5:i+6]): sh.append(highs[i])
         if lows[i] == min(lows[i-5:i+6]): sl.append(lows[i])
     if len(sh) >= 3 and len(sl) >= 3:
-        if sh[-1] > sh[-2] > sh[-3] and sl[-1] > sl[-2] > sl[-3]:
-            return 'UP_TREND'
-        if sh[-1] < sh[-2] < sh[-3] and sl[-1] < sl[-2] < sl[-3]:
-            return 'DOWN_TREND'
+        if sh[-1] > sh[-2] > sh[-3] and sl[-1] > sl[-2] > sl[-3]: return 'UP_TREND'
+        if sh[-1] < sh[-2] < sh[-3] and sl[-1] < sl[-2] < sl[-3]: return 'DOWN_TREND'
     a = adx(df)
     vol = df['close'].pct_change().std()
-    if a < 18 or vol > 0.003:
-        return 'CHOPPY'
+    if a < 18 or vol > 0.003: return 'CHOPPY'
     return 'RANGING'
 
 
@@ -96,67 +221,34 @@ def market_structure(df) -> str:
 #  SMART MONEY CONCEPTS
 # ═══════════════════════════════════════════════════════════
 def detect_order_blocks(df):
-    """Detect institutional order blocks (demand/supply zones)."""
     obs = []
-    if len(df) < 3:
-        return obs
+    if len(df) < 3: return obs
     for i in range(2, len(df)-1):
-        # Bullish OB: bearish candle followed by break above
-        if df['close'].iloc[i] < df['open'].iloc[i]:
-            if df['high'].iloc[i+1] > df['high'].iloc[i]:
-                obs.append({
-                    'type': 'DEMAND',
-                    'high': float(df['high'].iloc[i]),
-                    'low': float(df['low'].iloc[i])
-                })
-        # Bearish OB: bullish candle followed by break below
-        if df['close'].iloc[i] > df['open'].iloc[i]:
-            if df['low'].iloc[i+1] < df['low'].iloc[i]:
-                obs.append({
-                    'type': 'SUPPLY',
-                    'high': float(df['high'].iloc[i]),
-                    'low': float(df['low'].iloc[i])
-                })
+        if df['close'].iloc[i] < df['open'].iloc[i] and df['high'].iloc[i+1] > df['high'].iloc[i]:
+            obs.append({'type': 'DEMAND', 'high': float(df['high'].iloc[i]), 'low': float(df['low'].iloc[i])})
+        if df['close'].iloc[i] > df['open'].iloc[i] and df['low'].iloc[i+1] < df['low'].iloc[i]:
+            obs.append({'type': 'SUPPLY', 'high': float(df['high'].iloc[i]), 'low': float(df['low'].iloc[i])})
     return obs[-10:]
 
 def detect_fvg(df):
-    """Detect Fair Value Gaps (imbalances)."""
     fvgs = []
-    if len(df) < 3:
-        return fvgs
+    if len(df) < 3: return fvgs
     for i in range(1, len(df)-1):
-        # Bullish FVG: gap up
         if df['low'].iloc[i] > df['high'].iloc[i-1]:
-            fvgs.append({
-                'type': 'BULLISH',
-                'top': float(df['low'].iloc[i]),
-                'bottom': float(df['high'].iloc[i-1])
-            })
-        # Bearish FVG: gap down
+            fvgs.append({'type': 'BULLISH', 'top': float(df['low'].iloc[i]), 'bottom': float(df['high'].iloc[i-1])})
         if df['high'].iloc[i] < df['low'].iloc[i-1]:
-            fvgs.append({
-                'type': 'BEARISH',
-                'top': float(df['low'].iloc[i-1]),
-                'bottom': float(df['high'].iloc[i])
-            })
+            fvgs.append({'type': 'BEARISH', 'top': float(df['low'].iloc[i-1]), 'bottom': float(df['high'].iloc[i])})
     return fvgs[-5:]
 
 def smart_money_confirmation(price, df, direction):
-    """Check if price is near an Order Block or inside a Fair Value Gap."""
     obs = detect_order_blocks(df)
     fvgs = detect_fvg(df)
-    # Check OB
     for ob in obs:
-        if direction == 'BUY' and ob['type'] == 'DEMAND' and ob['low'] <= price <= ob['high']:
-            return True
-        if direction == 'SELL' and ob['type'] == 'SUPPLY' and ob['low'] <= price <= ob['high']:
-            return True
-    # Check FVG
+        if direction == 'BUY' and ob['type'] == 'DEMAND' and ob['low'] <= price <= ob['high']: return True
+        if direction == 'SELL' and ob['type'] == 'SUPPLY' and ob['low'] <= price <= ob['high']: return True
     for fvg in fvgs:
-        if direction == 'BUY' and fvg['type'] == 'BULLISH' and fvg['bottom'] <= price <= fvg['top']:
-            return True
-        if direction == 'SELL' and fvg['type'] == 'BEARISH' and fvg['bottom'] <= price <= fvg['top']:
-            return True
+        if direction == 'BUY' and fvg['type'] == 'BULLISH' and fvg['bottom'] <= price <= fvg['top']: return True
+        if direction == 'SELL' and fvg['type'] == 'BEARISH' and fvg['bottom'] <= price <= fvg['top']: return True
     return False
 
 
@@ -175,7 +267,6 @@ def mtf_aligned(df_dict, direction):
     return count >= CONFIG['MTF_MIN']
 
 def mtf_score(df_dict, direction):
-    """Return MTF alignment count (0-3) for ML features."""
     count = 0
     for tf in ['1m','3m','5m']:
         if tf in df_dict and len(df_dict[tf]) >= 200:
@@ -192,45 +283,32 @@ def candle_ok(df, direction):
     body = abs(last['close'] - last['open'])
     if body == 0: return False
     if direction == 'BUY':
-        # bullish engulfing
-        if last['close'] > last['open'] and prev['close'] < prev['open'] and last['close'] > prev['open']:
-            return True
-        # hammer
+        if last['close'] > last['open'] and prev['close'] < prev['open'] and last['close'] > prev['open']: return True
         lower_wick = min(last['open'], last['close']) - last['low']
-        if last['close'] > last['open'] and lower_wick > 2 * body:
-            return True
+        if last['close'] > last['open'] and lower_wick > 2 * body: return True
     else:
-        # bearish engulfing
-        if last['close'] < last['open'] and prev['close'] > prev['open'] and last['close'] < prev['open']:
-            return True
-        # shooting star
+        if last['close'] < last['open'] and prev['close'] > prev['open'] and last['close'] < prev['open']: return True
         upper_wick = last['high'] - max(last['open'], last['close'])
-        if last['close'] < last['open'] and upper_wick > 2 * body:
-            return True
+        if last['close'] < last['open'] and upper_wick > 2 * body: return True
     return False
 
 def sr_favorable(price, df, direction):
     if len(df) < 20: return False
     res = df['high'].rolling(20).max().iloc[-1]
     sup = df['low'].rolling(20).min().iloc[-1]
-    if direction == 'BUY':
-        return abs(price - sup) / price < CONFIG['SR_PROXIMITY']
+    if direction == 'BUY': return abs(price - sup) / price < CONFIG['SR_PROXIMITY']
     return abs(res - price) / price < CONFIG['SR_PROXIMITY']
 
 def liquidity_sweep(df):
-    if len(df) < CONFIG['LIQUIDITY_WINDOW'] + 1:
-        return None
+    if len(df) < CONFIG['LIQUIDITY_WINDOW'] + 1: return None
     highs, lows = df['high'].values, df['low'].values
     vol = df['volume'].values
     avg_vol = np.mean(vol[-20:])
-    if vol[-1] < avg_vol * CONFIG['VOLUME_MULT']:
-        return None
+    if vol[-1] < avg_vol * CONFIG['VOLUME_MULT']: return None
     recent_high = np.max(highs[-CONFIG['LIQUIDITY_WINDOW']:])
     recent_low = np.min(lows[-CONFIG['LIQUIDITY_WINDOW']:])
-    if highs[-1] > recent_high:
-        return 'buy_side'
-    if lows[-1] < recent_low:
-        return 'sell_side'
+    if highs[-1] > recent_high: return 'buy_side'
+    if lows[-1] < recent_low: return 'sell_side'
     return None
 
 def news_safe():
@@ -238,86 +316,77 @@ def news_safe():
     return not (CONFIG['NEWS_AVOID'][0] <= now.hour < CONFIG['NEWS_AVOID'][1])
 
 def detect_divergence(close, rsi_array, direction):
-    """Hidden RSI divergence — bonus filter."""
-    if len(close) < CONFIG['DIVERGENCE_WINDOW']:
-        return False
+    if len(close) < CONFIG['DIVERGENCE_WINDOW']: return False
     c = close[-CONFIG['DIVERGENCE_WINDOW']:]
     r = rsi_array[-CONFIG['DIVERGENCE_WINDOW']:]
-    if direction == 'BUY' and c[-1] < c[0] and r[-1] > r[0]:
-        return True
-    if direction == 'SELL' and c[-1] > c[0] and r[-1] < r[0]:
-        return True
+    if direction == 'BUY' and c[-1] < c[0] and r[-1] > r[0]: return True
+    if direction == 'SELL' and c[-1] > c[0] and r[-1] < r[0]: return True
     return False
 
 def select_best_pairs():
     """Return the most predictable OTC pairs for current session."""
-    now = datetime.now(pytz.UTC)
-    hour = now.hour
-    if 8 <= hour < 10:
-        return ['EURUSD-OTC','GBPUSD-OTC','EURGBP-OTC']
-    elif 13 <= hour < 15:
-        return ['XAUUSD-OTC','USDCAD-OTC','EURJPY-OTC']
-    elif 15 <= hour < 17:
-        return ['BTCUSD-OTC','USDBRL-OTC','USDMXN-OTC']
-    else:
-        return ['EURUSD-OTC']   # quiet hours fallback
+    hour = datetime.now(pytz.UTC).hour
+    if 8 <= hour < 10: return ['EURUSD-OTC','GBPUSD-OTC','EURGBP-OTC']
+    elif 13 <= hour < 15: return ['XAUUSD-OTC','USDCAD-OTC','EURJPY-OTC']
+    elif 15 <= hour < 17: return ['BTCUSD-OTC','USDBRL-OTC','USDMXN-OTC']
+    else: return ['EURUSD-OTC']
 
 
 # ═══════════════════════════════════════════════════════════
-#  STRICT FILTER GATE (10 mandatory + 1 bonus)
+#  FILTER GATE (10 mandatory + 1 bonus) — platform-aware
 # ═══════════════════════════════════════════════════════════
-def filter_gate(df1m, df3m, df5m, direction, pair):
+def filter_gate(df1, df3, df5, direction, platform):
     """
     Returns (passed, checks_dict).
-    10 mandatory filters must all pass; divergence is bonus.
+    Platform-aware: volume filter skipped for Pocket Option.
     """
     checks = {}
 
-    # Gate 1: Market Structure — MUST match direction
-    structure = market_structure(df1m)
-    checks['market_structure'] = structure
-    if direction == 'BUY' and structure != 'UP_TREND':
-        return False, checks
-    if direction == 'SELL' and structure != 'DOWN_TREND':
-        return False, checks
+    # Gate 1: Market Structure
+    structure = market_structure(df1)
+    checks['structure'] = structure
+    if direction == 'BUY' and structure != 'UP_TREND': return False, checks
+    if direction == 'SELL' and structure != 'DOWN_TREND': return False, checks
 
     # 2: ADX
-    checks['adx'] = bool(adx(df1m) >= CONFIG['ADX_MIN'])
+    checks['adx'] = bool(adx(df1) >= CONFIG['ADX_MIN'])
 
     # 3: MTF
-    checks['mtf'] = mtf_aligned({'1m': df1m, '3m': df3m, '5m': df5m}, direction)
+    checks['mtf'] = mtf_aligned({'1m': df1, '3m': df3, '5m': df5}, direction)
 
     # 4: News
     checks['news'] = news_safe()
 
     # 5: Candle
-    checks['candle'] = candle_ok(df1m, direction)
+    checks['candle'] = candle_ok(df1, direction)
 
     # 6: S/R
-    price = float(df1m['close'].iloc[-1])
-    checks['sr'] = sr_favorable(price, df1m, direction)
+    price = float(df1['close'].iloc[-1])
+    checks['sr'] = sr_favorable(price, df1, direction)
 
     # 7: Liquidity
-    sweep = liquidity_sweep(df1m)
+    sweep = liquidity_sweep(df1)
     checks['liquidity'] = (direction == 'BUY' and sweep == 'sell_side') or \
                           (direction == 'SELL' and sweep == 'buy_side')
 
-    # 8: Volume
-    vol_ratio = float(df1m['volume'].iloc[-1] / df1m['volume'].rolling(20).mean().iloc[-1])
-    checks['volume'] = vol_ratio >= CONFIG['VOLUME_MULT']
+    # 8: Volume (skip for Pocket Option — no real volume)
+    if platform == 'pocket':
+        checks['volume'] = True
+    else:
+        vol_ratio = float(df1['volume'].iloc[-1] / df1['volume'].rolling(20).mean().iloc[-1])
+        checks['volume'] = vol_ratio >= CONFIG['VOLUME_MULT']
 
     # 9: Smart Money (OB or FVG)
-    checks['smart_money'] = smart_money_confirmation(price, df1m, direction)
+    checks['smart_money'] = smart_money_confirmation(price, df1, direction)
 
     # 10: Momentum
-    pct = (price / df1m['close'].iloc[-4] - 1)
-    checks['momentum'] = bool(abs(pct) >= 0.0002)
+    pct = (price / df1['close'].iloc[-4] - 1)
+    checks['momentum'] = bool(abs(pct) >= CONFIG['MOMENTUM_MIN'])
 
-    # Bonus: Divergence (boosts AI confidence, not mandatory)
-    rsi_vals = np.array([rsi(df1m['close'].values[:i], 14) for i in range(14, len(df1m))])
-    checks['divergence'] = detect_divergence(df1m['close'].values, rsi_vals, direction)
+    # Bonus: Divergence
+    rsi_vals = np.array([rsi(df1['close'].values[:i], 14) for i in range(14, len(df1))])
+    checks['divergence'] = detect_divergence(df1['close'].values, rsi_vals, direction)
 
-    # All 10 mandatory must pass (excluding divergence)
     mandatory = ['adx','mtf','news','candle','sr','liquidity','volume','smart_money','momentum']
     passed = all(checks[k] for k in mandatory)
     return passed, checks
@@ -339,12 +408,9 @@ class AIScorer:
                            features['vol_ratio'], features['momentum'],
                            features['mtf']]])
             return float(self.model.predict_proba(X)[0][1] * 100)
-        # Fallback: base confidence + bonuses for SMC + divergence
         base = 86.0
-        if features.get('divergence', False):
-            base += 5
-        if features.get('smart_money', False):
-            base += 4
+        if features.get('divergence'): base += 5
+        if features.get('smart_money'): base += 4
         return min(base, 98.0)
 
     def train(self, trades):
@@ -361,7 +427,7 @@ ai_scorer = AIScorer()
 
 
 # ═══════════════════════════════════════════════════════════
-#  ULTIMATE ENGINE
+#  ULTIMATE BLITZ ENGINE
 # ═══════════════════════════════════════════════════════════
 class UltimateEngine:
     def generate(self, market_data, pair, platform, timeframe):
@@ -369,50 +435,42 @@ class UltimateEngine:
         if any(d is None or len(d) < 50 for d in [df1, df3, df5]):
             return None
 
-        # Determine direction from momentum
         momentum_pct = (df1['close'].iloc[-1] / df1['close'].iloc[-4] - 1)
         direction = 'BUY' if momentum_pct > 0 else 'SELL'
 
-        passed, checks = filter_gate(df1, df3, df5, direction, pair)
+        passed, checks = filter_gate(df1, df3, df5, direction, platform)
         if not passed:
             opp = 'SELL' if direction == 'BUY' else 'BUY'
-            passed2, checks2 = filter_gate(df1, df3, df5, opp, pair)
-            if passed2:
-                direction, checks = opp, checks2
-            else:
-                return None
+            passed2, checks2 = filter_gate(df1, df3, df5, opp, platform)
+            if passed2: direction, checks = opp, checks2
+            else: return None
 
-        # AI confidence — use actual indicator values for ML features
+        # AI confidence
         adx_val = float(adx(df1))
         rsi_val = float(rsi(df1['close'].values, 14))
-        vol_ratio = float(df1['volume'].iloc[-1] / df1['volume'].rolling(20).mean().iloc[-1])
+        vol_ratio = float(df1['volume'].iloc[-1] / df1['volume'].rolling(20).mean().iloc[-1]) if platform == 'iq' else 1.5
         mtf_cnt = float(mtf_score({'1m':df1, '3m':df3, '5m':df5}, direction))
 
         features = {
-            'adx': adx_val,
-            'rsi': rsi_val,
-            'vol_ratio': vol_ratio,
-            'momentum': float(abs(momentum_pct)),
+            'adx': adx_val, 'rsi': rsi_val,
+            'vol_ratio': vol_ratio, 'momentum': float(abs(momentum_pct)),
             'mtf': mtf_cnt,
             'divergence': checks.get('divergence', False),
             'smart_money': checks.get('smart_money', False)
         }
         confidence = ai_scorer.predict(features)
-        if confidence < CONFIG['MIN_CONFIDENCE']:
-            return None
+        if confidence < CONFIG['MIN_CONFIDENCE']: return None
 
         # Time & expiry
-        tf_seconds = {
-            '30s':30,'45s':45,'1m':60,'2m':120,'3m':180,'5m':300,
-            'S3':3,'S15':15,'S30':30,'M1':60,'M3':180,'M5':300
-        }
-        duration = tf_seconds.get(timeframe, 60)
+        tf_sec = {'30s':30,'45s':45,'1m':60,'2m':120,'3m':180,'5m':300,
+                  'S3':3,'S15':15,'S30':30,'M1':60,'M3':180,'M5':300}
+        duration = tf_sec.get(timeframe, 60)
         now = datetime.now(pytz.UTC)
         entry_time = now + timedelta(minutes=1)
         expiry = entry_time + timedelta(seconds=duration)
         entry_price = float(df1['close'].iloc[-1])
 
-        # Martingale table
+        # Martingale
         martingale = []
         ent_wat = entry_time.astimezone(WAT)
         for lvl, mult, delay in CONFIG['MARTINGALE']:
@@ -422,12 +480,13 @@ class UltimateEngine:
                 'amount': round(mult, 2), 'entry_time': t.strftime('%H:%M')
             })
 
-        # Format output
+        # Format
         color = "\U0001f7e2" if direction == 'BUY' else "\U0001f534"
         arrow = "\u25b2" if direction == 'BUY' else "\u25bc"
+        data_src = "LIVE" if feed.is_live(platform) else "SIM"
         lines = [
             "\u2501"*24,
-            f"\U0001f3af PERFECT SMC SIGNAL ({platform.upper()})",
+            f"\u26a1 LIVE BLITZ SIGNAL ({platform.upper()}) [{data_src}]",
             "\u2501"*24,
             f"{color} {direction} {arrow}",
             f"\U0001f4ca Asset: {pair}",
@@ -435,14 +494,14 @@ class UltimateEngine:
             f"\u23f0 Entry: {ent_wat.strftime('%H:%M:%S')}",
             f"\u23f1\ufe0f Expiry: {expiry.astimezone(WAT).strftime('%H:%M:%S')} ({timeframe})",
             f"\U0001f3af Confidence: {confidence:.0f}%",
-            f"\U0001f4c8 Structure: {checks['market_structure']}",
+            f"\U0001f4c8 Structure: {checks['structure']}",
             f"\U0001f3e6 Smart Money: {'\u2705' if checks['smart_money'] else '\u274c'}",
             f"\U0001f50d Divergence: {'\u2705' if checks.get('divergence') else 'No bonus'}",
             "\u2500\u2500 \U0001f6e1\ufe0f RECOVERY \u2500\u2500"
         ]
         for m in martingale:
             lines.append(f"{m['level']} \u2502 {m['multiplier']}x \u2502 ${m['amount']} \u2502 Entry: {m['entry_time']}")
-        lines += ["\u2501"*24, "\u26a0\ufe0f Risk 1% only", "\U0001f4a1 Institutional grade", "\u2501"*24]
+        lines += ["\u2501"*24, "\u26a0\ufe0f Risk 1% only", "\U0001f4a1 Blitz-optimised", "\u2501"*24]
 
         return {
             'formatted_signal': '\n'.join(lines),
@@ -453,12 +512,13 @@ class UltimateEngine:
             'timeframe': timeframe,
             'platform': platform,
             'pair': pair,
+            'data_source': data_src,
             'checks': {k: (v if isinstance(v, str) else bool(v)) for k, v in checks.items()},
             'martingale': martingale,
             'indicators': {
                 'adx': round(adx_val, 1),
                 'rsi': round(rsi_val, 1),
-                'structure': checks.get('market_structure', ''),
+                'structure': checks.get('structure', ''),
                 'vol_ratio': round(vol_ratio, 2),
                 'smart_money': checks.get('smart_money', False),
                 'divergence': checks.get('divergence', False),
@@ -490,6 +550,8 @@ async def lifespan(app: FastAPI):
 # ═══════════════════════════════════════════════════════════
 app = FastAPI(lifespan=lifespan)
 engine = UltimateEngine()
+feed = LiveDataFeed()
+
 
 # ═══════════════════════════════════════════════════════════
 #  EMBEDDED PWA FRONTEND
@@ -501,7 +563,7 @@ HTML = r"""<!DOCTYPE html>
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
 <meta name="theme-color" content="#0a0e1a">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<title>Catalyst SMC</title>
+<title>Catalyst Blitz</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{background:#0a0e1a;color:#e0e0e0;font-family:'Segoe UI',system-ui,-apple-system,sans-serif;display:flex;flex-direction:column;align-items:center;min-height:100vh;padding:12px}
@@ -510,6 +572,10 @@ body{background:#0a0e1a;color:#e0e0e0;font-family:'Segoe UI',system-ui,-apple-sy
 .logo{font-size:1.3em;font-weight:bold;color:#00ff88}
 .logo span{color:#fff}
 .badge{font-size:.55em;color:#ffd700;background:rgba(255,215,0,.1);padding:2px 6px;border-radius:4px;margin-left:6px;vertical-align:middle}
+.live-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;animation:pulse 1.5s infinite}
+.live-dot.on{background:#00ff88}
+.live-dot.sim{background:#ffd700}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
 .status-pill{padding:4px 10px;border-radius:16px;font-size:.75em;font-weight:600}
 .status-pill.live{background:rgba(0,255,136,.12);color:#00ff88}
 .status-pill.waking{background:rgba(255,215,0,.12);color:#ffd700;animation:blink 1s infinite}
@@ -541,6 +607,9 @@ body{background:#0a0e1a;color:#e0e0e0;font-family:'Segoe UI',system-ui,-apple-sy
 .direction.sell{color:#ff5252}
 .pair-name{font-size:1em;font-weight:600;color:#fff}
 .engine-tag{display:inline-block;padding:2px 8px;border-radius:8px;font-size:.65em;font-weight:700;margin-left:4px;background:rgba(255,215,0,.12);color:#ffd700}
+.data-tag{display:inline-block;padding:2px 6px;border-radius:6px;font-size:.6em;font-weight:700;margin-left:4px}
+.data-tag.live{background:rgba(0,255,136,.12);color:#00ff88}
+.data-tag.sim{background:rgba(255,215,0,.12);color:#ffd700}
 .detail-row{display:flex;justify-content:space-between;margin:4px 0;font-size:.82em;color:#aaa}
 .detail-row .val{color:#e0e0e0;font-weight:500}
 .checks-row{display:flex;flex-wrap:wrap;gap:3px;margin:8px 0}
@@ -570,7 +639,7 @@ body{background:#0a0e1a;color:#e0e0e0;font-family:'Segoe UI',system-ui,-apple-sy
 <body>
 <div class="container">
   <div class="header">
-    <div class="logo">CATALYST<span>AI</span> <span class="badge">SMC v11</span></div>
+    <div class="logo">CATALYST<span>AI</span> <span class="badge">BLITZ v12</span></div>
     <div class="status-pill" id="status">Connecting</div>
   </div>
   <div class="wake-banner" id="wakeBanner">
@@ -586,11 +655,11 @@ body{background:#0a0e1a;color:#e0e0e0;font-family:'Segoe UI',system-ui,-apple-sy
   <button class="scan-btn" id="scanBtn" onclick="scanAll()">Scan Best Session Pairs</button>
   <div id="signalsContainer">
     <div class="signal-card no-signal">
-      <div style="font-size:1.8em;margin-bottom:8px">&#x23f3;</div>
-      <div style="color:#888">Waiting for SMC setup...</div>
+      <div style="font-size:1.8em;margin-bottom:8px">&#x26a1;</div>
+      <div style="color:#888">Waiting for Blitz setup...</div>
     </div>
   </div>
-  <div class="footer">Trade at your own risk &middot; Risk 1% only &middot; SMC Engine</div>
+  <div class="footer">Trade at your own risk &middot; Risk 1% only &middot; Blitz Engine</div>
 </div>
 <script>
 const API=window.location.origin;
@@ -619,13 +688,20 @@ function buildTf(){
 
 function buildPairs(){
   const c=document.getElementById('pairTabs');c.innerHTML='';
-  ALL_PAIRS.forEach(p=>{const b=document.createElement('div');b.className='pair-tab'+(p===activePair?' active':'');b.textContent=p.replace('-OTC','');b.onclick=()=>{activePair=p;buildPairs();fetchSig();};c.appendChild(b);});
+  ALL_PAIRS.forEach(p=>{const b=document.createElement('div');b.className='pair-tab'+(p===activePair?' active':'');b.textContent=p.replace('-OTC','');b.onclick=()=>{activePair=p;buildPairs();fetchSigForPair();};c.appendChild(b);});
 }
 
 async function fetchSig(){
   try{const res=await fetchWithRetry(API+'/signal?platform='+platform+'&timeframe='+tf);
   const data=await res.json();if(data.formatted_signal){lastSig=data;renderSig(data);setStatus('live');}
-  else{renderNo('No SMC-grade setup');setStatus('live');}}
+  else{renderNo('No Blitz-grade setup');setStatus('live');}}
+  catch(e){renderNo('Backend offline');setStatus('offline');}
+}
+
+async function fetchSigForPair(){
+  try{const res=await fetchWithRetry(API+'/signal/'+activePair+'?platform='+platform+'&timeframe='+tf);
+  const data=await res.json();if(data.formatted_signal){signalCache[activePair]=data;lastSig=data;renderSig(data);setStatus('live');}
+  else{signalCache[activePair]=null;renderNo('No signal for '+activePair.replace('-OTC',''));setStatus('live');}}
   catch(e){renderNo('Backend offline');setStatus('offline');}
 }
 
@@ -638,12 +714,13 @@ async function scanAll(){
 
 function renderSig(s){
   const cont=document.getElementById('signalsContainer');
-  if(!s||!s.formatted_signal){renderNo('No SMC-grade setup');return;}
+  if(!s||!s.formatted_signal){renderNo('No Blitz-grade setup');return;}
   const cls=s.direction.toLowerCase();const confCls=s.confidence>=70?'high':s.confidence>=50?'med':'low';
+  const dataTag=s.data_source==='LIVE'?'<span class="data-tag live">LIVE</span>':'<span class="data-tag sim">SIM</span>';
   let chks='';if(s.checks){chks='<div class="checks-row">';for(const[k,v]of Object.entries(s.checks)){const l=k.replace(/_/g,' ').toUpperCase();const isStr=typeof v==='string';chks+='<span class="check-badge '+(isStr?(v.includes('TREND')?'pass':'fail'):(v?'pass':'fail'))+'">'+(isStr?v:(v?'&#10003;':'&#10007;'))+' '+l+'</span>';}chks+='</div>';}
   let mart='';if(s.martingale&&s.martingale.length){mart='<div class="martingale"><div class="mart-title">\u{1F6E1}\uFE0F RECOVERY</div>';s.martingale.forEach(m=>{mart+='<div class="mart-row"><span class="mart-level">'+m.level+'</span><span class="mart-mult">'+m.multiplier+'x</span><span class="mart-amt">$'+m.amount+'</span><span class="mart-time">'+m.entry_time+'</span></div>';});mart+='</div>';}
   const emoji=cls==='buy'?'\u{1F7E2}':'\u{1F534}';const arrow=cls==='buy'?'\u25B2':'\u25BC';
-  cont.innerHTML='<div class="signal-card '+cls+'"><div class="dir-row"><span class="direction '+cls+'">'+emoji+' '+s.direction+' '+arrow+'</span><span class="pair-name">'+s.platform.toUpperCase()+' \u00B7 '+(s.pair||activePair).replace('-OTC','')+'<span class="engine-tag">SMC 10/10</span></span></div>'+
+  cont.innerHTML='<div class="signal-card '+cls+'"><div class="dir-row"><span class="direction '+cls+'">'+emoji+' '+s.direction+' '+arrow+'</span><span class="pair-name">'+s.platform.toUpperCase()+' \u00B7 '+(s.pair||activePair).replace('-OTC','')+'<span class="engine-tag">BLITZ</span>'+dataTag+'</span></div>'+
   '<div class="detail-row"><span>Entry</span><span class="val">'+(s.entry_price?s.entry_price.toFixed(5):'--')+'</span></div>'+
   '<div class="detail-row"><span>ADX</span><span class="val">'+(s.indicators?s.indicators.adx:'--')+'</span></div>'+
   '<div class="detail-row"><span>RSI</span><span class="val">'+(s.indicators?s.indicators.rsi:'--')+'</span></div>'+
@@ -651,11 +728,11 @@ function renderSig(s){
   (s.indicators&&s.indicators.smart_money?'<div class="detail-row"><span>Smart Money</span><span class="val" style="color:#ffd700">\u2705 OB/FVG</span></div>':'')+
   (s.indicators&&s.indicators.divergence?'<div class="detail-row"><span>Divergence</span><span class="val" style="color:#00ff88">\u2705 Detected</span></div>':'')+
   chks+'<div class="confidence-bar"><div class="confidence-fill '+confCls+'" style="width:'+s.confidence+'%"></div></div><div class="conf-label">'+s.confidence+'% AI confidence</div>'+
-  mart+'<div class="risk-note">\u26A0\uFE0F Risk 1% only \u00B7 SMC Confluence</div>'+
+  mart+'<div class="risk-note">\u26A0\uFE0F Risk 1% only \u00B7 Blitz Confluence</div>'+
   '<button class="copy-btn" onclick="navigator.clipboard.writeText(lastSig.formatted_signal)">\u{1F4CB} Copy</button></div>';
 }
 
-function renderNo(msg){document.getElementById('signalsContainer').innerHTML='<div class="signal-card no-signal"><div style="font-size:1.8em;margin-bottom:8px">\u23F3</div><div style="color:#888">'+msg+'</div></div>';}
+function renderNo(msg){document.getElementById('signalsContainer').innerHTML='<div class="signal-card no-signal"><div style="font-size:1.8em;margin-bottom:8px">\u26A1</div><div style="color:#888">'+msg+'</div></div>';}
 
 buildTf();buildPairs();fetchSig();setInterval(fetchSig,15000);
 </script>
@@ -676,41 +753,23 @@ async def health():
     return {
         "status": "online",
         "engine": "UltimateEngine",
-        "version": "11.0",
-        "method": "SMC + Strict Confluence",
+        "version": "12.0",
+        "mode": "Blitz OTC",
         "filters": 10,
         "bonus_filters": 1,
         "ml_model_loaded": ai_scorer.model is not None,
+        "iq_connected": feed.iq is not None,
+        "po_connected": feed.po is not None,
         "best_pairs_now": select_best_pairs(),
-        "platforms": {"iq": IQ_TIMEFRAMES, "pocket": PO_TIMEFRAMES}
+        "platforms": {"iq": IQ_TIMEFRAMES, "pocket": PO_TIMEFRAMES},
+        "config": {
+            "adx_min": CONFIG['ADX_MIN'],
+            "volume_mult": CONFIG['VOLUME_MULT'],
+            "sr_proximity": CONFIG['SR_PROXIMITY'],
+            "liquidity_window": CONFIG['LIQUIDITY_WINDOW'],
+            "momentum_min": CONFIG['MOMENTUM_MIN']
+        }
     }
-
-
-def generate_simulated_market(pair):
-    """Generate simulated multi-timeframe market data for a pair."""
-    np.random.seed(hash(pair) % 2**32)
-    trend = np.linspace(0, 0.0004 if 'UP' in pair else -0.0004, 200) + np.random.randn(200)*0.0001
-    close = 1.0 + trend
-    if 'JPY' in pair: close = 148.0 + trend * 100
-    elif 'XAU' in pair: close = 2350.0 + trend * 10000
-    elif 'BTC' in pair: close = 65000.0 + trend * 50000
-    elif 'BRL' in pair: close = 5.0 + trend
-    elif 'MXN' in pair: close = 17.0 + trend * 10
-    elif 'GBP' in pair or 'CAD' in pair: close = 1.35 + trend
-    elif 'AUD' in pair: close = 0.65 + trend
-
-    def make_df(seed):
-        np.random.seed(seed)
-        spread = 0.0005 if 'XAU' not in pair else 0.5
-        return pd.DataFrame({
-            'open': close - 0.0002,
-            'high': close + spread,
-            'low': close - spread,
-            'close': close,
-            'volume': np.random.randint(50, 200, 200).astype(float)
-        })
-
-    return {'1m': make_df(0), '3m': make_df(1), '5m': make_df(2)}
 
 
 @app.get("/signal")
@@ -721,16 +780,28 @@ async def high_confidence_signal(platform: str = "iq", timeframe: str = "1m"):
     if platform == 'pocket' and timeframe not in PO_TIMEFRAMES:
         raise HTTPException(400, f"Pocket timeframes: {PO_TIMEFRAMES}")
 
+    pairs = select_best_pairs()
+    tf_sec = {'30s':30,'45s':45,'1m':60,'2m':120,'3m':180,'5m':300,
+              'S3':3,'S15':15,'S30':30,'M1':60,'M3':180,'M5':300}
+    sec = tf_sec.get(timeframe, 60)
+
     best_signal = None
     best_confidence = 0
-    pairs = select_best_pairs()
 
     for pair in pairs:
-        market = generate_simulated_market(pair)  # replace with live broker API
-        sig = engine.generate(market, pair, platform, timeframe)
-        if sig and sig['confidence'] > best_confidence:
-            best_signal = sig
-            best_confidence = sig['confidence']
+        try:
+            df1 = feed.get_candles(platform, pair, sec, 200)
+            df3 = feed.get_candles(platform, pair, sec*3, 200)
+            df5 = feed.get_candles(platform, pair, sec*5, 200)
+            if df1 is None or df1.empty: continue
+
+            market = {'1m': df1, '3m': df3, '5m': df5}
+            sig = engine.generate(market, pair, platform, timeframe)
+            if sig and sig['confidence'] > best_confidence:
+                best_signal = sig
+                best_confidence = sig['confidence']
+        except Exception as e:
+            print(f"Error on {pair}: {e}")
 
     if not best_signal:
         raise HTTPException(404, "No high-confidence signal across session pairs")
@@ -745,11 +816,26 @@ async def get_signal_for_pair(pair: str, platform: str = "iq", timeframe: str = 
     if platform == 'pocket' and timeframe not in PO_TIMEFRAMES:
         raise HTTPException(400, f"Pocket timeframes: {PO_TIMEFRAMES}")
 
-    market = generate_simulated_market(pair)  # replace with live broker API
-    sig = engine.generate(market, pair, platform, timeframe)
-    if not sig:
-        raise HTTPException(404, f"No SMC-grade signal for {pair}")
-    return sig
+    tf_sec = {'30s':30,'45s':45,'1m':60,'2m':120,'3m':180,'5m':300,
+              'S3':3,'S15':15,'S30':30,'M1':60,'M3':180,'M5':300}
+    sec = tf_sec.get(timeframe, 60)
+
+    try:
+        df1 = feed.get_candles(platform, pair, sec, 200)
+        df3 = feed.get_candles(platform, pair, sec*3, 200)
+        df5 = feed.get_candles(platform, pair, sec*5, 200)
+        if df1 is None or df1.empty:
+            raise HTTPException(404, f"No data for {pair}")
+
+        market = {'1m': df1, '3m': df3, '5m': df5}
+        sig = engine.generate(market, pair, platform, timeframe)
+        if not sig:
+            raise HTTPException(404, f"No SMC-grade signal for {pair}")
+        return sig
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Error: {str(e)}")
 
 
 @app.get("/session-pairs")
