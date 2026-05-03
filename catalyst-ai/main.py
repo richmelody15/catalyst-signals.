@@ -1,8 +1,9 @@
 """
-CATALYST AI v12 – LIVE BLITZ ENGINE
+CATALYST AI v13 – LIVE BLITZ ENGINE + S/D + S/R DETECTOR
 - Live broker data (IQ Option + Pocket Option) with simulated fallback
 - OTC-optimized Blitz CONFIG (faster ADX, wider zones, shorter windows)
 - Smart Money Concepts (Order Blocks, Fair Value Gaps, Liquidity Sweeps)
+- Supply/Demand Zones + Support/Resistance Lines (3-layer confirmation)
 - Market Structure (Uptrend/Downtrend/Ranging/Choppy)
 - Hidden RSI Divergence (bonus confidence boost)
 - AI Probability Scorer (Logistic Regression with bonuses)
@@ -253,6 +254,258 @@ def smart_money_confirmation(price, df, direction):
 
 
 # ═══════════════════════════════════════════════════════════
+#  SUPPORT / RESISTANCE + SUPPLY / DEMAND ENGINE
+# ═══════════════════════════════════════════════════════════
+class SRSupplyDemand:
+    """Detects S/R levels (multi-touch swing lines) and Supply/Demand order-block zones."""
+
+    def __init__(self, swing_window=5, touch_tolerance=0.001, merge_pct=0.003):
+        self.swing_window = swing_window
+        self.touch_tolerance = touch_tolerance
+        self.merge_pct = merge_pct
+
+    def find_swing_levels(self, df):
+        """Returns support and resistance lines with strength based on multiple touches."""
+        highs = df['high'].values
+        lows = df['low'].values
+        supports = []
+        resistances = []
+
+        for i in range(self.swing_window, len(highs) - self.swing_window):
+            if highs[i] == max(highs[i-self.swing_window:i+self.swing_window+1]):
+                touches = self._count_touches(highs[i], df, 'high')
+                resistances.append({'price': highs[i], 'touches': touches, 'type': 'resistance'})
+            if lows[i] == min(lows[i-self.swing_window:i+self.swing_window+1]):
+                touches = self._count_touches(lows[i], df, 'low')
+                supports.append({'price': lows[i], 'touches': touches, 'type': 'support'})
+
+        supports = self._merge_levels(supports)
+        resistances = self._merge_levels(resistances)
+        supports = [l for l in supports if l['touches'] >= 2]
+        resistances = [l for l in resistances if l['touches'] >= 2]
+        return supports, resistances
+
+    def find_order_blocks(self, df):
+        """Detects supply (bearish OB) and demand (bullish OB) as zones."""
+        obs = []
+        for i in range(2, len(df) - 1):
+            if df['close'].iloc[i] < df['open'].iloc[i]:
+                if df['high'].iloc[i+1] > df['high'].iloc[i]:
+                    volume = df.get('volume', pd.Series([1]*len(df)))
+                    vol_score = volume.iloc[i] / volume.rolling(20).mean().iloc[i] if not volume.isna().all() else 1.0
+                    obs.append({'type': 'demand', 'high': df['high'].iloc[i], 'low': df['low'].iloc[i], 'strength': vol_score})
+            if df['close'].iloc[i] > df['open'].iloc[i]:
+                if df['low'].iloc[i+1] < df['low'].iloc[i]:
+                    volume = df.get('volume', pd.Series([1]*len(df)))
+                    vol_score = volume.iloc[i] / volume.rolling(20).mean().iloc[i] if not volume.isna().all() else 1.0
+                    obs.append({'type': 'supply', 'high': df['high'].iloc[i], 'low': df['low'].iloc[i], 'strength': vol_score})
+        return obs[-10:]
+
+    def is_near_sr(self, price, levels, direction, threshold_pct=0.005):
+        for lvl in levels:
+            if direction == 'BUY' and lvl['type'] == 'support' and price >= lvl['price']:
+                if abs(price - lvl['price']) / price < threshold_pct: return True, lvl
+            if direction == 'SELL' and lvl['type'] == 'resistance' and price <= lvl['price']:
+                if abs(price - lvl['price']) / price < threshold_pct: return True, lvl
+        return False, None
+
+    def is_in_zone(self, price, zones, direction):
+        for zone in zones:
+            if direction == 'BUY' and zone['type'] == 'demand':
+                if zone['low'] <= price <= zone['high']: return True, zone
+            if direction == 'SELL' and zone['type'] == 'supply':
+                if zone['low'] <= price <= zone['high']: return True, zone
+        return False, None
+
+    def _count_touches(self, level, df, col='high', tolerance=None):
+        if tolerance is None: tolerance = self.touch_tolerance
+        col_vals = df[col].values
+        return sum(abs(val - level) / level < tolerance for val in col_vals)
+
+    def _merge_levels(self, levels):
+        if not levels: return []
+        sorted_levels = sorted(levels, key=lambda x: x['price'])
+        merged = []
+        current_group = [sorted_levels[0]]
+        for lvl in sorted_levels[1:]:
+            prev = current_group[-1]
+            if abs(lvl['price'] - prev['price']) / prev['price'] < self.merge_pct:
+                current_group.append(lvl)
+            else:
+                merged.append(self._combine_group(current_group))
+                current_group = [lvl]
+        merged.append(self._combine_group(current_group))
+        return merged
+
+    def _combine_group(self, group):
+        avg_price = sum(l['price'] for l in group) / len(group)
+        total_touches = sum(l['touches'] for l in group)
+        return {'price': avg_price, 'touches': total_touches, 'type': group[0]['type']}
+
+
+sr_sd = SRSupplyDemand()
+
+
+# ═══════════════════════════════════════════════════════════
+#  PRO-LEVEL S/D + S/R DETECTOR (3-LAYER CONFIRMATION)
+# ═══════════════════════════════════════════════════════════
+class ProLevelSD_SR:
+    """
+    Main filter:  Supply/Demand zones
+    Confirmation: Support/Resistance lines (multi-touch)
+    Final:        RSI + ADX alignment
+    """
+    def __init__(self, swing_window=5, touch_tolerance=0.001, merge_pct=0.003):
+        self.swing_window = swing_window
+        self.touch_tolerance = touch_tolerance
+        self.merge_pct = merge_pct
+
+    # ---- S/D: ORDER BLOCKS (ZONES) ----
+    def find_order_blocks(self, df, recent=10):
+        obs = []
+        for i in range(2, len(df)-1):
+            if df['close'].iloc[i] < df['open'].iloc[i]:
+                if df['high'].iloc[i+1] > df['high'].iloc[i]:
+                    vol = df.get('volume', pd.Series([1]*len(df)))
+                    avg_vol = vol.rolling(20).mean().iloc[i] if not vol.isna().all() else 1
+                    strength = vol.iloc[i] / avg_vol if avg_vol > 0 else 1
+                    obs.append({'type': 'demand', 'top': df['high'].iloc[i], 'bottom': df['low'].iloc[i], 'strength': strength})
+            if df['close'].iloc[i] > df['open'].iloc[i]:
+                if df['low'].iloc[i+1] < df['low'].iloc[i]:
+                    vol = df.get('volume', pd.Series([1]*len(df)))
+                    avg_vol = vol.rolling(20).mean().iloc[i] if not vol.isna().all() else 1
+                    strength = vol.iloc[i] / avg_vol if avg_vol > 0 else 1
+                    obs.append({'type': 'supply', 'top': df['high'].iloc[i], 'bottom': df['low'].iloc[i], 'strength': strength})
+        return obs[-recent:]
+
+    # ---- S/R: SWING LEVELS (LINES) ----
+    def find_swing_levels(self, df, min_touches=2):
+        highs = df['high'].values
+        lows = df['low'].values
+        supports = []
+        resistances = []
+
+        for i in range(self.swing_window, len(highs) - self.swing_window):
+            if highs[i] == max(highs[i-self.swing_window:i+self.swing_window+1]):
+                touches = self._count_touches(highs[i], df, 'high')
+                if touches >= min_touches:
+                    resistances.append({'price': highs[i], 'touches': touches, 'type': 'resistance'})
+            if lows[i] == min(lows[i-self.swing_window:i+self.swing_window+1]):
+                touches = self._count_touches(lows[i], df, 'low')
+                if touches >= min_touches:
+                    supports.append({'price': lows[i], 'touches': touches, 'type': 'support'})
+
+        supports = self._merge_levels(supports)
+        resistances = self._merge_levels(resistances)
+        return supports, resistances
+
+    # ---- FINAL CONFIRMATION (RSI + ADX) ----
+    def final_indicator_check(self, df, direction):
+        rsi_val = self._rsi(df['close'].values, 14)
+        adx_val = self._adx(df)
+
+        if direction == 'BUY':
+            rsi_ok = 30 < rsi_val < 65
+            adx_ok = adx_val >= 20
+        else:
+            rsi_ok = 35 < rsi_val < 70
+            adx_ok = adx_val >= 20
+
+        return rsi_ok and adx_ok, {'rsi': rsi_val, 'adx': adx_val}
+
+    # ---- MAIN ENTRY CHECK ----
+    def entry_check(self, df, direction):
+        price = df['close'].iloc[-1]
+        details = {}
+
+        # 1. MAIN FILTER: supply/demand zone
+        zones = self.find_order_blocks(df)
+        in_zone, active_zone = self._is_in_zone(price, zones, direction)
+        details['sd_zone'] = in_zone
+        if not in_zone:
+            return False, details
+
+        # 2. CONFIRMATION: S/R level
+        supports, resistances = self.find_swing_levels(df)
+        near_sr, sr_level = self._is_near_sr(price, supports if direction == 'BUY' else resistances, direction)
+        details['sr_confirmed'] = near_sr
+        if not near_sr:
+            return False, details
+
+        # 3. FINAL: RSI + ADX
+        final_ok, ind_data = self.final_indicator_check(df, direction)
+        details.update(ind_data)
+        details['indicator_final'] = final_ok
+        if not final_ok:
+            return False, details
+
+        return True, details
+
+    # ---- HELPER METHODS ----
+    def _count_touches(self, level, df, col='high', tolerance=None):
+        if tolerance is None: tolerance = self.touch_tolerance
+        return sum(abs(val - level) / level < tolerance for val in df[col].values)
+
+    def _merge_levels(self, levels):
+        if not levels: return []
+        sorted_lvls = sorted(levels, key=lambda x: x['price'])
+        merged = []
+        group = [sorted_lvls[0]]
+        for lvl in sorted_lvls[1:]:
+            if abs(lvl['price'] - group[-1]['price']) / group[-1]['price'] < self.merge_pct:
+                group.append(lvl)
+            else:
+                merged.append(self._combine_group(group))
+                group = [lvl]
+        merged.append(self._combine_group(group))
+        return merged
+
+    def _combine_group(self, group):
+        avg_price = sum(l['price'] for l in group) / len(group)
+        total_touches = sum(l['touches'] for l in group)
+        return {'price': avg_price, 'touches': total_touches, 'type': group[0]['type']}
+
+    def _is_in_zone(self, price, zones, direction):
+        for zone in zones:
+            if direction == 'BUY' and zone['type'] == 'demand':
+                if zone['bottom'] <= price <= zone['top']: return True, zone
+            if direction == 'SELL' and zone['type'] == 'supply':
+                if zone['bottom'] <= price <= zone['top']: return True, zone
+        return False, None
+
+    def _is_near_sr(self, price, levels, direction, threshold=0.005):
+        for lvl in levels:
+            if direction == 'BUY' and lvl['type'] == 'support' and price > lvl['price']:
+                if abs(price - lvl['price']) / price < threshold: return True, lvl
+            if direction == 'SELL' and lvl['type'] == 'resistance' and price < lvl['price']:
+                if abs(price - lvl['price']) / price < threshold: return True, lvl
+        return False, None
+
+    # ---- INDICATORS ----
+    def _rsi(self, close, period=14):
+        delta = np.diff(close)
+        gain = np.mean(delta[delta>0]) if any(delta>0) else 0
+        loss = -np.mean(delta[delta<0]) if any(delta<0) else 0
+        if loss == 0: return 100
+        return 100 - (100 / (1 + gain/loss))
+
+    def _adx(self, df, period=14):
+        h, l, c = df['high'], df['low'], df['close']
+        tr = np.maximum(h - l, np.maximum(abs(h - c.shift()), abs(l - c.shift())))
+        atr = tr.rolling(period).mean().iloc[-1]
+        if atr == 0: return 0
+        up = h.diff().clip(lower=0)
+        down = -l.diff().clip(upper=0)
+        di_plus = 100 * up.rolling(period).mean().iloc[-1] / atr
+        di_minus = 100 * down.rolling(period).mean().iloc[-1] / atr
+        dx = 100 * abs(di_plus - di_minus) / (di_plus + di_minus) if (di_plus + di_minus) != 0 else 0
+        return dx
+
+
+pro_sd_sr = ProLevelSD_SR()
+
+
+# ═══════════════════════════════════════════════════════════
 #  OTHER FILTERS
 # ═══════════════════════════════════════════════════════════
 def mtf_aligned(df_dict, direction):
@@ -333,12 +586,13 @@ def select_best_pairs():
 
 
 # ═══════════════════════════════════════════════════════════
-#  FILTER GATE (10 mandatory + 1 bonus) — platform-aware
+#  FILTER GATE (11 mandatory + 1 bonus) — platform-aware + S/D→S/R→Indicator
 # ═══════════════════════════════════════════════════════════
 def filter_gate(df1, df3, df5, direction, platform):
     """
     Returns (passed, checks_dict).
     Platform-aware: volume filter skipped for Pocket Option.
+    3-layer S/D → S/R → Indicator confirmation integrated.
     """
     checks = {}
 
@@ -360,7 +614,7 @@ def filter_gate(df1, df3, df5, direction, platform):
     # 5: Candle
     checks['candle'] = candle_ok(df1, direction)
 
-    # 6: S/R
+    # 6: S/R (simple proximity)
     price = float(df1['close'].iloc[-1])
     checks['sr'] = sr_favorable(price, df1, direction)
 
@@ -383,11 +637,18 @@ def filter_gate(df1, df3, df5, direction, platform):
     pct = (price / df1['close'].iloc[-4] - 1)
     checks['momentum'] = bool(abs(pct) >= CONFIG['MOMENTUM_MIN'])
 
+    # 11: Supply/Demand → S/R → Indicator (3-layer confirmation)
+    sd_passed, sd_sr_details = pro_sd_sr.entry_check(df1, direction)
+    checks['sd_zone'] = sd_sr_details.get('sd_zone', False)
+    checks['sr_confirmed'] = sd_sr_details.get('sr_confirmed', False)
+    checks['indicator_final'] = sd_sr_details.get('indicator_final', False)
+    checks['supply_demand'] = sd_passed  # combined gate for mandatory list
+
     # Bonus: Divergence
     rsi_vals = np.array([rsi(df1['close'].values[:i], 14) for i in range(14, len(df1))])
     checks['divergence'] = detect_divergence(df1['close'].values, rsi_vals, direction)
 
-    mandatory = ['adx','mtf','news','candle','sr','liquidity','volume','smart_money','momentum']
+    mandatory = ['adx','mtf','news','candle','sr','liquidity','volume','smart_money','momentum','supply_demand']
     passed = all(checks[k] for k in mandatory)
     return passed, checks
 
@@ -411,6 +672,7 @@ class AIScorer:
         base = 86.0
         if features.get('divergence'): base += 5
         if features.get('smart_money'): base += 4
+        if features.get('supply_demand'): base += 3  # S/D + S/R 3-layer confirmation bonus
         return min(base, 98.0)
 
     def train(self, trades):
@@ -456,7 +718,8 @@ class UltimateEngine:
             'vol_ratio': vol_ratio, 'momentum': float(abs(momentum_pct)),
             'mtf': mtf_cnt,
             'divergence': checks.get('divergence', False),
-            'smart_money': checks.get('smart_money', False)
+            'smart_money': checks.get('smart_money', False),
+            'supply_demand': checks.get('supply_demand', False)
         }
         confidence = ai_scorer.predict(features)
         if confidence < CONFIG['MIN_CONFIDENCE']: return None
@@ -496,6 +759,8 @@ class UltimateEngine:
             f"\U0001f3af Confidence: {confidence:.0f}%",
             f"\U0001f4c8 Structure: {checks['structure']}",
             f"\U0001f3e6 Smart Money: {'\u2705' if checks['smart_money'] else '\u274c'}",
+            f"\U0001f4e6 S/D Zone: {'\u2705' if checks.get('sd_zone') else '\u274c'}",
+            f"\U0001f4ca S/R Confirmed: {'\u2705' if checks.get('sr_confirmed') else '\u274c'}",
             f"\U0001f50d Divergence: {'\u2705' if checks.get('divergence') else 'No bonus'}",
             "\u2500\u2500 \U0001f6e1\ufe0f RECOVERY \u2500\u2500"
         ]
@@ -522,6 +787,10 @@ class UltimateEngine:
                 'vol_ratio': round(vol_ratio, 2),
                 'smart_money': checks.get('smart_money', False),
                 'divergence': checks.get('divergence', False),
+                'sd_zone': checks.get('sd_zone', False),
+                'sr_confirmed': checks.get('sr_confirmed', False),
+                'indicator_final': checks.get('indicator_final', False),
+                'supply_demand': checks.get('supply_demand', False),
                 'ml_confidence': round(confidence, 1)
             }
         }
@@ -639,7 +908,7 @@ body{background:#0a0e1a;color:#e0e0e0;font-family:'Segoe UI',system-ui,-apple-sy
 <body>
 <div class="container">
   <div class="header">
-    <div class="logo">CATALYST<span>AI</span> <span class="badge">BLITZ v12</span></div>
+    <div class="logo">CATALYST<span>AI</span> <span class="badge">BLITZ v13</span></div>
     <div class="status-pill" id="status">Connecting</div>
   </div>
   <div class="wake-banner" id="wakeBanner">
@@ -659,7 +928,7 @@ body{background:#0a0e1a;color:#e0e0e0;font-family:'Segoe UI',system-ui,-apple-sy
       <div style="color:#888">Waiting for Blitz setup...</div>
     </div>
   </div>
-  <div class="footer">Trade at your own risk &middot; Risk 1% only &middot; Blitz Engine</div>
+  <div class="footer">Trade at your own risk &middot; Risk 1% only &middot; Blitz Engine + S/D + S/R</div>
 </div>
 <script>
 const API=window.location.origin;
@@ -726,6 +995,8 @@ function renderSig(s){
   '<div class="detail-row"><span>RSI</span><span class="val">'+(s.indicators?s.indicators.rsi:'--')+'</span></div>'+
   '<div class="detail-row"><span>Structure</span><span class="val">'+(s.indicators?s.indicators.structure:'--')+'</span></div>'+
   (s.indicators&&s.indicators.smart_money?'<div class="detail-row"><span>Smart Money</span><span class="val" style="color:#ffd700">\u2705 OB/FVG</span></div>':'')+
+  (s.indicators&&s.indicators.sd_zone?'<div class="detail-row"><span>S/D Zone</span><span class="val" style="color:#00bfff">\u2705 In Zone</span></div>':'')+
+  (s.indicators&&s.indicators.sr_confirmed?'<div class="detail-row"><span>S/R Confirmed</span><span class="val" style="color:#00bfff">\u2705 Multi-touch</span></div>':'')+
   (s.indicators&&s.indicators.divergence?'<div class="detail-row"><span>Divergence</span><span class="val" style="color:#00ff88">\u2705 Detected</span></div>':'')+
   chks+'<div class="confidence-bar"><div class="confidence-fill '+confCls+'" style="width:'+s.confidence+'%"></div></div><div class="conf-label">'+s.confidence+'% AI confidence</div>'+
   mart+'<div class="risk-note">\u26A0\uFE0F Risk 1% only \u00B7 Blitz Confluence</div>'+
@@ -753,9 +1024,9 @@ async def health():
     return {
         "status": "online",
         "engine": "UltimateEngine",
-        "version": "12.0",
-        "mode": "Blitz OTC",
-        "filters": 10,
+        "version": "13.0",
+        "mode": "Blitz OTC + S/D + S/R",
+        "filters": 11,
         "bonus_filters": 1,
         "ml_model_loaded": ai_scorer.model is not None,
         "iq_connected": feed.iq is not None,
@@ -768,7 +1039,9 @@ async def health():
             "sr_proximity": CONFIG['SR_PROXIMITY'],
             "liquidity_window": CONFIG['LIQUIDITY_WINDOW'],
             "momentum_min": CONFIG['MOMENTUM_MIN']
-        }
+        },
+        "sd_sr_layers": ["sd_zone", "sr_confirmed", "indicator_final"],
+        "mandatory_filters": ["structure","adx","mtf","news","candle","sr","liquidity","volume","smart_money","momentum","supply_demand"]
     }
 
 
