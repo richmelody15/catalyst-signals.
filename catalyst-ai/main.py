@@ -48,7 +48,7 @@ PO_TIMEFRAMES   = ['S3','S15','S30','M1','M3','M5']
 
 # ⚡ Optimised for OTC Blitz (quick, strong moves)
 CONFIG = {
-    'ADX_MIN': 20,                 # slightly lower – OTC trends can spike fast
+    'ADX_MIN': 22,                 # slightly higher – avoid weak trends
     'VOLUME_MULT': 1.3,            # OTC volume can be erratic
     'RSI_OB': 65,                  # tighter overbought
     'RSI_OS': 35,                  # tighter oversold
@@ -58,9 +58,13 @@ CONFIG = {
     'LIQUIDITY_WINDOW': 15,        # shorter lookback for sweeps
     'MOMENTUM_MIN': 0.0003,        # require slightly more move
     'MARTINGALE': [('M1',1.5,1), ('M2',2.5,2), ('M3',4.0,3)],
-    'MIN_CONFIDENCE': 80,
+    'MIN_CONFIDENCE': 85,          # only enter when AI is very sure
     'DIVERGENCE_WINDOW': 10
 }
+
+# Cooldown to prevent signal spam
+last_trade_time = datetime.min
+COOLDOWN_MINUTES = 3
 
 
 # ═══════════════════════════════════════════════════════════
@@ -1038,7 +1042,9 @@ async def health():
             "volume_mult": CONFIG['VOLUME_MULT'],
             "sr_proximity": CONFIG['SR_PROXIMITY'],
             "liquidity_window": CONFIG['LIQUIDITY_WINDOW'],
-            "momentum_min": CONFIG['MOMENTUM_MIN']
+            "momentum_min": CONFIG['MOMENTUM_MIN'],
+            "min_confidence": CONFIG['MIN_CONFIDENCE'],
+            "cooldown_minutes": COOLDOWN_MINUTES
         },
         "sd_sr_layers": ["sd_zone", "sr_confirmed", "indicator_final"],
         "mandatory_filters": ["structure","adx","mtf","news","candle","sr","liquidity","volume","smart_money","momentum","supply_demand"]
@@ -1048,6 +1054,11 @@ async def health():
 @app.get("/signal")
 async def high_confidence_signal(platform: str = "iq", timeframe: str = "1m"):
     """Auto-scan session pairs and return the highest-confidence signal."""
+    global last_trade_time
+    if (datetime.now() - last_trade_time).seconds < COOLDOWN_MINUTES * 60:
+        remaining = COOLDOWN_MINUTES * 60 - (datetime.now() - last_trade_time).seconds
+        raise HTTPException(429, f"Cooldown active – wait {remaining}s before next signal")
+
     if platform == 'iq' and timeframe not in IQ_TIMEFRAMES:
         raise HTTPException(400, f"IQ timeframes: {IQ_TIMEFRAMES}")
     if platform == 'pocket' and timeframe not in PO_TIMEFRAMES:
@@ -1078,12 +1089,18 @@ async def high_confidence_signal(platform: str = "iq", timeframe: str = "1m"):
 
     if not best_signal:
         raise HTTPException(404, "No high-confidence signal across session pairs")
+    last_trade_time = datetime.now()
     return best_signal
 
 
 @app.get("/signal/{pair}")
 async def get_signal_for_pair(pair: str, platform: str = "iq", timeframe: str = "1m"):
     """Get signal for a specific pair."""
+    global last_trade_time
+    if (datetime.now() - last_trade_time).seconds < COOLDOWN_MINUTES * 60:
+        remaining = COOLDOWN_MINUTES * 60 - (datetime.now() - last_trade_time).seconds
+        raise HTTPException(429, f"Cooldown active – wait {remaining}s before next signal")
+
     if platform == 'iq' and timeframe not in IQ_TIMEFRAMES:
         raise HTTPException(400, f"IQ timeframes: {IQ_TIMEFRAMES}")
     if platform == 'pocket' and timeframe not in PO_TIMEFRAMES:
@@ -1104,6 +1121,7 @@ async def get_signal_for_pair(pair: str, platform: str = "iq", timeframe: str = 
         sig = engine.generate(market, pair, platform, timeframe)
         if not sig:
             raise HTTPException(404, f"No SMC-grade signal for {pair}")
+        last_trade_time = datetime.now()
         return sig
     except HTTPException:
         raise
