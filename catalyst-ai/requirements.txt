@@ -8,3 +8,4 @@ scikit-learn
 joblib
 iqoptionapi
 pocketoptionapi
+yfinance
