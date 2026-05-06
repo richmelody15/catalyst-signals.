@@ -5,8 +5,8 @@ CATALYST FINAL - Self-Improving OTC Signal Engine
 IQ Option & Pocket Option | Memory-Based Confidence | Auto-Tuning
 
 BUG FIXES vs user versions:
-- close[:-1] -> close.iloc[:-1] (pandas Series slicing)
-- bb_width(close[:-1], 20) -> bb_width(close.iloc[:-1], 20)
+- close[:-1] -> close.iloc[:-1] (pandas Series slicing) - FIXED
+- BB squeeze+expansion contradiction -> percentile-based setup→trigger model - FIXED
 - Removed ML/SGDClassifier (no real training data; memory system is better)
 - Added /api/status endpoint
 - Proper error handling in all indicators
@@ -20,7 +20,7 @@ DEPLOY:
 Replace get_data() with your broker's real-time feed before going live.
 """
 import asyncio, json, sqlite3, logging, uuid, os, traceback
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional, List, Tuple
 import numpy as np
 import pandas as pd
@@ -354,17 +354,18 @@ def generate_signal(df, symbol=""):
         avg_vol = 1
     vol_spike = volume.iloc[-1] >= avg_vol * PARAMS['vol_mult']
 
-    # 5. BB squeeze + expansion
-    # FIX: Use .iloc[:-1] instead of [:-1] for pandas Series
+    # 5. BB setup→trigger: squeeze SETUP then expansion TRIGGER
+    # Setup: current BB width is in bottom 30% of recent range (squeezed)
+    # Trigger: width is now expanding (breaking out of the squeeze)
     bb_w = bb_width(close, 20)
-    if len(close) > 21:
-        bb_prev = bb_width(close.iloc[:-1], 20)  # BUG FIX: was close[:-1]
-    else:
-        bb_prev = bb_w
-    if len(bb_w) < 2 or len(bb_prev) < 1:
+    if len(bb_w) < 20:
         return None
-    bb_sq = bb_w.iloc[-1] < bb_prev.iloc[-1] * 0.85
-    bb_exp = bb_w.iloc[-1] > bb_w.iloc[-2]
+    recent_bw = bb_w.iloc[-20:].dropna()
+    if len(recent_bw) < 5:
+        return None
+    bb_pct = recent_bw.rank(pct=True).iloc[-1]  # percentile of current width
+    bb_sq = bb_pct < 0.30   # squeeze: current width in bottom 30% of recent range
+    bb_exp = bb_w.iloc[-1] > bb_w.iloc[-2]  # trigger: width expanding vs previous bar
 
     # 6. S/R room
     price = close.iloc[-1]
@@ -456,9 +457,9 @@ async def get_data(symbol, tf):
     periods = 120
     freq = tf.replace('m', 'min').replace('s', 's')
     try:
-        dates = pd.date_range(end=datetime.utcnow(), periods=periods, freq=freq)
+        dates = pd.date_range(end=datetime.now(timezone.utc), periods=periods, freq=freq)
     except:
-        dates = pd.date_range(end=datetime.utcnow(), periods=periods, freq='1min')
+        dates = pd.date_range(end=datetime.now(timezone.utc), periods=periods, freq='1min')
     price = 1.0800
     trend = 1
     closes = []
@@ -511,7 +512,7 @@ async def scan_loop():
                         if final_conf < MIN_CONFIDENCE:
                             continue
 
-                        now_utc = datetime.utcnow()
+                        now_utc = datetime.now(timezone.utc)
                         entry_time = now_utc + timedelta(minutes=1)
                         sig_id = str(uuid.uuid4())
                         remember_signal(sig_id, sym, dir_, tf, platform, entry_time, rsi_, adx_, final_conf)
@@ -580,7 +581,7 @@ async def stats():
 @app.get("/api/session")
 async def session_info():
     """Get current trading session info."""
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     hour = now.hour + now.minute / 60.0
     if 22.0 <= hour or hour < 7.0:
         s = "Sydney/Tokyo"
@@ -591,6 +592,25 @@ async def session_info():
     else:
         s = "Off-peak"
     return {"session": s, "active": True, "time_utc": now.isoformat()}
+
+@app.get("/api/status")
+async def system_status():
+    """System health and status check."""
+    stats = get_stats()
+    return {
+        "status": "online",
+        "version": "1.0",
+        "engine": "CATALYST FINAL",
+        "connected_clients": len(clients),
+        "total_signals_generated": len(latest_signals),
+        "params": PARAMS,
+        "min_confidence": MIN_CONFIDENCE,
+        "win_rate": stats["win_rate"],
+        "total_trades": stats["total_trades"],
+        "platforms": ["IQ Option", "Pocket Option"],
+        "pairs": PAIRS,
+        "pairs_count": len(PAIRS)
+    }
 
 @app.get("/api/signals")
 async def signals_list():
@@ -810,9 +830,14 @@ setInterval(function(){
 </body>
 </html>"""
 
-@app.on_event("startup")
-async def startup():
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def lifespan(app):
     asyncio.create_task(scan_loop())
+    yield
+
+app.router.lifespan_context = lifespan
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
