@@ -1,0 +1,514 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>CATALYST AI — Trading Signals</title>
+<meta name="description" content="AI-powered OTC trading signals with 94.3% filter and smart money concepts">
+<meta name="theme-color" content="#050510">
+<link rel="manifest" href="manifest.json">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#050510;color:#e0e0e0;font-family:'Segoe UI',system-ui,-apple-system,sans-serif;overflow-x:hidden}
+.app{max-width:1200px;margin:0 auto;padding:16px}
+
+/* ── Header ─────────────────────────────── */
+.header{background:linear-gradient(135deg,#0a0a2e,#1a1a4e);border-radius:16px;padding:18px 22px;display:flex;justify-content:space-between;align-items:center;border:1px solid #2a2a5a;margin-bottom:16px}
+.logo{font-size:1.8em;font-weight:bold;letter-spacing:-1px;display:flex;align-items:center;gap:8px}
+.logo span{color:#00ff88}
+.pulse-dot{width:10px;height:10px;border-radius:50%;background:#00ff88;animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.5;transform:scale(.7)}}
+.status-row{display:flex;align-items:center;gap:10px}
+.status{color:#00ff88;background:rgba(0,255,136,0.1);padding:5px 14px;border-radius:20px;font-size:.82em;transition:all .3s}
+.status.waking{color:#ffd700;background:rgba(255,215,0,0.12);animation:blink 1s infinite}
+.status.offline{color:#ff4444;background:rgba(255,68,68,0.1)}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.4}}
+
+/* ── Stats Bar ──────────────────────────── */
+.stats-bar{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:16px}
+.stat-card{background:linear-gradient(135deg,#0a0a2e,#1a1a4e);border-radius:12px;padding:12px 16px;border:1px solid #2a2a5a;transition:transform .2s}
+.stat-card:hover{transform:translateY(-2px)}
+.stat-label{font-size:.7em;color:#888;text-transform:uppercase;letter-spacing:1px}
+.stat-value{font-size:1.3em;font-weight:bold;color:#00ff88;margin-top:3px}
+
+/* ── Platform Selector ──────────────────── */
+.platform-selector{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap}
+.platform-btn{padding:9px 22px;border-radius:25px;border:1px solid #2a2a5a;background:#0a0a2e;color:#e0e0e0;cursor:pointer;font-size:.88em;transition:all .2s}
+.platform-btn:hover{border-color:#00ff88}
+.platform-btn.active{background:#00ff88;color:#000;font-weight:bold}
+
+/* ── Timeframe Tabs ─────────────────────── */
+.tf-tabs{display:flex;gap:6px;margin-bottom:16px;flex-wrap:wrap}
+.tf-btn{padding:6px 16px;border-radius:15px;border:1px solid #333;background:#0d0d24;color:#aaa;cursor:pointer;font-size:.8em;transition:all .2s}
+.tf-btn:hover{border-color:#00ff88;color:#fff}
+.tf-btn.active{background:rgba(0,255,136,0.15);color:#00ff88;border-color:#00ff88}
+
+/* ── Subtitle ───────────────────────────── */
+.subtitle{color:#666;margin-bottom:14px;font-size:.85em;letter-spacing:.5px}
+
+/* ── Signals Container ──────────────────── */
+.signals{background:#0a0a1e;border-radius:16px;padding:18px;border:1px solid #2a2a5a;min-height:300px}
+.waiting{text-align:center;padding:60px 20px;color:#666}
+.waiting h3{margin:12px 0 8px;font-size:1.1em;color:#888}
+.waiting p{font-size:.9em;line-height:1.5}
+
+/* ── Signal Card ────────────────────────── */
+.signal-card{background:linear-gradient(135deg,#141436,#1a1a3e);border-radius:12px;padding:18px;margin:14px 0;border-left:4px solid #00ff88;animation:slide .35s ease-out;transition:transform .2s}
+.signal-card:hover{transform:translateX(4px)}
+.signal-card.sell{border-left-color:#ff4444}
+.card-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+.pair{font-size:1.15em;font-weight:bold}
+.conf{color:#00ff88;background:rgba(0,255,136,0.1);padding:3px 12px;border-radius:15px;font-size:.88em}
+.direction{display:inline-block;padding:5px 16px;border-radius:8px;margin:8px 0;font-weight:bold;font-size:.95em}
+.direction.buy{background:rgba(0,255,136,0.18);color:#00ff88}
+.direction.sell{background:rgba(255,68,68,0.18);color:#ff4444}
+.meta{font-size:.88em;color:#aaa;margin:3px 0;display:flex;flex-wrap:wrap;gap:6px 16px}
+.meta-item{display:flex;align-items:center;gap:4px}
+
+/* ── Martingale ─────────────────────────── */
+.martingale{margin-top:10px;background:rgba(0,0,0,0.4);padding:12px;border-radius:8px;border:1px solid #222}
+.martingale-header{color:#ffd700;font-weight:bold;margin-bottom:8px;font-size:.88em;display:flex;align-items:center;gap:6px}
+.martingale-row{display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid #1a1a2e;font-size:.82em;color:#ccc}
+.martingale-row:last-child{border-bottom:none}
+.m-row-level{color:#ffd700;font-weight:bold;min-width:30px}
+.m-row-mult{color:#aaa}
+.m-row-amt{color:#fff;font-weight:bold}
+.m-row-time{color:#888}
+
+/* ── Signal Status ──────────────────────── */
+.signal-status{margin-top:10px;color:#00ff88;font-size:.85em;font-weight:bold;display:flex;align-items:center;gap:6px}
+
+/* ── Backend Status Banner ──────────────── */
+.backend-banner{display:none;background:rgba(255,215,0,0.08);border:1px solid rgba(255,215,0,0.2);border-radius:10px;padding:12px 18px;margin-bottom:14px;color:#ffd700;font-size:.88em;align-items:center;gap:8px}
+.backend-banner.show{display:flex}
+.backend-spinner{width:16px;height:16px;border:2px solid rgba(255,215,0,0.3);border-top:2px solid #ffd700;border-radius:50%;animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* ── Animations ─────────────────────────── */
+@keyframes slide{from{opacity:0;transform:translateY(-10px)}to{opacity:1;transform:translateY(0)}}
+
+/* ── Responsive ─────────────────────────── */
+@media(max-width:600px){
+  .app{padding:10px}
+  .header{flex-direction:column;gap:10px;text-align:center}
+  .stat-card{padding:10px}
+  .signal-card{padding:14px}
+  .meta{flex-direction:column;gap:2px}
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- Header -->
+  <div class="header">
+    <div class="logo">
+      <div class="pulse-dot" id="pulse-dot"></div>
+      CATALYST<span>AI</span>
+    </div>
+    <div class="status-row">
+      <span class="status" id="conn-status">Connecting...</span>
+    </div>
+  </div>
+
+  <!-- Backend Wake-up Banner -->
+  <div class="backend-banner" id="backend-banner">
+    <div class="backend-spinner"></div>
+    <span id="backend-banner-text">Backend is waking up from sleep...</span>
+  </div>
+
+  <!-- Stats -->
+  <div class="stats-bar">
+    <div class="stat-card">
+      <div class="stat-label">Signals</div>
+      <div class="stat-value" id="sig-count">0</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Filter Min</div>
+      <div class="stat-value" id="filter-min">92%</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Confluences</div>
+      <div class="stat-value" id="filter-conf">8</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Win Rate</div>
+      <div class="stat-value" id="win-rate">--</div>
+    </div>
+  </div>
+
+  <!-- Platform Selector -->
+  <div class="platform-selector">
+    <button class="platform-btn active" onclick="selectPlatform(this, 'iq')">🎯 IQ Option</button>
+    <button class="platform-btn" onclick="selectPlatform(this, 'pocket')">💼 Pocket Option</button>
+  </div>
+
+  <!-- Timeframe Tabs -->
+  <div class="tf-tabs">
+    <button class="tf-btn active" onclick="selectTimeframe(this, 'all')">All</button>
+    <button class="tf-btn" onclick="selectTimeframe(this, '1m')">1m</button>
+    <button class="tf-btn" onclick="selectTimeframe(this, '2m')">2m</button>
+    <button class="tf-btn" onclick="selectTimeframe(this, '3m')">3m</button>
+    <button class="tf-btn" onclick="selectTimeframe(this, '5m')">5m</button>
+  </div>
+
+  <!-- Subtitle -->
+  <div class="subtitle">SMART MONEY · AI-POWERED · 94.3% FILTER · WAT TIMEZONE</div>
+
+  <!-- Signals -->
+  <div class="signals" id="signals">
+    <div class="waiting" id="waiting">
+      <div style="font-size:3em;">⏳</div>
+      <h3>Waiting for Signals</h3>
+      <p>The AI engine is analyzing OTC pairs. High-confidence signals (95%+) will appear here automatically.</p>
+    </div>
+  </div>
+</div>
+
+<script>
+// ══════════════════════════════════════════════════════════
+//  CONFIGURATION
+// ══════════════════════════════════════════════════════════
+// Change this to your Render backend URL when deploying
+const API_BASE = window.location.hostname === 'localhost'
+  ? 'http://localhost:8000'
+  : 'https://catalyst-backend.onrender.com';
+
+let currentPlatform = 'iq';
+let currentTimeframe = 'all';
+let signalCount = 0;
+let ws = null;
+let reconnectDelay = 1000;
+let allSignals = []; // Store all signals for filtering
+
+// ══════════════════════════════════════════════════════════
+//  fetchWithRetry — Handle Render Cold Starts
+// ══════════════════════════════════════════════════════════
+async function fetchWithRetry(url, maxRetries = 5) {
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      const res = await fetch(url);
+
+      // Happy path — server is awake
+      if (res.ok) {
+        if (i > 0) {
+          console.log(`Backend woke up after ${i + 1} retries`);
+          hideBackendBanner();
+        }
+        return res;
+      }
+
+      // Check if Render is spinning up (returns "pending" message)
+      const data = await res.json().catch(() => ({}));
+      if (data.Message && data.Message.includes('pending')) {
+        console.log(`Backend waking... retry ${i + 1}/${maxRetries} in ${(i + 1) * 3}s`);
+        showBackendBanner(`Backend is waking up... retry ${i + 1}/${maxRetries}`);
+        await new Promise(r => setTimeout(r, (i + 1) * 3000));
+        continue;
+      }
+
+      // Non-pending error
+      throw new Error(data.Message || `Request failed with status ${res.status}`);
+    } catch (err) {
+      // Network error (server unreachable = probably sleeping)
+      if (err.name === 'TypeError' && err.message.includes('fetch')) {
+        console.log(`Network error — backend may be sleeping. Retry ${i + 1}/${maxRetries} in ${(i + 1) * 3}s`);
+        showBackendBanner(`Backend is sleeping... retry ${i + 1}/${maxRetries}`);
+        await new Promise(r => setTimeout(r, (i + 1) * 3000));
+        continue;
+      }
+      // If it's our own thrown error and we have retries left, try again
+      if (i < maxRetries - 1) {
+        console.log(`Request error: ${err.message}. Retrying in ${(i + 1) * 3}s`);
+        showBackendBanner(`Connecting to backend... retry ${i + 1}/${maxRetries}`);
+        await new Promise(r => setTimeout(r, (i + 1) * 3000));
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw new Error('Backend not available after maximum retries');
+}
+
+// ══════════════════════════════════════════════════════════
+//  UI HELPERS
+// ══════════════════════════════════════════════════════════
+function showBackendBanner(text) {
+  const banner = document.getElementById('backend-banner');
+  const bannerText = document.getElementById('backend-banner-text');
+  banner.classList.add('show');
+  bannerText.textContent = text;
+  updateConnectionStatus('waking');
+}
+
+function hideBackendBanner() {
+  document.getElementById('backend-banner').classList.remove('show');
+  updateConnectionStatus('online');
+}
+
+function updateConnectionStatus(state) {
+  const el = document.getElementById('conn-status');
+  const dot = document.getElementById('pulse-dot');
+  if (state === 'online') {
+    el.textContent = '🟢 Online';
+    el.className = 'status';
+    dot.style.background = '#00ff88';
+  } else if (state === 'waking') {
+    el.textContent = '🟡 Waking...';
+    el.className = 'status waking';
+    dot.style.background = '#ffd700';
+  } else {
+    el.textContent = '🔴 Offline';
+    el.className = 'status offline';
+    dot.style.background = '#ff4444';
+  }
+}
+
+// ══════════════════════════════════════════════════════════
+//  SIGNAL CARD RENDERING
+// ══════════════════════════════════════════════════════════
+function addSignalCard(d) {
+  // Store signal for filtering
+  allSignals.unshift(d);
+  if (allSignals.length > 100) allSignals.pop();
+
+  signalCount++;
+  document.getElementById('sig-count').textContent = signalCount;
+  renderSignals();
+}
+
+function renderSignals() {
+  const cont = document.getElementById('signals');
+  const wait = document.getElementById('waiting');
+
+  // Filter signals
+  let filtered = allSignals;
+  if (currentTimeframe !== 'all') {
+    filtered = filtered.filter(s => s.timeframe === currentTimeframe);
+  }
+
+  if (filtered.length === 0) {
+    if (wait) wait.style.display = '';
+    // Remove all signal cards but keep the waiting div
+    const cards = cont.querySelectorAll('.signal-card');
+    cards.forEach(c => c.remove());
+    return;
+  }
+
+  if (wait) wait.style.display = 'none';
+
+  // Clear and re-render (simple approach)
+  const cards = cont.querySelectorAll('.signal-card');
+  cards.forEach(c => c.remove());
+
+  filtered.slice(0, 20).forEach(d => {
+    const card = document.createElement('div');
+    card.className = 'signal-card ' + d.direction.toLowerCase();
+
+    let ml = '';
+    if (d.martingale && d.martingale.length) {
+      ml = '<div class="martingale"><div class="martingale-header">🛡️ MARTINGALE RECOVERY</div>';
+      d.martingale.forEach(m => {
+        ml += '<div class="martingale-row">' +
+          '<span class="m-row-level">' + m.level + '</span>' +
+          '<span class="m-row-mult">' + m.multiplier + 'x</span>' +
+          '<span class="m-row-amt">$' + m.amount + '</span>' +
+          '<span class="m-row-time">' + m.entry_time + ' WAT</span>' +
+        '</div>';
+      });
+      ml += '</div>';
+    }
+
+    const dirEmoji = d.direction === 'SELL' ? '🔴' : '🟢';
+    card.innerHTML =
+      '<div class="card-header">' +
+        '<div class="pair">🎫 ' + d.symbol + '</div>' +
+        '<div class="conf">🎯 ' + d.confidence.toFixed(1) + '%</div>' +
+      '</div>' +
+      '<div class="direction ' + d.direction.toLowerCase() + '">' + dirEmoji + ' ' + d.direction + '</div>' +
+      '<div class="meta">' +
+        '<span class="meta-item">⏳ ' + d.timeframe + ' (OTC)</span>' +
+        '<span class="meta-item">➡️ Entry: ' + d.entry_time + '</span>' +
+      '</div>' +
+      ml +
+      '<div class="signal-status">🎯 HIGH PROBABILITY SIGNAL</div>';
+
+    cont.appendChild(card);
+  });
+}
+
+// ══════════════════════════════════════════════════════════
+//  FETCH HEALTH + SIGNALS (with retry)
+// ══════════════════════════════════════════════════════════
+async function fetchHealth() {
+  try {
+    const res = await fetchWithRetry(`${API_BASE}/health`);
+    const d = await res.json();
+    document.getElementById('filter-min').textContent = d.filter_min_overall + '%';
+    document.getElementById('filter-conf').textContent = d.filter_min_confluences;
+    document.getElementById('win-rate').textContent = d.win_rate ? (d.win_rate * 100).toFixed(1) + '%' : '--';
+    updateConnectionStatus('online');
+  } catch (e) {
+    console.error('Health check failed:', e);
+    updateConnectionStatus('offline');
+  }
+}
+
+async function fetchSignals() {
+  try {
+    const res = await fetchWithRetry(`${API_BASE}/api/signals`);
+    const d = await res.json();
+    if (d.signals && d.signals.length) {
+      signalCount = d.count;
+      document.getElementById('sig-count').textContent = signalCount;
+      d.signals.reverse().forEach(sig => {
+        allSignals.push({
+          type: 'new_signal',
+          signal_id: sig.signal_id,
+          symbol: sig.symbol,
+          direction: sig.direction,
+          confidence: sig.confidence,
+          entry_time: new Date(sig.entry_time).toLocaleTimeString('en-GB', {hour:'2-digit',minute:'2-digit'}) + ' WAT',
+          timeframe: sig.timeframe,
+          martingale: null
+        });
+      });
+      renderSignals();
+    }
+  } catch (e) {
+    console.error('Failed to load signals:', e);
+  }
+}
+
+// ══════════════════════════════════════════════════════════
+//  WEBSOCKET (with fallback polling)
+// ══════════════════════════════════════════════════════════
+function connectWebSocket() {
+  const wsProto = API_BASE.startsWith('https') ? 'wss:' : 'ws:';
+  const wsHost = API_BASE.replace(/^https?:\/\//, '');
+  const wsUrl = `${wsProto}//${wsHost}/ws`;
+
+  try {
+    ws = new WebSocket(wsUrl);
+
+    ws.onopen = () => {
+      console.log('WebSocket connected');
+      updateConnectionStatus('online');
+      hideBackendBanner();
+      reconnectDelay = 1000;
+      fetchHealth();
+    };
+
+    ws.onmessage = (e) => {
+      const d = JSON.parse(e.data);
+      if (d.type === 'new_signal') {
+        addSignalCard(d);
+      }
+    };
+
+    ws.onclose = () => {
+      console.log('WebSocket closed, reconnecting...');
+      updateConnectionStatus('offline');
+      setTimeout(() => connectWebSocket(), reconnectDelay);
+      reconnectDelay = Math.min(reconnectDelay * 2, 30000);
+    };
+
+    ws.onerror = () => {
+      ws.close();
+    };
+  } catch (e) {
+    console.warn('WebSocket failed, falling back to polling:', e);
+    startPolling();
+  }
+}
+
+// Fallback: Poll for new signals every 15 seconds
+let pollingInterval = null;
+function startPolling() {
+  if (pollingInterval) return;
+  console.log('Starting signal polling (WebSocket unavailable)');
+  pollingInterval = setInterval(async () => {
+    try {
+      const res = await fetchWithRetry(`${API_BASE}/api/signals`);
+      const d = await res.json();
+      if (d.signals && d.signals.length) {
+        // Add only new signals
+        const existingIds = new Set(allSignals.map(s => s.signal_id));
+        let newCount = 0;
+        d.signals.forEach(sig => {
+          if (!existingIds.has(sig.signal_id)) {
+            allSignals.unshift({
+              type: 'new_signal',
+              signal_id: sig.signal_id,
+              symbol: sig.symbol,
+              direction: sig.direction,
+              confidence: sig.confidence,
+              entry_time: new Date(sig.entry_time).toLocaleTimeString('en-GB', {hour:'2-digit',minute:'2-digit'}) + ' WAT',
+              timeframe: sig.timeframe,
+              martingale: null
+            });
+            newCount++;
+          }
+        });
+        if (newCount > 0) {
+          signalCount = d.count;
+          document.getElementById('sig-count').textContent = signalCount;
+          renderSignals();
+        }
+      }
+      updateConnectionStatus('online');
+      hideBackendBanner();
+    } catch (e) {
+      console.error('Polling failed:', e);
+    }
+  }, 15000);
+}
+
+// ══════════════════════════════════════════════════════════
+//  PLATFORM & TIMEFRAME SELECTORS
+// ══════════════════════════════════════════════════════════
+function selectPlatform(btn, platform) {
+  document.querySelectorAll('.platform-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  currentPlatform = platform;
+}
+
+function selectTimeframe(btn, tf) {
+  document.querySelectorAll('.tf-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  currentTimeframe = tf;
+  renderSignals();
+}
+
+// ══════════════════════════════════════════════════════════
+//  OUTCOME REPORTING (with retry)
+// ══════════════════════════════════════════════════════════
+async function reportOutcome(signalId, outcome) {
+  try {
+    const res = await fetchWithRetry(`${API_BASE}/api/outcome/${signalId}?outcome=${outcome}`);
+    const d = await res.json();
+    console.log(`Outcome reported: ${signalId} = ${outcome}`);
+    return d;
+  } catch (e) {
+    console.error('Failed to report outcome:', e);
+  }
+}
+
+// ══════════════════════════════════════════════════════════
+//  INITIALIZATION
+// ══════════════════════════════════════════════════════════
+(async function init() {
+  // 1. Try WebSocket first
+  connectWebSocket();
+
+  // 2. Load cached signals via REST (with retry for cold starts)
+  await fetchSignals();
+
+  // 3. Health check
+  await fetchHealth();
+
+  // 4. Refresh health every 30s
+  setInterval(fetchHealth, 30000);
+})();
+</script>
+</body>
+</html>
