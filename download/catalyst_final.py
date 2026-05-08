@@ -613,138 +613,51 @@ def news_safe(symbol: str) -> bool:
 # 3d. TELEGRAM ALERTS
 # ============================================================
 async def send_telegram(signal: dict):
-    """Send signal alert to Telegram channel with full enhanced format. Gracefully no-ops if not configured."""
+    """Send formatted signal alert via Telegram. No-ops if not configured."""
     if not TG_AVAILABLE or not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         return
     try:
         bot = TelegramBot(token=TELEGRAM_TOKEN)
-
-        # Parse entry time for WAT display
+        emoji = "🔴" if signal['direction'] == 'SELL' else "🟢"
         entry_dt = datetime.fromisoformat(signal['entry_time'].replace('Z', '+00:00'))
-        wat_tz = timezone(timedelta(hours=1))
-        entry_wat = entry_dt.astimezone(wat_tz).strftime('%H:%M')
+        entry_str = entry_dt.astimezone(timezone(timedelta(hours=1))).strftime('%H:%M') + ' WAT'
 
-        # Timer display
-        tf_display = signal['timeframe'].upper()
-        otc_label = 'OTC' if 'OTC' in signal['symbol'].upper() or 'OTC' in signal.get('platform', '') else ''
+        # Clean symbol
+        sym = signal['symbol'].replace('-OTC', '').replace('_OTC', '').replace(' (OTC)', '')
 
-        dir_emoji = '📈' if signal['direction'] == 'BUY' else '📉'
-        dir_arrow = '➡️' if signal['direction'] == 'BUY' else '⬅️'
-
-        # Clean symbol display
-        sym_display = signal['symbol'].replace('-OTC', '').replace('_OTC', '').replace(' (OTC)', '')
-        if otc_label:
-            sym_display += ''
-
-        # Confidence/accuracy
-        glm_prob = signal.get('confidence', signal.get('accuracy', 0))
-        vol_label = signal.get('volatility', 'High Volatility')
-
-        # Regime
-        regime = signal.get('regime', 'RANGING')
-        regime_desc = signal.get('regime_desc', '')
-
-        # Trend
-        trend = signal.get('trend', 'N/A')
-
-        # BOS/CHoCH
-        bos = signal.get('bos', 'Not Confirmed')
-        choch = signal.get('choch', 'Not Confirmed')
-
-        # FVG
-        fvg_status = signal.get('fvg', 'Inactive')
-
-        # Liquidity
-        liq_sweep = signal.get('liquidity_sweep', False)
-        liq_side = signal.get('liquidity_side', 'None')
-        liq_display = 'Sweep Detected' if liq_sweep else 'No Sweep'
-
-        # Volume
-        vol_class = signal.get('volume_class', 'Normal')
-
-        # Zone
-        zone = signal.get('zone', 'None Detected')
-
-        # RSI
-        rsi_val = signal.get('rsi', 0)
-
-        # Stochastic
-        stoch_status = signal.get('stoch_status', 'Neutral')
-
-        # BB Width
-        bb_status = signal.get('bb_status', 'Stable')
-
-        # R:R
-        rr = signal.get('rr', '1:1.0')
-
-        # Martingale
+        # Martingale lines
         mart_lines = []
         for i, m in enumerate(signal.get('martingale', [])):
             m_dt = datetime.fromisoformat(m['entry_time'].replace('Z', '+00:00'))
-            m_wat = m_dt.astimezone(wat_tz).strftime('%H:%M')
-            mart_lines.append(f"  M{i+1} | {m['multiplier']}x | ${m['amount']} | Entry: {m_wat} WAT")
+            t = m_dt.astimezone(timezone(timedelta(hours=1))).strftime('%H:%M') + ' WAT'
+            mart_lines.append(f"↪️ M{i+1} │ {m['multiplier']}x │ ${m['amount']} │ Entry: {t}")
+        mart_block = "\n".join(mart_lines) if mart_lines else ""
 
-        # GLM Smart Money
-        sm_structure = signal.get('sm_structure', 'No Clear Break')
-        sm_liquidity = signal.get('sm_liquidity', 'N/A')
-        sm_breakout = signal.get('sm_breakout', 'No Breakout')
-        sm_signal = signal.get('sm_signal', 'N/A')
+        msg = f"""
+🔔 NEW SIGNAL!
 
-        # Strategy Guide
-        strategy_lines = signal.get('strategy_guide', [])
+🎫 Trade: {sym}
+⏳ Timer: {signal['timeframe']} (OTC)
+➡️ Entry: {entry_str}
+📈 Direction: {signal['direction']} {emoji}
+🎯 AI Confidence: {signal['confidence']}%
+📊 Accuracy Level: {signal['accuracy']}%
 
-        # Support/Resistance
-        support = signal.get('support', 0)
-        resistance = signal.get('resistance', 0)
+🧠 Trend: {signal.get('trend', 'Analyzing...')}
+📉 RSI: {signal['rsi']} | ADX: {signal['adx']}
+📦 Market Structure: SMC Confirmed
 
-        # Signal status
-        signal_status = 'HIGH PROBABILITY ONLY' if glm_prob >= 85 else 'MODERATE PROBABILITY'
+{mart_block}
 
-        msg = (
-            f"🔔 CATALYST AI SIGNAL!\n\n"
-            f"🎫 Trade: {sym_display}\n"
-            f"⏳ Timer: {tf_display} ({otc_label})\n"
-            f"➡️ Entry: {entry_wat} WAT\n"
-            f"{dir_emoji} Direction: {signal['direction']}\n"
-            f"🎯 GLM Probability: {glm_prob}% WIN RATE\n"
-            f"📊 Market: {vol_label}\n\n"
-            f"🔮 Market Regime: {regime}\n"
-            f"   {regime_desc}\n\n"
-            f"🧠 Trend: {trend}\n"
-            f"📉 BOS: {bos}\n"
-            f"🔄 CHoCH: {choch}\n"
-            f"📦 FVG: {fvg_status}\n"
-            f"💧 Liquidity: {liq_display}\n"
-            f"📦 Volume: {vol_class}\n"
-            f"🏗️ Zone: {zone}\n"
-            f"📉 RSI: {rsi_val}\n"
-            f"📊 Stochastic: {stoch_status}\n"
-            f"📊 BB Width: {bb_status}\n"
-            f"⚖️ RR: {rr}\n\n"
-            f"↪️ ── 🛡️ MARTINGALE RECOVERY (Risk Level) ──\n"
-            + '\n'.join(mart_lines) + '\n\n'
-            f"🧪 GLM SMART MONEY:\n"
-            f"  Structure: {sm_structure}\n"
-            f"  Liquidity: {sm_liquidity}\n"
-            f"  Breakout: {sm_breakout}\n"
-            f"  Signal: {sm_signal}\n\n"
-            f"📋 STRATEGY GUIDE:\n"
-            + '\n'.join([f'  ✅ {s}' if 'confirm' in s.lower() or 'wait' in s.lower() or 'bos' in s.lower() or 'fvg' in s.lower() else f'  🚪 {s}' if 'profit' in s.lower() or 'stop' in s.lower() or 'take' in s.lower() else f'  🛡️ {s}' for s in strategy_lines]) + '\n\n'
-            f"📐 SUPPORT/RESISTANCE:\n"
-            f"  Support: {support}\n"
-            f"  Resistance: {resistance}\n\n"
-            f"Note: Trade 1% - 3% of your capability and capital\n"
-            f"⚠️ Please trade responsibly.\n"
-            f"AI analyzes data in real time outcomes may vary.\n"
-            f"🎯 SIGNAL STATUS: {signal_status}\n\n"
-            f"🎯 GLM PROBABILITY: {glm_prob}% WIN RATE\n"
-            f"   {signal_status}"
-        )
-
+Note: Trade 1% - 3% of your capability and capital
+⚠️ Please trade responsibly.
+AI analyzes data in real time outcomes may vary.
+🎯 SIGNAL STATUS: HIGH PROBABILITY ONLY
+"""
         await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg)
-        logger.info(f"Telegram alert sent for {signal['symbol']} {signal['direction']}")
+        logger.info(f"📱 Telegram alert sent for {signal['symbol']}")
     except Exception as e:
-        logger.error(f"Telegram send error: {e}")
+        logger.error(f"Telegram send failed: {e}")
 
 # ============================================================
 # 4. MEMORY, AUTO-TUNING & DAILY STATS
@@ -1581,8 +1494,8 @@ async def scan_loop():
                         for ws in dead:
                             clients.discard(ws)
 
-                        # Telegram alert
-                        await send_telegram(sig)
+                        # Send Telegram alert (fire-and-forget)
+                        asyncio.create_task(send_telegram(sig))
 
                         logger.info(f"{platform} | {sym} {dir_} | RSI:{rsi_:.0f} ADX:{adx_:.0f} Acc:{accuracy:.0f}% Conf:{final_conf}%")
                     except Exception as e:
@@ -1726,6 +1639,7 @@ body{background:#050510;color:#e0e0e0;font-family:Segoe UI,sans-serif}
 .btn{padding:6px 15px;border:none;border-radius:5px;cursor:pointer;font-weight:bold;transition:opacity .2s}
 .btn:hover{opacity:0.85}
 .btn:disabled{opacity:0.4;cursor:not-allowed}
+.copy-btn{background:#00b4d8;color:#fff}
 .win-btn{background:#00ff88;color:#000}
 .loss-btn{background:#ff4444;color:#fff}
 .ignore-btn{background:#666;color:#fff}
@@ -1864,6 +1778,7 @@ ws.onmessage=function(e){
   card.setAttribute('data-signal-id',d.signal_id);
   card.setAttribute('data-entry-time',d.entry_time);
   card.setAttribute('data-platform',d.platform);
+  card.setAttribute('data-signal-json',JSON.stringify(d));
 
   var genD=new Date(d.generated_at),entD=new Date(d.entry_time);
   var endD=new Date(entD.getTime()+d.duration_minutes*60000);
@@ -1955,10 +1870,11 @@ ws.onmessage=function(e){
     '<div class="disclaimer">Note: Trade 1% - 3% of your capability and capital. Please trade responsibly. AI analyzes data in real time, outcomes may vary.</div>'+
     '<div class="signal-status '+sigStatusClass+'">🎯 SIGNAL STATUS: '+sigStatus+'</div>'+
     '<div class="signal-status '+sigStatusClass+'">🎯 GLM PROBABILITY: '+d.confidence+'% WIN RATE | '+sigStatus+'</div>'+
-    '<div class="btn-group">'+
-    '<button class="btn win-btn" onclick="report(\''+d.signal_id+'\',\'win\',this)">WIN</button>'+
-    '<button class="btn loss-btn" onclick="report(\''+d.signal_id+'\',\'loss\',this)">LOSS</button>'+
-    '<button class="btn ignore-btn" onclick="report(\''+d.signal_id+'\',\'ignored\',this)">IGNORED</button>'+
+    '<div class="btn-group" style="flex-wrap:wrap;gap:5px">'+
+    '<button class="btn copy-btn" onclick="copySignal(this)">📋 Copy Signal</button>'+
+    '<button class="btn win-btn" onclick="report(\''+d.signal_id+'\',\'win\',this)">✅ WIN</button>'+
+    '<button class="btn loss-btn" onclick="report(\''+d.signal_id+'\',\'loss\',this)">❌ LOSS</button>'+
+    '<button class="btn ignore-btn" onclick="report(\''+d.signal_id+'\',\'ignored\',this)">🚫 IGNORED</button>'+
     '</div>'+
     '<div class="outcome-text" style="display:none"></div>';
 
@@ -1968,6 +1884,44 @@ ws.onmessage=function(e){
   cont.insertBefore(card,cont.firstChild);
   if(currentPlatform!=='all'&&d.platform!==currentPlatform)card.style.display='none';
 };
+
+function copySignal(btn){
+  var card=btn.closest('.signal-card');
+  var d=JSON.parse(card.getAttribute('data-signal-json')||'{}');
+  if(!d.signal_id){btn.textContent='No data';return;}
+  var emoji=d.direction==='SELL'?'🔴':'🟢';
+  var sym=d.symbol.replace('-OTC','').replace('_OTC','').replace(' (OTC)','');
+  var entryD=new Date(d.entry_time);
+  var entryStr=entryD.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',timeZone:'Africa/Lagos'})+' WAT';
+  var martLines='';
+  if(d.martingale&&d.martingale.length){
+    d.martingale.forEach(function(m,i){
+      var mD=new Date(m.entry_time);
+      var mT=mD.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',timeZone:'Africa/Lagos'})+' WAT';
+      martLines+='↪️ M'+(i+1)+' │ '+m.multiplier+'x │ $'+m.amount+' │ Entry: '+mT+'\n';
+    });
+  }
+  var msg='🔔 NEW SIGNAL!\n\n'+
+  '🎫 Trade: '+sym+'\n'+
+  '⏳ Timer: '+d.timeframe+' (OTC)\n'+
+  '➡️ Entry: '+entryStr+'\n'+
+  '📈 Direction: '+d.direction+' '+emoji+'\n'+
+  '🎯 AI Confidence: '+d.confidence+'%\n'+
+  '📊 Accuracy Level: '+d.accuracy+'%\n\n'+
+  '🧠 Trend: '+(d.trend||'Analyzing...')+'\n'+
+  '📉 RSI: '+d.rsi+' | ADX: '+d.adx+'\n'+
+  '📦 Market Structure: SMC Confirmed\n\n'+
+  (martLines?martLines+'\n':'')+
+  'Note: Trade 1% - 3% of your capability and capital\n'+
+  '⚠️ Please trade responsibly.\n'+
+  'AI analyzes data in real time outcomes may vary.\n'+
+  '🎯 SIGNAL STATUS: HIGH PROBABILITY ONLY';
+  navigator.clipboard.writeText(msg).then(function(){
+    btn.textContent='✅ Copied!';
+    btn.style.background='#00ff88';
+    setTimeout(function(){btn.textContent='📋 Copy Signal';btn.style.background='#00b4d8';},2000);
+  }).catch(function(err){alert('Copy failed: '+err);});
+}
 
 function report(sid,outcome,btn){
   var card=btn.closest('.signal-card');
