@@ -3,12 +3,27 @@
                 query XTransformPort=*
         }
 
+        @python_dashboard {
+                path /py/dashboard
+        }
+
         @python_ws {
                 path /py/ws
         }
 
         @python_api {
                 path /py/api/*
+        }
+
+        handle @python_dashboard {
+                uri strip_prefix /py/dashboard
+                rewrite / /
+                reverse_proxy localhost:8000 {
+                        header_up Host {host}
+                        header_up X-Forwarded-For {remote_host}
+                        header_up X-Forwarded-Proto {scheme}
+                        header_up X-Real-IP {remote_host}
+                }
         }
 
         handle @python_ws {

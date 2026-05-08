@@ -1,0 +1,459 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>CATALYST FINAL v3.3</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#050510;color:#e0e0e0;font-family:Segoe UI,sans-serif}
+.app{max-width:1200px;margin:0 auto;padding:20px}
+.header{background:linear-gradient(135deg,#0a0a2e,#1a1a4e);border-radius:16px;padding:20px;display:flex;justify-content:space-between;align-items:center;border:1px solid #2a2a5a;margin-bottom:20px;flex-wrap:wrap;gap:10px}
+.logo{font-size:2em;font-weight:bold}.logo span{color:#00ff88}
+.status{color:#00ff88;background:rgba(0,255,136,0.1);padding:5px 15px;border-radius:20px;font-size:0.9em}
+.info-bar{display:flex;gap:15px;margin-bottom:15px;flex-wrap:wrap;align-items:center}
+.session-badge{display:inline-block;padding:3px 12px;border-radius:15px;font-size:0.9em}
+.session-active{background:rgba(0,255,136,0.1);color:#00ff88}
+.stats-bar{background:#0a0a1e;border-radius:12px;padding:10px 15px;border:1px solid #2a2a5a;font-size:0.9em;color:#aaa;flex:1;min-width:200px}
+.chart-container{background:#0a0a1e;border-radius:16px;padding:20px;border:1px solid #2a2a5a;margin-bottom:20px;height:300px}
+.platform-selector{display:flex;gap:10px;margin-bottom:20px;flex-wrap:wrap}
+.platform-btn{padding:10px 25px;border-radius:25px;border:1px solid #2a2a5a;background:#0a0a2e;color:#e0e0e0;cursor:pointer;font-weight:600;transition:all .2s}
+.platform-btn:hover{border-color:#00ff88}
+.platform-btn.active{background:#00ff88;color:#000}
+.signals{background:#0a0a1e;border-radius:16px;padding:20px;border:1px solid #2a2a5a;min-height:300px}
+.waiting{text-align:center;padding:60px;color:#666}
+.signal-card{background:#1a1a3e;border-radius:12px;padding:20px;margin:15px 0;border-left:4px solid #00ff88;animation:slide .3s}
+.signal-card.sell{border-left-color:#ff4444}
+.signal-card.iq{border-top:2px solid #00b4d8}
+.signal-card.po{border-top:2px solid #ffd700}
+.card-header{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:5px}
+.pair{font-size:1.2em;font-weight:bold}
+.platform-badge{display:inline-block;padding:2px 10px;border-radius:12px;font-size:0.8em;font-weight:bold}
+.platform-badge.iq{background:rgba(0,180,216,0.2);color:#00b4d8}
+.platform-badge.po{background:rgba(255,215,0,0.2);color:#ffd700}
+.conf{color:#00ff88;background:rgba(0,255,136,0.1);padding:3px 12px;border-radius:15px;font-size:0.9em}
+.accuracy{color:#ffd700;font-weight:bold;margin-left:8px}
+.direction{display:inline-block;padding:5px 15px;border-radius:8px;margin:10px 0;font-weight:bold}
+.direction.buy{background:rgba(0,255,136,0.2);color:#00ff88}
+.direction.sell{background:rgba(255,68,68,0.2);color:#ff4444}
+.confirmed-badge{display:inline-block;padding:2px 8px;border-radius:8px;font-size:0.75em;background:rgba(0,255,136,0.15);color:#00ff88;margin-left:8px}
+.regime-badge{display:inline-block;padding:3px 10px;border-radius:8px;font-size:0.85em;font-weight:bold;margin:5px 0}
+.regime-badge.breakout{background:rgba(255,68,68,0.2);color:#ff6666}
+.regime-badge.trending{background:rgba(0,180,216,0.2);color:#00b4d8}
+.regime-badge.ranging{background:rgba(255,215,0,0.2);color:#ffd700}
+.signal-section{margin:10px 0;padding:10px;background:#111;border-radius:8px;font-size:0.9em}
+.signal-section-title{color:#ffd700;font-weight:bold;margin-bottom:5px;font-size:0.95em}
+.signal-grid{display:grid;grid-template-columns:1fr 1fr;gap:4px 12px}
+.signal-grid-item{display:flex;justify-content:space-between;padding:2px 0}
+.signal-grid-item .label{color:#888}
+.signal-grid-item .value{color:#e0e0e0;font-weight:500}
+.smart-money-section{margin:10px 0;padding:10px;background:rgba(0,180,216,0.08);border:1px solid rgba(0,180,216,0.2);border-radius:8px}
+.smart-money-item{padding:3px 0;font-size:0.9em}
+.strategy-section{margin:10px 0;padding:10px;background:rgba(0,255,136,0.05);border:1px solid rgba(0,255,136,0.15);border-radius:8px}
+.strategy-item{padding:2px 0;font-size:0.85em}
+.sr-section{margin:10px 0;padding:10px;background:rgba(255,215,0,0.05);border:1px solid rgba(255,215,0,0.15);border-radius:8px}
+.disclaimer{font-size:0.8em;color:#666;margin-top:10px;padding:8px;background:#0a0a1e;border-radius:6px}
+.signal-status{font-weight:bold;text-align:center;padding:8px;border-radius:8px;margin-top:8px}
+.signal-status.high{background:rgba(0,255,136,0.15);color:#00ff88}
+.signal-status.moderate{background:rgba(255,215,0,0.15);color:#ffd700}
+.btn-group{margin-top:10px;display:flex;gap:5px;flex-wrap:wrap}
+.btn{padding:6px 15px;border:none;border-radius:5px;cursor:pointer;font-weight:bold;transition:opacity .2s}
+.btn:hover{opacity:0.85}
+.btn:disabled{opacity:0.4;cursor:not-allowed}
+.copy-btn{background:#00b4d8;color:#fff}
+.win-btn{background:#00ff88;color:#000}
+.loss-btn{background:#ff4444;color:#fff}
+.ignore-btn{background:#666;color:#fff}
+.countdown{font-size:1.5em;font-weight:bold;color:#ffd700;margin:10px 0}
+.timing-details{font-size:0.9em;color:#aaa;margin-bottom:10px}
+.martingale{margin-top:10px;background:#111;padding:10px;border-radius:8px}
+.martingale-title{color:#ffd700;font-weight:bold;margin-bottom:5px}
+.martingale-row{display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px solid #222;font-size:0.9em}
+.outcome-text{font-weight:bold;margin-top:5px}
+@keyframes slide{from{opacity:0;transform:translateY(-10px)}to{opacity:1;transform:translateY(0)}}
+@media(max-width:600px){.header{flex-direction:column;text-align:center}.platform-selector{justify-content:center}}
+</style>
+</head>
+<body>
+<div class="app">
+<div class="header">
+  <div class="logo">CATALYST<span>FINAL</span> <small style="font-size:0.4em;color:#888">v3.3</small></div>
+  <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+    <span class="session-badge session-active" id="session-badge">...</span>
+    <span class="status" id="sys-status">LIVE</span>
+  </div>
+</div>
+<div class="info-bar">
+  <div id="session-timer" style="color:#888;min-width:200px"></div>
+  <div class="stats-bar" id="stats">Loading stats...</div>
+</div>
+<div class="chart-container">
+  <canvas id="wrChart"></canvas>
+</div>
+<div class="platform-selector">
+  <button class="platform-btn active" onclick="filterPlatform('all',this)">All Platforms</button>
+  <button class="platform-btn" onclick="filterPlatform('IQ Option',this)">IQ Option</button>
+  <button class="platform-btn" onclick="filterPlatform('Pocket Option',this)">Pocket Option</button>
+</div>
+<div class="signals" id="signals">
+  <div class="waiting" id="waiting">
+    <div style="font-size:3em">&#9203;</div>
+    <h3>Waiting for signal setups</h3>
+    <p>Scanning 8 OTC pairs on IQ Option & Pocket Option timeframes</p>
+  </div>
+</div>
+</div>
+<script>
+var currentPlatform='all';
+var wrChart=null;
+
+function initChart(){
+  var ctx=document.getElementById('wrChart').getContext('2d');
+  wrChart=new Chart(ctx,{
+    type:'line',
+    data:{labels:[],datasets:[
+      {label:'Win Rate %',data:[],borderColor:'#00ff88',backgroundColor:'rgba(0,255,136,0.1)',fill:true,tension:0.3},
+      {label:'Accuracy %',data:[],borderColor:'#ffd700',backgroundColor:'rgba(255,215,0,0.1)',fill:false,tension:0.3}
+    ]},
+    options:{responsive:true,maintainAspectRatio:false,scales:{y:{beginAtZero:true,max:100,grid:{color:'#1a1a3e'}},x:{grid:{color:'#1a1a3e'}}},plugins:{legend:{labels:{color:'#e0e0e0'}}}}
+  });
+}
+
+function updateChart(){
+  fetch('/api/daily-stats?days=30').then(r=>r.json()).then(d=>{
+    if(!d.daily||!d.daily.length)return;
+    d.daily.reverse();
+    wrChart.data.labels=d.daily.map(x=>x.date);
+    wrChart.data.datasets[0].data=d.daily.map(x=>x.win_rate);
+    wrChart.data.datasets[1].data=d.daily.map(x=>x.avg_accuracy);
+    wrChart.update();
+  }).catch(()=>{});
+}
+setInterval(updateChart,60000);
+
+function filterPlatform(p,btn){
+  currentPlatform=p;
+  document.querySelectorAll('.platform-btn').forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active');
+  document.querySelectorAll('.signal-card').forEach(c=>{
+    c.style.display=(p==='all'||c.getAttribute('data-platform')===p)?'':'none';
+  });
+}
+
+function updateStats(){
+  fetch('/api/stats').then(r=>r.json()).then(d=>{
+    document.getElementById('stats').innerHTML=
+      'WR: <b style="color:'+(d.win_rate>=80?'#00ff88':'#ff4444')+'">'+d.win_rate+'%</b> | '+
+      'W:'+d.wins+' L:'+d.losses+' Ign:'+d.ignored+' | '+
+      'RSI<'+d.params.rsi_buy+' ADX>'+d.params.adx_min+' Vol>'+d.params.vol_mult+'x | '+
+      'MinConf:'+d.min_confidence+'%';
+  }).catch(()=>{});
+}
+setInterval(updateStats,10000);updateStats();
+
+function updateSession(){
+  fetch('/api/session').then(r=>r.json()).then(d=>{
+    var b=document.getElementById('session-badge');
+    b.textContent=d.active?'\uD83D\uDFE2 '+d.session:'\uD83D\uDD34 Off';
+    b.className='session-badge '+(d.active?'session-active':'session-inactive');
+  }).catch(()=>{});
+}
+setInterval(updateSession,30000);updateSession();
+
+function updateStatus(){
+  fetch('/api/status').then(r=>r.json()).then(d=>{
+    var s=document.getElementById('sys-status');
+    var parts=['LIVE'];
+    if(d.iq_connected)parts.push('IQ');
+    if(d.po_connected)parts.push('PO');
+    if(d.telegram)parts.push('TG');
+    if(d.news_filter)parts.push('NF');
+    s.textContent=parts.join(' | ');
+  }).catch(()=>{});
+}
+setInterval(updateStatus,15000);updateStatus();
+
+function fmtTime(sec){
+  if(sec<=0)return"Entry passed";
+  var m=Math.floor(sec/60),s=Math.floor(sec%60);
+  return'Entry in '+m+':'+(s<10?'0':'')+s;
+}
+
+function updateCountdowns(){
+  document.querySelectorAll('.signal-card').forEach(c=>{
+    var e=c.getAttribute('data-entry-time');
+    if(!e)return;
+    var diff=(new Date(e)-new Date())/1000;
+    var el=c.querySelector('.countdown');
+    if(el){el.textContent=fmtTime(diff);el.style.color=diff<=0?'#ff4444':'#ffd700';}
+  });
+}
+setInterval(updateCountdowns,1000);
+
+var ws=new WebSocket('ws://'+location.host+'/ws');
+ws.onmessage=function(e){
+  var d=JSON.parse(e.data);
+  if(d.type!=='new_signal')return;
+  var card=document.createElement('div');
+  card.className='signal-card '+d.direction.toLowerCase()+' '+(d.platform==='IQ Option'?'iq':'po');
+  card.setAttribute('data-signal-id',d.signal_id);
+  card.setAttribute('data-entry-time',d.entry_time);
+  card.setAttribute('data-platform',d.platform);
+  card.setAttribute('data-signal-json',JSON.stringify(d));
+
+  var genD=new Date(d.generated_at),entD=new Date(d.entry_time);
+  var endD=new Date(entD.getTime()+d.duration_minutes*60000);
+  var tz={hour:'2-digit',minute:'2-digit',second:'2-digit',timeZone:'Africa/Lagos'};
+  var genS=genD.toLocaleTimeString('en-GB',tz)+' WAT';
+  var entS=entD.toLocaleTimeString('en-GB',tz)+' WAT';
+  var endS=endD.toLocaleTimeString('en-GB',tz)+' WAT';
+
+  var badge=d.platform==='IQ Option'?'<span class="platform-badge iq">IQ Option</span>':'<span class="platform-badge po">Pocket Option</span>';
+  var confBadge=d.confirmed?'<span class="confirmed-badge">CONFIRMED</span>':'';
+
+  // Clean symbol display
+  var symClean=d.symbol.replace('-OTC','').replace('_OTC','').replace(' (OTC)','');
+  var otcLabel=(d.symbol.indexOf('OTC')>=0)?'OTC':'';
+
+  // Regime badge
+  var regimeClass=(d.regime||'RANGING').toLowerCase();
+  var regimeHtml='<span class="regime-badge '+regimeClass+'">'+(d.regime||'RANGING')+'</span>';
+
+  // Martingale HTML
+  var mHtml='';
+  if(d.martingale&&d.martingale.length){
+    mHtml='<div class="signal-section"><div class="signal-section-title">MARTINGALE RECOVERY (Risk Level)</div>';
+    d.martingale.forEach(function(m){
+      var mD=new Date(m.entry_time);
+      var mT=mD.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',timeZone:'Africa/Lagos'})+' WAT';
+      mHtml+='<div class="signal-grid-item"><span>'+m.level+'</span><span>'+m.multiplier+'x</span><span>$'+m.amount+'</span><span>'+mT+'</span></div>';
+    });
+    mHtml+='</div>';
+  }
+
+  // GLM Smart Money section
+  var smHtml='<div class="smart-money-section"><div class="signal-section-title">GLM SMART MONEY</div>'+
+    '<div class="smart-money-item">Structure: '+(d.sm_structure||'N/A')+'</div>'+
+    '<div class="smart-money-item">Liquidity: '+(d.sm_liquidity||'N/A')+'</div>'+
+    '<div class="smart-money-item">Breakout: '+(d.sm_breakout||'N/A')+'</div>'+
+    '<div class="smart-money-item">Signal: '+(d.sm_signal||'N/A')+'</div></div>';
+
+  // Strategy Guide section
+  var stratHtml='';
+  if(d.strategy_guide&&d.strategy_guide.length){
+    stratHtml='<div class="strategy-section"><div class="signal-section-title">STRATEGY GUIDE</div>';
+    d.strategy_guide.forEach(function(s){
+      var icon=s.indexOf('confirm')>=0||s.indexOf('Wait')>=0||s.indexOf('BOS')>=0||s.indexOf('FVG')>=0?'✅':
+               s.indexOf('profit')>=0||s.indexOf('stop')>=0||s.indexOf('Take')>=0?'🚪':'🛡️';
+      stratHtml+='<div class="strategy-item">'+icon+' '+s+'</div>';
+    });
+    stratHtml+='</div>';
+  }
+
+  // Support/Resistance section
+  var srHtml='<div class="sr-section"><div class="signal-section-title">SUPPORT / RESISTANCE</div>'+
+    '<div class="signal-grid-item"><span class="label">Support</span><span class="value">'+(d.support||'N/A')+'</span></div>'+
+    '<div class="signal-grid-item"><span class="label">Resistance</span><span class="value">'+(d.resistance||'N/A')+'</span></div></div>';
+
+  // Signal status
+  var sigStatus=d.confidence>=85?'HIGH PROBABILITY ONLY':'MODERATE PROBABILITY';
+  var sigStatusClass=d.confidence>=85?'high':'moderate';
+
+  // Main indicators grid
+  var liqDisplay=d.liquidity_sweep?'Sweep Detected ('+d.liquidity_side+')':'No Sweep';
+  var gridHtml='<div class="signal-section"><div class="signal-section-title">MARKET ANALYSIS</div>'+
+    '<div class="signal-grid">'+
+    '<div class="signal-grid-item"><span class="label">Trend</span><span class="value">'+(d.trend||'N/A')+'</span></div>'+
+    '<div class="signal-grid-item"><span class="label">BOS</span><span class="value">'+(d.bos||'Not Confirmed')+'</span></div>'+
+    '<div class="signal-grid-item"><span class="label">CHoCH</span><span class="value">'+(d.choch||'Not Confirmed')+'</span></div>'+
+    '<div class="signal-grid-item"><span class="label">FVG</span><span class="value">'+(d.fvg||'Inactive')+'</span></div>'+
+    '<div class="signal-grid-item"><span class="label">Liquidity</span><span class="value">'+liqDisplay+'</span></div>'+
+    '<div class="signal-grid-item"><span class="label">Volume</span><span class="value">'+(d.volume_class||'Normal')+'</span></div>'+
+    '<div class="signal-grid-item"><span class="label">Zone</span><span class="value">'+(d.zone||'None')+'</span></div>'+
+    '<div class="signal-grid-item"><span class="label">RSI</span><span class="value">'+d.rsi+'</span></div>'+
+    '<div class="signal-grid-item"><span class="label">Stochastic</span><span class="value">'+(d.stoch_status||'Neutral')+'</span></div>'+
+    '<div class="signal-grid-item"><span class="label">BB Width</span><span class="value">'+(d.bb_status||'Stable')+'</span></div>'+
+    '<div class="signal-grid-item"><span class="label">R:R</span><span class="value">'+(d.rr||'1:1.0')+'</span></div>'+
+    '</div></div>';
+
+  card.innerHTML=
+    '<div class="card-header"><div class="pair">'+symClean+' '+badge+'</div><div><div class="conf">'+d.confidence+'%'+confBadge+'</div><span class="accuracy">Acc: '+d.accuracy+'%</span></div></div>'+
+    '<div class="direction '+d.direction.toLowerCase()+'">'+d.direction+'</div>'+
+    '<div class="countdown">'+fmtTime((entD-new Date())/1000)+'</div>'+
+    '<div class="timing-details">Entry: '+entS+' | End: '+endS+' ('+d.duration_minutes*60+'s) | '+otcLabel+'</div>'+
+    '<div>Market: '+(d.volatility||'High Volatility')+' | GLM Probability: '+d.confidence+'%</div>'+
+    '<div style="margin:5px 0">'+regimeHtml+' <span style="color:#888;font-size:0.85em">'+(d.regime_desc||'')+'</span></div>'+
+    gridHtml+
+    mHtml+
+    smHtml+
+    stratHtml+
+    srHtml+
+    '<div class="disclaimer">Note: Trade 1% - 3% of your capability and capital. Please trade responsibly. AI analyzes data in real time, outcomes may vary.</div>'+
+    '<div class="signal-status '+sigStatusClass+'">🎯 SIGNAL STATUS: '+sigStatus+'</div>'+
+    '<div class="signal-status '+sigStatusClass+'">🎯 GLM PROBABILITY: '+d.confidence+'% WIN RATE | '+sigStatus+'</div>'+
+    '<div class="btn-group" style="flex-wrap:wrap;gap:5px">'+
+    '<button class="btn copy-btn" onclick="copySignal(this)">📋 Copy Signal</button>'+
+    '<button class="btn win-btn" onclick="report(\''+d.signal_id+'\',\'win\',this)">✅ WIN</button>'+
+    '<button class="btn loss-btn" onclick="report(\''+d.signal_id+'\',\'loss\',this)">❌ LOSS</button>'+
+    '<button class="btn ignore-btn" onclick="report(\''+d.signal_id+'\',\'ignored\',this)">🚫 IGNORED</button>'+
+    '</div>'+
+    '<div class="outcome-text" style="display:none"></div>';
+
+  var cont=document.getElementById('signals');
+  var wait=document.getElementById('waiting');
+  if(wait)wait.style.display='none';
+  cont.insertBefore(card,cont.firstChild);
+  if(currentPlatform!=='all'&&d.platform!==currentPlatform)card.style.display='none';
+};
+
+function copySignal(btn){
+  var card=btn.closest('.signal-card');
+  var d=JSON.parse(card.getAttribute('data-signal-json')||'{}');
+  if(!d.signal_id){btn.textContent='No data';return;}
+  var emoji=d.direction==='SELL'?'🔴':'🟢';
+  var sym=d.symbol.replace('-OTC','').replace('_OTC','').replace(' (OTC)','');
+  var entryD=new Date(d.entry_time);
+  var entryStr=entryD.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',timeZone:'Africa/Lagos'})+' WAT';
+
+  // Market regime
+  var regime=d.regime||'RANGING';
+  var regimeDesc=d.regime_desc||'';
+
+  // BOS/CHoCH
+  var bosStatus=d.bos||'Not Confirmed';
+  var chochStatus=d.choch||'Not Confirmed';
+
+  // FVG
+  var fvgStatus=d.fvg||'Inactive';
+
+  // Liquidity
+  var liqDisplay=d.liquidity_sweep?d.liquidity_side:'None';
+
+  // Volume & Zone
+  var volClass=d.volume_class||'Normal';
+  var zone=d.zone||'None Detected';
+
+  // Stochastic
+  var stochVal=d.stoch_val||50;
+  var stochDisplay;
+  if(stochVal>80)stochDisplay='Overbought';
+  else if(stochVal<20)stochDisplay='Oversold';
+  else if(d.direction==='BUY'&&stochVal<50)stochDisplay='Bullish Crossover';
+  else if(d.direction==='SELL'&&stochVal>50)stochDisplay='Bearish Crossover';
+  else stochDisplay=d.stoch_status||'Neutral';
+
+  // BB Width
+  var bbStatus=d.bb_status||'Stable';
+  var bbDisplay=bbStatus==='Expanding'?'Expanding':(bbStatus==='Contracting'?'Contracting':'Squeezing');
+
+  // R:R
+  var rr=d.rr||'1:1.0';
+
+  // GLM Smart Money
+  var smStructure=d.sm_structure||'No Clear Break';
+  var smLiquidity=d.sm_liquidity||'N/A';
+  var smBreakout=d.sm_breakout||'No Breakout';
+  var smSignal=d.sm_signal||'N/A';
+  if(smStructure.indexOf('Up')>=0)smStructure=smStructure.replace('Up','↑');
+  if(smStructure.indexOf('Down')>=0)smStructure=smStructure.replace('Down','↓');
+
+  // Martingale lines
+  var martLines='';
+  if(d.martingale&&d.martingale.length){
+    d.martingale.forEach(function(m,i){
+      var mD=new Date(m.entry_time);
+      var mT=mD.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',timeZone:'Africa/Lagos'})+' WAT';
+      martLines+='  M'+(i+1)+' │ '+m.multiplier+'x │ $'+m.amount+' │ Entry: '+mT+'\n';
+    });
+  }
+
+  // Strategy Guide
+  var stratLines='';
+  if(d.strategy_guide&&d.strategy_guide.length){
+    d.strategy_guide.forEach(function(s){
+      var icon='🛡️';
+      if(s.match(/confirm|wait|bos|fvg|pullback|enter/i))icon='✅';
+      else if(s.match(/profit|stop|take|trail|exit/i))icon='🚪';
+      stratLines+='  '+icon+' '+s+'\n';
+    });
+  }
+
+  // Support/Resistance
+  var srLines='';
+  if(d.support)srLines+='  Support: '+d.support+'\n';
+  if(d.resistance)srLines+='  Resistance: '+d.resistance+'\n';
+
+  // Signal status
+  var sigStatus=d.confidence>=85?'HIGH PROBABILITY ONLY':'MODERATE PROBABILITY';
+
+  var msg='🔔 CATALYST AI SIGNAL!\n\n'+
+  '🎫 Trade: '+sym+'\n'+
+  '⏳ Timer: '+d.timeframe+' (OTC)\n'+
+  '➡️ Entry: '+entryStr+'\n'+
+  '📈 Direction: '+d.direction+' '+emoji+'\n'+
+  '🎯 GLM Probability: '+d.confidence+'% WIN RATE\n'+
+  '📊 Market: '+(d.volatility||'High Volatility')+'\n\n'+
+  '🔮 Market Regime: '+regime+'\n'+
+  '   '+regimeDesc+'\n\n'+
+  '🧠 Trend: '+(d.trend||'Analyzing...')+'\n'+
+  '📉 BOS: '+bosStatus+'\n'+
+  '🔄 CHoCH: '+chochStatus+'\n'+
+  '📦 FVG: '+fvgStatus+'\n'+
+  '💧 Liquidity: '+liqDisplay+'\n'+
+  '📦 Volume: '+volClass+'\n'+
+  '🏗️ Zone: '+zone+'\n'+
+  '📉 RSI: '+d.rsi+'\n'+
+  '📊 Stochastic: '+stochDisplay+'\n'+
+  '📊 BB Width: '+bbDisplay+'\n'+
+  '⚖️ RR: '+rr+'\n\n'+
+  '↪️ ── 🛡️ MARTINGALE RECOVERY (Risk Level) ──\n'+
+  (martLines?martLines+'\n':'')+
+  '🧪 GLM SMART MONEY:\n'+
+  '  Structure: '+smStructure+'\n'+
+  '  Liquidity: '+smLiquidity+'\n'+
+  '  Breakout: '+smBreakout+'\n'+
+  '  Signal: '+smSignal+'\n\n'+
+  '📋 STRATEGY GUIDE:\n'+
+  (stratLines?stratLines+'\n':'')+
+  '📐 SUPPORT/RESISTANCE:\n'+
+  (srLines?srLines+'\n':'')+
+  'Note: Trade 1% - 3% of your capability and capital\n'+
+  '🎯 SIGNAL STATUS: '+sigStatus+'\n\n'+
+  '🎯 GLM PROBABILITY: '+d.confidence+'% WIN RATE\n'+
+  '   '+sigStatus;
+
+  navigator.clipboard.writeText(msg).then(function(){
+    btn.textContent='✅ Copied!';
+    btn.style.background='#00ff88';
+    setTimeout(function(){btn.textContent='📋 Copy Signal';btn.style.background='#00b4d8';},2000);
+  }).catch(function(err){alert('Copy failed: '+err);});
+}
+
+function report(sid,outcome,btn){
+  var card=btn.closest('.signal-card');
+  card.querySelectorAll('.btn').forEach(b=>b.disabled=true);
+  fetch('/api/trade/outcome?signal_id='+sid+'&outcome='+outcome,{method:'POST'})
+  .then(r=>r.json()).then(data=>{
+    var txt=card.querySelector('.outcome-text');
+    txt.style.display='block';
+    if(outcome==='win'){card.style.borderLeft='4px solid #00ff88';txt.style.color='#00ff88';txt.textContent='\u2705 Trade Won';}
+    else if(outcome==='loss'){card.style.borderLeft='4px solid #ff4444';txt.style.color='#ff4444';txt.textContent='\u274C Trade Lost';}
+    else{card.style.borderLeft='4px solid #888';txt.style.color='#888';txt.textContent='\uD83D\uDEAB Ignored';}
+    card.querySelector('.btn-group').style.display='none';
+    updateStats();
+  }).catch(e=>{card.querySelectorAll('.btn').forEach(b=>b.disabled=false);});
+}
+
+setInterval(function(){
+  var now=new Date(),h=now.getUTCHours()+now.getUTCMinutes()/60,r='';
+  if(h>=22||h<7){var e=new Date(now);if(h>=22)e.setUTCDate(e.getUTCDate()+1);e.setUTCHours(7,0,0,0);var d=(e-now)/1000;r='Sydney/Tokyo ends in '+Math.floor(d/3600)+'h '+Math.floor((d%3600)/60)+'m';}
+  else if(h>=8&&h<16){var e=new Date(now);e.setUTCHours(16,0,0,0);var d=(e-now)/1000;r='London/NY ends in '+Math.floor(d/3600)+'h '+Math.floor((d%3600)/60)+'m';}
+  else r='Off-peak period';
+  document.getElementById('session-timer').textContent=r;
+},1000);
+
+initChart();updateChart();
+</script>
+</body>
+</html>
