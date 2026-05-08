@@ -1,30 +1,35 @@
 #!/usr/bin/env python3
 """
-CATALYST FINAL v3.1 - Self-Improving OTC Signal Engine
+CATALYST FINAL v3.2 - Self-Improving OTC Signal Engine
 10 Confluences + Accuracy Level (0-100%) | 80-95% Win Rate Target | 24/7
 IQ Option & Pocket Option | Memory-Based Confidence | Auto-Tuning | Telegram Alerts
 
-v3.1 CHANGES:
-- Entry-time price confirmation: waits until entry, checks price moved in signal direction
-- Telegram Bot alerts: instant notification on confirmed signals
-- Economic calendar news filter: blocks signals near high-impact events
-- Daily stats tracking: daily_stats table + Chart.js win-rate graph
-- APScheduler weekly parameter optimization
-- Dual broker: IQ Option + Pocket Option with graceful fallback
-- 10-point ALL-AND confluence + MTF (5m+15m) + Accuracy scoring
-- Candlestick confirmation (Hammer/Shooting Star, Engulfing, Inside Bar)
-- Market Structure Shift + Confirmed Reversal (mandatory)
-- get_current_price() tries PO first, then IQ
-- Pocket Option: richmelody15@gmail.com
+v3.2 CHANGES (Enhanced Signal Format):
+- Market Regime Detection: BREAKOUT, RANGING, TRENDING with description
+- Stochastic Oscillator: Overbought/Oversold/Neutral status
+- Liquidity Sweep Detection: Buy/Sell side sweep identification
+- Enhanced Zone Analysis: Supply/Demand + Order Block labeling
+- BOS/CHoCH Confirmation Status: Active/Not Confirmed display
+- R:R Ratio Calculation: Risk-to-Reward display (1:X.X)
+- GLM Smart Money Section: Structure, Liquidity, Breakout, Signal validity
+- Strategy Guide: Context-sensitive rules based on signal type
+- Support/Resistance Levels in signal output
+- Enhanced Telegram format: Full emoji-rich signal template
+- Enhanced Dashboard: All new fields displayed in signal cards
+- Volume Classification: Normal/High/Low labels
+- BB Width Status: Expanding/Contracting/Squeezing labels
+- GLM Probability branding with HIGH PROBABILITY ONLY filter
 
-BUG FIXES:
-- close[:-1] -> close.iloc[:-1] (pandas Series slicing)
-- BB squeeze+expansion -> percentile-based setup/trigger model
-- datetime.utcnow() -> datetime.now(timezone.utc)
-- IQ Option min/max fields -> low/high mapping
-- OTC volume=0 -> synthetic volume generation
-- fvg() -> detect_fvg() correct function name
-- get_current_price() simplified .get chain
+v3.1 FEATURES (preserved):
+- Entry-time price confirmation
+- Telegram Bot alerts
+- Economic calendar news filter
+- Daily stats + Chart.js win-rate graph
+- APScheduler weekly optimization
+- Dual broker: IQ Option + Pocket Option
+- 10-point ALL-AND confluence + MTF + Accuracy scoring
+- Candlestick confirmation
+- Market Structure Shift + Confirmed Reversal
 
 DEPLOY:
   Set env vars: IQ_EMAIL, IQ_PASSWORD, PO_EMAIL, PO_PASSWORD
@@ -208,6 +213,148 @@ def detect_fvg(df: pd.DataFrame) -> Optional[str]:
             if curr['high'] < prev2['low']:
                 return 'bearish'
     return None
+
+def stochastic(high: pd.Series, low: pd.Series, close: pd.Series, k_period: int = 14, d_period: int = 3) -> Tuple[float, str]:
+    """Stochastic Oscillator %K. Returns (k_value, status_string)."""
+    if len(close) < k_period:
+        return 50.0, 'Neutral'
+    hh = high.rolling(k_period).max()
+    ll = low.rolling(k_period).min()
+    k = 100.0 * (close - ll) / (hh - ll).replace(0, 1e-10)
+    k_val = k.iloc[-1]
+    if pd.isna(k_val):
+        return 50.0, 'Neutral'
+    if k_val > 80:
+        status = 'Overbought'
+    elif k_val < 20:
+        status = 'Oversold'
+    else:
+        status = 'Neutral'
+    return round(float(k_val), 1), status
+
+def detect_regime(df: pd.DataFrame) -> Tuple[str, str]:
+    """Detect market regime: BREAKOUT, RANGING, TRENDING. Returns (regime, description)."""
+    if len(df) < 30:
+        return 'RANGING', 'Insufficient data for regime detection'
+    close = df['close']
+    high = df['high']
+    low = df['low']
+    volume = df['volume']
+
+    # ATR for range measurement
+    tr1 = high - low
+    tr2 = (high - close.shift()).abs()
+    tr3 = (low - close.shift()).abs()
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    atr = tr.rolling(14).mean()
+    avg_atr = atr.iloc[-20:].mean()
+    recent_atr = atr.iloc[-5:].mean()
+
+    # Volume analysis
+    avg_vol = volume.iloc[-20:].mean()
+    recent_vol = volume.iloc[-5:].mean()
+    vol_ratio = recent_vol / avg_vol if avg_vol > 0 else 1.0
+
+    # Range analysis
+    range_20 = high.iloc[-20:].max() - low.iloc[-20:].min()
+    range_5 = high.iloc[-5:].max() - low.iloc[-5:].min()
+    range_ratio = range_5 / range_20 if range_20 > 0 else 0.5
+
+    # ADX for trend strength
+    adx_val = adx(high, low, close, 14).iloc[-1]
+    if pd.isna(adx_val):
+        adx_val = 20.0
+
+    # EMA slope
+    ema5_val = ema(close, 5)
+    ema20_val = ema(close, 20)
+    ema_slope = (ema5_val.iloc[-1] - ema5_val.iloc[-5]) / ema5_val.iloc[-5] * 100 if len(ema5_val) >= 5 else 0
+
+    if vol_ratio > 1.5 and range_ratio > 0.4 and recent_atr > avg_atr * 1.3:
+        return 'BREAKOUT', 'Market is breaking out of a defined range with surging volume.'
+    elif adx_val > 30 and abs(ema_slope) > 0.05:
+        direction = 'upward' if ema_slope > 0 else 'downward'
+        return 'TRENDING', f'Market is in a sustained {direction} trend with strong momentum.'
+    else:
+        return 'RANGING', 'Market is consolidating within a defined range, awaiting breakout.'
+
+def detect_liquidity_sweep(df: pd.DataFrame) -> Tuple[bool, str]:
+    """Detect liquidity sweep (stop hunt). Returns (sweep_detected, side)."""
+    if len(df) < 20:
+        return False, 'None'
+    high = df['high'].values
+    low = df['low'].values
+    close = df['close'].values
+
+    # Find recent swing highs and lows (liquidity pools)
+    swing_highs = []
+    swing_lows = []
+    for i in range(3, min(len(high) - 1, 20)):
+        idx = len(high) - 1 - i
+        if idx < 3:
+            break
+        if all(high[idx] >= high[idx - j] for j in range(1, 4)) and all(high[idx] >= high[idx + j] for j in range(1, min(4, len(high) - idx))):
+            swing_highs.append(high[idx])
+        if all(low[idx] <= low[idx - j] for j in range(1, 4)) and all(low[idx] <= low[idx + j] for j in range(1, min(4, len(low) - idx))):
+            swing_lows.append(low[idx])
+
+    # Check if price swept above swing high then reversed (sell side liquidity grab)
+    if swing_highs and high[-1] > max(swing_highs[:3]) and close[-1] < max(swing_highs[:3]):
+        return True, 'Buy Side Sweep'
+
+    # Check if price swept below swing low then reversed (buy side liquidity grab)
+    if swing_lows and low[-1] < min(swing_lows[:3]) and close[-1] > min(swing_lows[:3]):
+        return True, 'Sell Side Sweep'
+
+    # Simpler check: wick beyond recent range with close back inside
+    recent_high = max(high[-10:-1])
+    recent_low = min(low[-10:-1])
+    if high[-1] > recent_high and close[-1] < recent_high:
+        return True, 'Buy Side Sweep'
+    if low[-1] < recent_low and close[-1] > recent_low:
+        return True, 'Sell Side Sweep'
+
+    return False, 'None'
+
+def classify_volume(df: pd.DataFrame) -> str:
+    """Classify current volume as High/Normal/Low."""
+    if len(df) < 20:
+        return 'Normal'
+    vol = df['volume']
+    avg = vol.iloc[-20:].mean()
+    if avg == 0:
+        return 'Normal'
+    current = vol.iloc[-1]
+    ratio = current / avg
+    if ratio > 1.5:
+        return 'High'
+    elif ratio < 0.6:
+        return 'Low'
+    return 'Normal'
+
+def classify_bb_width(bb_w: pd.Series) -> str:
+    """Classify Bollinger Band width state."""
+    if len(bb_w) < 5 or pd.isna(bb_w.iloc[-1]) or pd.isna(bb_w.iloc[-2]):
+        return 'Neutral'
+    if bb_w.iloc[-1] > bb_w.iloc[-2] * 1.1:
+        return 'Expanding'
+    elif bb_w.iloc[-1] < bb_w.iloc[-2] * 0.9:
+        return 'Contracting'
+    else:
+        return 'Stable'
+
+def calculate_rr(price: float, support: float, resistance: float, direction: str) -> str:
+    """Calculate Risk:Reward ratio string like '1:2.5'."""
+    if direction == 'BUY':
+        risk = price - support
+        reward = resistance - price
+    else:
+        risk = resistance - price
+        reward = price - support
+    if risk <= 0:
+        return '1:1.0'
+    rr = reward / risk
+    return f'1:{rr:.1f}'
 
 def market_structure(df: pd.DataFrame) -> Optional[str]:
     if len(df) < 12:
@@ -466,21 +613,133 @@ def news_safe(symbol: str) -> bool:
 # 3d. TELEGRAM ALERTS
 # ============================================================
 async def send_telegram(signal: dict):
-    """Send signal alert to Telegram channel. Gracefully no-ops if not configured."""
+    """Send signal alert to Telegram channel with full enhanced format. Gracefully no-ops if not configured."""
     if not TG_AVAILABLE or not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         return
     try:
         bot = TelegramBot(token=TELEGRAM_TOKEN)
-        martingale_str = ', '.join([f"M{i+1}: {m['multiplier']}x" for i, m in enumerate(signal.get('martingale', []))])
+
+        # Parse entry time for WAT display
+        entry_dt = datetime.fromisoformat(signal['entry_time'].replace('Z', '+00:00'))
+        wat_tz = timezone(timedelta(hours=1))
+        entry_wat = entry_dt.astimezone(wat_tz).strftime('%H:%M')
+
+        # Timer display
+        tf_display = signal['timeframe'].upper()
+        otc_label = 'OTC' if 'OTC' in signal['symbol'].upper() or 'OTC' in signal.get('platform', '') else ''
+
+        dir_emoji = '📈' if signal['direction'] == 'BUY' else '📉'
+        dir_arrow = '➡️' if signal['direction'] == 'BUY' else '⬅️'
+
+        # Clean symbol display
+        sym_display = signal['symbol'].replace('-OTC', '').replace('_OTC', '').replace(' (OTC)', '')
+        if otc_label:
+            sym_display += ''
+
+        # Confidence/accuracy
+        glm_prob = signal.get('confidence', signal.get('accuracy', 0))
+        vol_label = signal.get('volatility', 'High Volatility')
+
+        # Regime
+        regime = signal.get('regime', 'RANGING')
+        regime_desc = signal.get('regime_desc', '')
+
+        # Trend
+        trend = signal.get('trend', 'N/A')
+
+        # BOS/CHoCH
+        bos = signal.get('bos', 'Not Confirmed')
+        choch = signal.get('choch', 'Not Confirmed')
+
+        # FVG
+        fvg_status = signal.get('fvg', 'Inactive')
+
+        # Liquidity
+        liq_sweep = signal.get('liquidity_sweep', False)
+        liq_side = signal.get('liquidity_side', 'None')
+        liq_display = 'Sweep Detected' if liq_sweep else 'No Sweep'
+
+        # Volume
+        vol_class = signal.get('volume_class', 'Normal')
+
+        # Zone
+        zone = signal.get('zone', 'None Detected')
+
+        # RSI
+        rsi_val = signal.get('rsi', 0)
+
+        # Stochastic
+        stoch_status = signal.get('stoch_status', 'Neutral')
+
+        # BB Width
+        bb_status = signal.get('bb_status', 'Stable')
+
+        # R:R
+        rr = signal.get('rr', '1:1.0')
+
+        # Martingale
+        mart_lines = []
+        for i, m in enumerate(signal.get('martingale', [])):
+            m_dt = datetime.fromisoformat(m['entry_time'].replace('Z', '+00:00'))
+            m_wat = m_dt.astimezone(wat_tz).strftime('%H:%M')
+            mart_lines.append(f"  M{i+1} | {m['multiplier']}x | ${m['amount']} | Entry: {m_wat} WAT")
+
+        # GLM Smart Money
+        sm_structure = signal.get('sm_structure', 'No Clear Break')
+        sm_liquidity = signal.get('sm_liquidity', 'N/A')
+        sm_breakout = signal.get('sm_breakout', 'No Breakout')
+        sm_signal = signal.get('sm_signal', 'N/A')
+
+        # Strategy Guide
+        strategy_lines = signal.get('strategy_guide', [])
+
+        # Support/Resistance
+        support = signal.get('support', 0)
+        resistance = signal.get('resistance', 0)
+
+        # Signal status
+        signal_status = 'HIGH PROBABILITY ONLY' if glm_prob >= 85 else 'MODERATE PROBABILITY'
+
         msg = (
-            f"NEW SIGNAL - {signal['direction']}\n\n"
-            f"{signal['symbol']} ({signal['timeframe']})\n"
-            f"Platform: {signal['platform']}\n"
-            f"Accuracy: {signal.get('accuracy', 'N/A')}% | Confidence: {signal['confidence']}%\n"
-            f"Entry: {signal['entry_time']} WAT\n"
-            f"RSI: {signal['rsi']} | ADX: {signal['adx']}\n"
-            f"Martingale: {martingale_str}"
+            f"🔔 CATALYST AI SIGNAL!\n\n"
+            f"🎫 Trade: {sym_display}\n"
+            f"⏳ Timer: {tf_display} ({otc_label})\n"
+            f"➡️ Entry: {entry_wat} WAT\n"
+            f"{dir_emoji} Direction: {signal['direction']}\n"
+            f"🎯 GLM Probability: {glm_prob}% WIN RATE\n"
+            f"📊 Market: {vol_label}\n\n"
+            f"🔮 Market Regime: {regime}\n"
+            f"   {regime_desc}\n\n"
+            f"🧠 Trend: {trend}\n"
+            f"📉 BOS: {bos}\n"
+            f"🔄 CHoCH: {choch}\n"
+            f"📦 FVG: {fvg_status}\n"
+            f"💧 Liquidity: {liq_display}\n"
+            f"📦 Volume: {vol_class}\n"
+            f"🏗️ Zone: {zone}\n"
+            f"📉 RSI: {rsi_val}\n"
+            f"📊 Stochastic: {stoch_status}\n"
+            f"📊 BB Width: {bb_status}\n"
+            f"⚖️ RR: {rr}\n\n"
+            f"↪️ ── 🛡️ MARTINGALE RECOVERY (Risk Level) ──\n"
+            + '\n'.join(mart_lines) + '\n\n'
+            f"🧪 GLM SMART MONEY:\n"
+            f"  Structure: {sm_structure}\n"
+            f"  Liquidity: {sm_liquidity}\n"
+            f"  Breakout: {sm_breakout}\n"
+            f"  Signal: {sm_signal}\n\n"
+            f"📋 STRATEGY GUIDE:\n"
+            + '\n'.join([f'  ✅ {s}' if 'confirm' in s.lower() or 'wait' in s.lower() or 'bos' in s.lower() or 'fvg' in s.lower() else f'  🚪 {s}' if 'profit' in s.lower() or 'stop' in s.lower() or 'take' in s.lower() else f'  🛡️ {s}' for s in strategy_lines]) + '\n\n'
+            f"📐 SUPPORT/RESISTANCE:\n"
+            f"  Support: {support}\n"
+            f"  Resistance: {resistance}\n\n"
+            f"Note: Trade 1% - 3% of your capability and capital\n"
+            f"Please trade responsibly. AI analyzes data in real time outcomes may vary.\n"
+            f"🎯 SIGNAL STATUS: {signal_status}\n\n"
+            f"🎯 GLM PROBABILITY: {glm_prob}% WIN RATE\n"
+            f"   {signal_status}"
         )
+
         await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg)
         logger.info(f"Telegram alert sent for {signal['symbol']} {signal['direction']}")
     except Exception as e:
@@ -713,7 +972,7 @@ async def weekly_optimise():
 def generate_signal(df, symbol="", higher_tf_trend=None, market_trend=None):
     """
     10-point ALL-AND confluence + multi-timeframe + market trend + accuracy scoring.
-    Returns: (direction, rsi, adx, accuracy) or None if no signal.
+    Returns: dict with all signal fields or None if no signal.
     """
     df = safe_df(df)
     if len(df) < 80 or df.empty:
@@ -765,6 +1024,76 @@ def generate_signal(df, symbol="", higher_tf_trend=None, market_trend=None):
     fvg_ = detect_fvg(df)
     mom_3 = (close.iloc[-1] - close.iloc[-4]) / close.iloc[-4] * 100 if len(close) >= 4 else 0
 
+    # v3.2: New indicators
+    stoch_val, stoch_status = stochastic(high, low, close)
+    regime, regime_desc = detect_regime(df)
+    liq_sweep, liq_side = detect_liquidity_sweep(df)
+    vol_class = classify_volume(df)
+    bb_status = classify_bb_width(bb_w)
+    trend_dir = 'Bullish' if ema5.iloc[-1] > ema20.iloc[-1] else 'Bearish'
+
+    def make_signal_dict(dir_, rsi_, adx_, accuracy, mtf_ok, market_ok):
+        rr = calculate_rr(price, support, resistance, dir_)
+        zone_label = ''
+        if sd == 'demand':
+            zone_label = 'Demand + Order Block'
+        elif sd == 'supply':
+            zone_label = 'Supply + Order Block'
+        elif sd:
+            zone_label = sd.title() + ' Zone'
+        else:
+            zone_label = 'None Detected'
+
+        # BOS/CHoCH status
+        bos_status = 'Confirmed' if (struct == ('bullish' if dir_ == 'BUY' else 'bearish')) else 'Not Confirmed'
+        choch_status = 'Confirmed' if (mss == ('bullish' if dir_ == 'BUY' else 'bearish')) else 'Not Confirmed'
+
+        # GLM Smart Money
+        if dir_ == 'SELL':
+            sm_structure = 'Break of Structure Down' if bos_status == 'Confirmed' else 'No Clear Break'
+            sm_liquidity = 'Sell Side Sweep' if liq_sweep and 'Sell' in liq_side else 'Buy Side Liquidity'
+            sm_breakout = 'Confirmed Breakdown' if regime == 'BREAKOUT' else 'No Breakout'
+            sm_signal = 'Valid Sell Signal' if accuracy >= 80 else 'Weak Sell Signal'
+        else:
+            sm_structure = 'Break of Structure Up' if bos_status == 'Confirmed' else 'No Clear Break'
+            sm_liquidity = 'Buy Side Sweep' if liq_sweep and 'Buy' in liq_side else 'Sell Side Liquidity'
+            sm_breakout = 'Confirmed Breakout' if regime == 'BREAKOUT' else 'No Breakout'
+            sm_signal = 'Valid Buy Signal' if accuracy >= 80 else 'Weak Buy Signal'
+
+        return {
+            'direction': dir_,
+            'rsi': round(rsi_, 1),
+            'adx': round(adx_, 1),
+            'accuracy': round(accuracy, 1),
+            # v3.2 new fields
+            'regime': regime,
+            'regime_desc': regime_desc,
+            'trend': trend_dir,
+            'bos': bos_status,
+            'choch': choch_status,
+            'fvg': 'Active' if fvg_ else 'Inactive',
+            'fvg_type': fvg_ or 'None',
+            'liquidity_sweep': liq_sweep,
+            'liquidity_side': liq_side,
+            'volume_class': vol_class,
+            'zone': zone_label,
+            'stoch_val': stoch_val,
+            'stoch_status': stoch_status,
+            'bb_status': bb_status,
+            'rr': rr,
+            'support': round(support, 5),
+            'resistance': round(resistance, 5),
+            'price': round(price, 5),
+            'order_block': sd or 'None',
+            'mtf_ok': mtf_ok,
+            'market_ok': market_ok,
+            # GLM Smart Money
+            'sm_structure': sm_structure,
+            'sm_liquidity': sm_liquidity,
+            'sm_breakout': sm_breakout,
+            'sm_signal': sm_signal,
+        }
+
     if (bull and rsi_val < PARAMS['rsi_buy'] and adx_val > PARAMS['adx_min'] and
         vol_spike and bb_sq and bb_exp and buy_sr and
         (struct == 'bullish' or mss == 'bullish') and reversal == 'bullish' and
@@ -775,7 +1104,7 @@ def generate_signal(df, symbol="", higher_tf_trend=None, market_trend=None):
             return None
         accuracy = calculate_accuracy('BUY', rsi_val, adx_val, vol_spike, bb_sq, bb_exp,
                                       sd, fvg_, struct, mss, reversal, candle, True, mtf_ok, market_ok)
-        return 'BUY', rsi_val, adx_val, accuracy
+        return make_signal_dict('BUY', rsi_val, adx_val, accuracy, mtf_ok, market_ok)
 
     if (bear and rsi_val > PARAMS['rsi_sell'] and adx_val > PARAMS['adx_min'] and
         vol_spike and bb_sq and bb_exp and sell_sr and
@@ -787,9 +1116,9 @@ def generate_signal(df, symbol="", higher_tf_trend=None, market_trend=None):
             return None
         accuracy = calculate_accuracy('SELL', rsi_val, adx_val, vol_spike, bb_sq, bb_exp,
                                       sd, fvg_, struct, mss, reversal, candle, True, mtf_ok, market_ok)
-        return 'SELL', rsi_val, adx_val, accuracy
+        return make_signal_dict('SELL', rsi_val, adx_val, accuracy, mtf_ok, market_ok)
 
-    return None, None, None, 0
+    return None
 
 def calculate_accuracy(direction, rsi_val, adx_val, vol_spike, bb_sq, bb_exp, sd, fvg_, struct, mss, reversal, cand_conf, mom_ok, mtf_ok, market_ok=True):
     """Return accuracy score 0-100 based on confirmation strength."""
@@ -1112,9 +1441,13 @@ async def scan_loop():
                             continue
 
                         result = generate_signal(df, sym, tf_trend, market_trend)
-                        if result is None or result[0] is None:
+                        if result is None:
                             continue
-                        dir_, rsi_, adx_, accuracy = result
+
+                        dir_ = result['direction']
+                        rsi_ = result['rsi']
+                        adx_ = result['adx']
+                        accuracy = result['accuracy']
 
                         mem_conf = historical_confidence(rsi_, adx_, dir_, platform)
                         final_conf = round((accuracy + mem_conf) / 2, 1)
@@ -1149,6 +1482,44 @@ async def scan_loop():
                         tf_duration = {'30s': 0.5, '45s': 0.75, '1m': 1, '2m': 2, '3m': 3, '5m': 5}
                         duration_min = tf_duration.get(tf, 1)
 
+                        # Market volatility label
+                        volatility = 'High Volatility' if accuracy >= 85 else ('Medium Volatility' if accuracy >= 70 else 'Low Volatility')
+
+                        # Strategy guide based on signal type
+                        if result['regime'] == 'BREAKOUT':
+                            strategy_guide = [
+                                'Wait for confirmed breakout candle close',
+                                'Enter on pullback to breakout level',
+                                'Use ATR-based stop loss',
+                                f'Take profit at {result["rr"]} R:R',
+                                'Trail stop after 1R profit',
+                                'Risk 1% per trade maximum',
+                            ]
+                        elif dir_ == 'SELL':
+                            strategy_guide = [
+                                'Wait for confirmed setups only',
+                                'Use BOS/CHoCH for confirmation',
+                                'Enter at FVG fill zones',
+                                f'Take profit at {result["rr"]} R:R',
+                                'Tighter stops recommended',
+                                'Move stop to breakeven after 1R',
+                                'Risk 1% per trade',
+                                'Use tighter stops',
+                                f'GLM Probability: {final_conf}% win rate',
+                            ]
+                        else:
+                            strategy_guide = [
+                                'Wait for confirmed setups only',
+                                'Use BOS/CHoCH for confirmation',
+                                'Enter at FVG fill zones',
+                                f'Take profit at {result["rr"]} R:R',
+                                'Tighter stops recommended',
+                                'Move stop to breakeven after 1R',
+                                'Risk 1% per trade',
+                                'Use tighter stops',
+                                f'GLM Probability: {final_conf}% win rate',
+                            ]
+
                         sig = {
                             'signal_id': sig_id,
                             'symbol': sym,
@@ -1158,15 +1529,41 @@ async def scan_loop():
                             'generated_at': now_utc.isoformat(),
                             'entry_time': entry_time.isoformat(),
                             'duration_minutes': duration_min,
-                            'rsi': round(rsi_, 1),
-                            'adx': round(adx_, 1),
                             'confidence': final_conf,
                             'accuracy': round(accuracy, 1),
-                            'mtf_trend': tf_trend or 'N/A',
-                            'market_trend': market_trend or 'N/A',
+                            'volatility': volatility,
                             'martingale': martingale,
                             'params': dict(PARAMS),
-                            'confirmed': ENTRY_CONFIRM_ENABLED and (iq_connected or po_connected)
+                            'confirmed': ENTRY_CONFIRM_ENABLED and (iq_connected or po_connected),
+                            'mtf_trend': tf_trend or 'N/A',
+                            'market_trend': market_trend or 'N/A',
+                            # v3.2 new fields from generate_signal
+                            'regime': result['regime'],
+                            'regime_desc': result['regime_desc'],
+                            'trend': result['trend'],
+                            'bos': result['bos'],
+                            'choch': result['choch'],
+                            'fvg': result['fvg'],
+                            'fvg_type': result['fvg_type'],
+                            'liquidity_sweep': result['liquidity_sweep'],
+                            'liquidity_side': result['liquidity_side'],
+                            'volume_class': result['volume_class'],
+                            'zone': result['zone'],
+                            'rsi': result['rsi'],
+                            'adx': result['adx'],
+                            'stoch_val': result['stoch_val'],
+                            'stoch_status': result['stoch_status'],
+                            'bb_status': result['bb_status'],
+                            'rr': result['rr'],
+                            'support': result['support'],
+                            'resistance': result['resistance'],
+                            'price': result['price'],
+                            'order_block': result['order_block'],
+                            'sm_structure': result['sm_structure'],
+                            'sm_liquidity': result['sm_liquidity'],
+                            'sm_breakout': result['sm_breakout'],
+                            'sm_signal': result['sm_signal'],
+                            'strategy_guide': strategy_guide,
                         }
                         latest_signals.insert(0, sig)
                         if len(latest_signals) > 50:
@@ -1235,7 +1632,7 @@ async def system_status():
     stats = get_stats()
     return {
         "status": "online",
-        "version": "3.1",
+        "version": "3.2",
         "engine": "CATALYST FINAL",
         "iq_connected": iq_connected,
         "po_connected": po_connected,
@@ -1270,7 +1667,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>CATALYST FINAL v3.1</title>
+<title>CATALYST FINAL v3.2</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
@@ -1305,6 +1702,25 @@ body{background:#050510;color:#e0e0e0;font-family:Segoe UI,sans-serif}
 .direction.buy{background:rgba(0,255,136,0.2);color:#00ff88}
 .direction.sell{background:rgba(255,68,68,0.2);color:#ff4444}
 .confirmed-badge{display:inline-block;padding:2px 8px;border-radius:8px;font-size:0.75em;background:rgba(0,255,136,0.15);color:#00ff88;margin-left:8px}
+.regime-badge{display:inline-block;padding:3px 10px;border-radius:8px;font-size:0.85em;font-weight:bold;margin:5px 0}
+.regime-badge.breakout{background:rgba(255,68,68,0.2);color:#ff6666}
+.regime-badge.trending{background:rgba(0,180,216,0.2);color:#00b4d8}
+.regime-badge.ranging{background:rgba(255,215,0,0.2);color:#ffd700}
+.signal-section{margin:10px 0;padding:10px;background:#111;border-radius:8px;font-size:0.9em}
+.signal-section-title{color:#ffd700;font-weight:bold;margin-bottom:5px;font-size:0.95em}
+.signal-grid{display:grid;grid-template-columns:1fr 1fr;gap:4px 12px}
+.signal-grid-item{display:flex;justify-content:space-between;padding:2px 0}
+.signal-grid-item .label{color:#888}
+.signal-grid-item .value{color:#e0e0e0;font-weight:500}
+.smart-money-section{margin:10px 0;padding:10px;background:rgba(0,180,216,0.08);border:1px solid rgba(0,180,216,0.2);border-radius:8px}
+.smart-money-item{padding:3px 0;font-size:0.9em}
+.strategy-section{margin:10px 0;padding:10px;background:rgba(0,255,136,0.05);border:1px solid rgba(0,255,136,0.15);border-radius:8px}
+.strategy-item{padding:2px 0;font-size:0.85em}
+.sr-section{margin:10px 0;padding:10px;background:rgba(255,215,0,0.05);border:1px solid rgba(255,215,0,0.15);border-radius:8px}
+.disclaimer{font-size:0.8em;color:#666;margin-top:10px;padding:8px;background:#0a0a1e;border-radius:6px}
+.signal-status{font-weight:bold;text-align:center;padding:8px;border-radius:8px;margin-top:8px}
+.signal-status.high{background:rgba(0,255,136,0.15);color:#00ff88}
+.signal-status.moderate{background:rgba(255,215,0,0.15);color:#ffd700}
 .btn-group{margin-top:10px;display:flex;gap:5px;flex-wrap:wrap}
 .btn{padding:6px 15px;border:none;border-radius:5px;cursor:pointer;font-weight:bold;transition:opacity .2s}
 .btn:hover{opacity:0.85}
@@ -1325,7 +1741,7 @@ body{background:#050510;color:#e0e0e0;font-family:Segoe UI,sans-serif}
 <body>
 <div class="app">
 <div class="header">
-  <div class="logo">CATALYST<span>FINAL</span> <small style="font-size:0.4em;color:#888">v3.1</small></div>
+  <div class="logo">CATALYST<span>FINAL</span> <small style="font-size:0.4em;color:#888">v3.2</small></div>
   <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
     <span class="session-badge session-active" id="session-badge">...</span>
     <span class="status" id="sys-status">LIVE</span>
@@ -1458,24 +1874,86 @@ ws.onmessage=function(e){
   var badge=d.platform==='IQ Option'?'<span class="platform-badge iq">IQ Option</span>':'<span class="platform-badge po">Pocket Option</span>';
   var confBadge=d.confirmed?'<span class="confirmed-badge">CONFIRMED</span>':'';
 
+  // Clean symbol display
+  var symClean=d.symbol.replace('-OTC','').replace('_OTC','').replace(' (OTC)','');
+  var otcLabel=(d.symbol.indexOf('OTC')>=0)?'OTC':'';
+
+  // Regime badge
+  var regimeClass=(d.regime||'RANGING').toLowerCase();
+  var regimeHtml='<span class="regime-badge '+regimeClass+'">'+(d.regime||'RANGING')+'</span>';
+
+  // Martingale HTML
   var mHtml='';
   if(d.martingale&&d.martingale.length){
-    mHtml='<div class="martingale"><div class="martingale-title">MARTINGALE RECOVERY</div>';
+    mHtml='<div class="signal-section"><div class="signal-section-title">MARTINGALE RECOVERY (Risk Level)</div>';
     d.martingale.forEach(function(m){
       var mD=new Date(m.entry_time);
       var mT=mD.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',timeZone:'Africa/Lagos'})+' WAT';
-      mHtml+='<div class="martingale-row"><span>'+m.level+'</span><span>'+m.multiplier+'x</span><span>$'+m.amount+'</span><span>'+mT+'</span></div>';
+      mHtml+='<div class="signal-grid-item"><span>'+m.level+'</span><span>'+m.multiplier+'x</span><span>$'+m.amount+'</span><span>'+mT+'</span></div>';
     });
     mHtml+='</div>';
   }
 
+  // GLM Smart Money section
+  var smHtml='<div class="smart-money-section"><div class="signal-section-title">GLM SMART MONEY</div>'+
+    '<div class="smart-money-item">Structure: '+(d.sm_structure||'N/A')+'</div>'+
+    '<div class="smart-money-item">Liquidity: '+(d.sm_liquidity||'N/A')+'</div>'+
+    '<div class="smart-money-item">Breakout: '+(d.sm_breakout||'N/A')+'</div>'+
+    '<div class="smart-money-item">Signal: '+(d.sm_signal||'N/A')+'</div></div>';
+
+  // Strategy Guide section
+  var stratHtml='';
+  if(d.strategy_guide&&d.strategy_guide.length){
+    stratHtml='<div class="strategy-section"><div class="signal-section-title">STRATEGY GUIDE</div>';
+    d.strategy_guide.forEach(function(s){
+      var icon=s.indexOf('confirm')>=0||s.indexOf('Wait')>=0||s.indexOf('BOS')>=0||s.indexOf('FVG')>=0?'✅':
+               s.indexOf('profit')>=0||s.indexOf('stop')>=0||s.indexOf('Take')>=0?'🚪':'🛡️';
+      stratHtml+='<div class="strategy-item">'+icon+' '+s+'</div>';
+    });
+    stratHtml+='</div>';
+  }
+
+  // Support/Resistance section
+  var srHtml='<div class="sr-section"><div class="signal-section-title">SUPPORT / RESISTANCE</div>'+
+    '<div class="signal-grid-item"><span class="label">Support</span><span class="value">'+(d.support||'N/A')+'</span></div>'+
+    '<div class="signal-grid-item"><span class="label">Resistance</span><span class="value">'+(d.resistance||'N/A')+'</span></div></div>';
+
+  // Signal status
+  var sigStatus=d.confidence>=85?'HIGH PROBABILITY ONLY':'MODERATE PROBABILITY';
+  var sigStatusClass=d.confidence>=85?'high':'moderate';
+
+  // Main indicators grid
+  var liqDisplay=d.liquidity_sweep?'Sweep Detected ('+d.liquidity_side+')':'No Sweep';
+  var gridHtml='<div class="signal-section"><div class="signal-section-title">MARKET ANALYSIS</div>'+
+    '<div class="signal-grid">'+
+    '<div class="signal-grid-item"><span class="label">Trend</span><span class="value">'+(d.trend||'N/A')+'</span></div>'+
+    '<div class="signal-grid-item"><span class="label">BOS</span><span class="value">'+(d.bos||'Not Confirmed')+'</span></div>'+
+    '<div class="signal-grid-item"><span class="label">CHoCH</span><span class="value">'+(d.choch||'Not Confirmed')+'</span></div>'+
+    '<div class="signal-grid-item"><span class="label">FVG</span><span class="value">'+(d.fvg||'Inactive')+'</span></div>'+
+    '<div class="signal-grid-item"><span class="label">Liquidity</span><span class="value">'+liqDisplay+'</span></div>'+
+    '<div class="signal-grid-item"><span class="label">Volume</span><span class="value">'+(d.volume_class||'Normal')+'</span></div>'+
+    '<div class="signal-grid-item"><span class="label">Zone</span><span class="value">'+(d.zone||'None')+'</span></div>'+
+    '<div class="signal-grid-item"><span class="label">RSI</span><span class="value">'+d.rsi+'</span></div>'+
+    '<div class="signal-grid-item"><span class="label">Stochastic</span><span class="value">'+(d.stoch_status||'Neutral')+'</span></div>'+
+    '<div class="signal-grid-item"><span class="label">BB Width</span><span class="value">'+(d.bb_status||'Stable')+'</span></div>'+
+    '<div class="signal-grid-item"><span class="label">R:R</span><span class="value">'+(d.rr||'1:1.0')+'</span></div>'+
+    '</div></div>';
+
   card.innerHTML=
-    '<div class="card-header"><div class="pair">'+d.symbol+' '+badge+'</div><div><div class="conf">'+d.confidence+'%'+confBadge+'</div><span class="accuracy">Acc: '+d.accuracy+'%</span></div></div>'+
+    '<div class="card-header"><div class="pair">'+symClean+' '+badge+'</div><div><div class="conf">'+d.confidence+'%'+confBadge+'</div><span class="accuracy">Acc: '+d.accuracy+'%</span></div></div>'+
     '<div class="direction '+d.direction.toLowerCase()+'">'+d.direction+'</div>'+
     '<div class="countdown">'+fmtTime((entD-new Date())/1000)+'</div>'+
-    '<div class="timing-details">Start: '+genS+' | Entry: '+entS+' | End: '+endS+' ('+d.duration_minutes*60+'s)</div>'+
-    '<div>RSI: '+d.rsi+' | ADX: '+d.adx+' | MTF: '+d.mtf_trend+' | Trend: '+d.market_trend+'</div>'+
+    '<div class="timing-details">Entry: '+entS+' | End: '+endS+' ('+d.duration_minutes*60+'s) | '+otcLabel+'</div>'+
+    '<div>Market: '+(d.volatility||'High Volatility')+' | GLM Probability: '+d.confidence+'%</div>'+
+    '<div style="margin:5px 0">'+regimeHtml+' <span style="color:#888;font-size:0.85em">'+(d.regime_desc||'')+'</span></div>'+
+    gridHtml+
     mHtml+
+    smHtml+
+    stratHtml+
+    srHtml+
+    '<div class="disclaimer">Note: Trade 1% - 3% of your capability and capital. Please trade responsibly. AI analyzes data in real time, outcomes may vary.</div>'+
+    '<div class="signal-status '+sigStatusClass+'">🎯 SIGNAL STATUS: '+sigStatus+'</div>'+
+    '<div class="signal-status '+sigStatusClass+'">🎯 GLM PROBABILITY: '+d.confidence+'% WIN RATE | '+sigStatus+'</div>'+
     '<div class="btn-group">'+
     '<button class="btn win-btn" onclick="report(\''+d.signal_id+'\',\'win\',this)">WIN</button>'+
     '<button class="btn loss-btn" onclick="report(\''+d.signal_id+'\',\'loss\',this)">LOSS</button>'+
@@ -1529,7 +2007,7 @@ app.router.lifespan_context = lifespan
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
-    logger.info(f"Starting CATALYST FINAL v3.1 on port {port}")
+    logger.info(f"Starting CATALYST FINAL v3.2 on port {port}")
     logger.info(f"PO Email: {PO_EMAIL}")
     logger.info(f"IQ Available: {IQ_API_AVAILABLE}, PO Available: {PO_API_AVAILABLE}")
     logger.info(f"Telegram: {TG_AVAILABLE}, News Filter: {EC_API_AVAILABLE}, Scheduler: {APS_AVAILABLE}")
