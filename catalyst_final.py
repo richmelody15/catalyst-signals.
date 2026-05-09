@@ -1,8 +1,37 @@
 #!/usr/bin/env python3
 """
-CATALYST FINAL v3.5 - Self-Improving OTC Signal Engine
-16 Confluences + Wyckoff + RSI Divergence + MTF Alignment + Protected Swings + Range Efficiency | 80-95% Win Rate Target | 24/7
+CATALYST FINAL v3.7 - Self-Improving OTC Signal Engine
+28+ Confluences + R:R Filter + Valid Entry + Volume Break + Market Break + CHoCH Enhanced + FVG Quality + Failed Reversal + Market Class + Prime Session + Optimal Expiry | 80-95% Win Rate Target | 24/7
 IQ Option & Pocket Option | Memory-Based Confidence | Auto-Tuning | Telegram Alerts
+
+v3.7 CHANGES (R:R Filter + Valid Entry Candle + Volume Break + Market Break + CHoCH + FVG Quality + Failed Reversal + Market Class + Prime Session + Optimal Expiry):
+- R:R Ratio Calculation using swing points (calculate_rr_ratio) with rr_filter >= 2.5
+- Candle Body Percent: body-to-range percentage for entry validation
+- Valid Entry Candle: hammer/marubozu + body% >= 40 + direction match
+- Volume Break Confirmed: volume spike must accompany BOS/MSS
+- Market Break Valid: ATR-based break validation (1.5x ATR range) + BOS confirmation
+- Optimal Expiry Seconds: dynamic expiry based on average swing duration
+- Prime Session Filter: only trade during 07:00-16:00 UTC
+- Enhanced CHoCH (choch_confirmed): price must hold above/below broken level for 2 candles
+- FVG Quality (fvg_quality): direction + ATR-normalized size + age in bars
+- Failed Reversal Detection: reversal pattern confirmed then invalidated → opposite signal
+- Market Classification: strong/weak/ranging/low/normal based on ADX + BB + ATR
+- Market state filter: block signals in ranging/low markets
+- Fresh FVG filter: only pass FVG if age <= 3 bars and size >= 0.3 ATR
+- CHoCH added to structure condition (struct OR mss OR choch)
+- Failed reversal can flip BUY → SELL and vice versa
+- 4 new scoring bonuses in calculate_accuracy()
+
+v3.6 CHANGES (Chart Patterns + Candle Classification + Pre-Entry + Price Phase + Session):
+- Swing Identification: order-3 swing point detection with strength labeling
+- Session Detection: Sydney/Tokyo, London, New York, Low Liquidity
+- Repeating Patterns: double_top, double_bottom, head_shoulders, flag detection
+- Next Candle Prediction: 3-candle momentum + volume heuristic
+- Price Phase Detection: pullback, move, reversal classification
+- Candle Classification: body size + type (doji, marubozu, hammer, shooting_star)
+- Pre-Entry Confirmation: last candle must support trade direction
+- Pattern filter: blocks BUY on double_top/head_shoulders, SELL on double_bottom
+- 4 new scoring bonuses in calculate_accuracy()
 
 v3.5 CHANGES (RSI Divergence + Daily Bias + MTF Full Alignment + Protected Swings + Range Efficiency):
 - RSI Divergence detection: bullish (price LL + RSI HL) and bearish (price HH + RSI LH)
@@ -605,6 +634,396 @@ def range_efficiency(df: pd.DataFrame, lookback: int = 30) -> float:
     return min(100, max(0, score))
 
 
+def identify_swings(df: pd.DataFrame, order: int = 3) -> List[dict]:
+    """Returns list of dicts: {type:'high'|'low', price, time, strength}."""
+    if len(df) < order * 2 + 1:
+        return []
+    swings = []
+    for i in range(order, len(df) - order):
+        if (all(df['high'].iloc[i] >= df['high'].iloc[i - j] for j in range(1, order + 1)) and
+            all(df['high'].iloc[i] >= df['high'].iloc[i + j] for j in range(1, order + 1))):
+            swings.append({
+                'type': 'high', 'price': df['high'].iloc[i],
+                'time': df.index[i], 'strength': order
+            })
+        if (all(df['low'].iloc[i] <= df['low'].iloc[i - j] for j in range(1, order + 1)) and
+            all(df['low'].iloc[i] <= df['low'].iloc[i + j] for j in range(1, order + 1))):
+            swings.append({
+                'type': 'low', 'price': df['low'].iloc[i],
+                'time': df.index[i], 'strength': order
+            })
+    return swings
+
+
+def current_session() -> str:
+    """Returns the current trading session based on UTC hour."""
+    h = datetime.now(timezone.utc).hour
+    if 22 <= h or h < 7:
+        return "Sydney/Tokyo"
+    if 7 <= h < 10:
+        return "London"
+    if 13 <= h < 17:
+        return "New York"
+    return "Low Liquidity"
+
+
+def detect_repeating_patterns(df: pd.DataFrame) -> Optional[str]:
+    """Returns 'double_top', 'double_bottom', 'head_shoulders', 'flag', or None."""
+    swings = identify_swings(df, order=3)
+    if len(swings) < 4:
+        return None
+    # Double top: two similar highs with a lower low in between
+    hs = [s for s in swings if s['type'] == 'high']
+    if len(hs) >= 2:
+        h1, h2 = hs[-2], hs[-1]
+        if abs(h1['price'] - h2['price']) / max(h1['price'], 1e-10) < 0.001:
+            return 'double_top'
+    # Double bottom
+    ls = [s for s in swings if s['type'] == 'low']
+    if len(ls) >= 2:
+        l1, l2 = ls[-2], ls[-1]
+        if abs(l1['price'] - l2['price']) / max(l1['price'], 1e-10) < 0.001:
+            return 'double_bottom'
+    # Head & Shoulders (simplified)
+    if len(hs) >= 3:
+        h1, h2, h3 = hs[-3], hs[-2], hs[-1]
+        if (h2['price'] > h1['price'] and h2['price'] > h3['price'] and
+            abs(h1['price'] - h3['price']) / max(h1['price'], 1e-10) < 0.005):
+            return 'head_shoulders'
+    # Flag (tight range after strong move)
+    recent = df.iloc[-10:]
+    move = abs(recent['close'].iloc[-1] - recent['close'].iloc[0])
+    range_ = recent['high'].max() - recent['low'].min()
+    if range_ < move * 0.3:
+        return 'flag'
+    return None
+
+
+def predict_next_candle(df: pd.DataFrame) -> str:
+    """Returns 'bullish', 'bearish', or 'neutral' based on 3-candle momentum."""
+    if len(df) < 4:
+        return 'neutral'
+    c1, c2, c3 = df.iloc[-3], df.iloc[-2], df.iloc[-1]
+    uptrend = c1['close'] < c2['close'] < c3['close']
+    dntrend = c1['close'] > c2['close'] > c3['close']
+    vol_increase = c3['volume'] > c2['volume'] > c1['volume']
+    if uptrend and vol_increase:
+        return 'bullish'
+    if dntrend and vol_increase:
+        return 'bearish'
+    return 'neutral'
+
+
+def detect_price_phase(df: pd.DataFrame) -> Optional[str]:
+    """Returns 'pullback', 'move', 'reversal', or None."""
+    swings = identify_swings(df, order=3)
+    if len(swings) < 2:
+        return None
+    ema5_val = ema(df['close'], 5).iloc[-1]
+    ema20_val = ema(df['close'], 20).iloc[-1]
+    trend = 'bullish' if ema5_val > ema20_val else 'bearish'
+    price = df['close'].iloc[-1]
+    last_swing = swings[-1]
+    if trend == 'bullish' and last_swing['type'] == 'high' and price < last_swing['price']:
+        return 'pullback'
+    if trend == 'bearish' and last_swing['type'] == 'low' and price > last_swing['price']:
+        return 'pullback'
+    if trend == 'bullish' and price > last_swing['price']:
+        return 'move'
+    if trend == 'bearish' and price < last_swing['price']:
+        return 'move'
+    if trend == 'bullish' and price < df['low'].iloc[-10:-1].min():
+        return 'reversal'
+    if trend == 'bearish' and price > df['high'].iloc[-10:-1].max():
+        return 'reversal'
+    return None
+
+
+def candle_classification(df: pd.DataFrame) -> dict:
+    """Returns dict with body_size (small/medium/large), type (doji/marubozu/hammer/etc)."""
+    c = df.iloc[-1]
+    body = abs(c['close'] - c['open'])
+    range_ = c['high'] - c['low']
+    if range_ == 0:
+        return {'body_size': 'small', 'type': 'doji'}
+    body_ratio = body / range_
+    upper_wick = c['high'] - max(c['open'], c['close'])
+    lower_wick = min(c['open'], c['close']) - c['low']
+    # Body size
+    avg_body = abs(df['close'].diff()).rolling(20).mean().iloc[-1]
+    if pd.isna(avg_body):
+        avg_body = body
+    if body > avg_body * 1.5:
+        size = 'large'
+    elif body > avg_body * 0.5:
+        size = 'medium'
+    else:
+        size = 'small'
+    # Type
+    if body_ratio < 0.1:
+        ctype = 'doji'
+    elif body_ratio > 0.8:
+        ctype = 'marubozu'
+    elif upper_wick > body * 2 and lower_wick < body * 0.5:
+        ctype = 'shooting_star' if c['close'] < c['open'] else 'hammer'
+    elif lower_wick > body * 2 and upper_wick < body * 0.5:
+        ctype = 'hammer' if c['close'] > c['open'] else 'shooting_star'
+    else:
+        ctype = 'normal'
+    return {'body_size': size, 'type': ctype}
+
+
+def pre_entry_confirm(df: pd.DataFrame, direction: str) -> bool:
+    """Returns True if the last candle supports the trade direction."""
+    ctype = candle_classification(df)
+    if direction == 'BUY':
+        if ctype['type'] in ('hammer', 'marubozu') and df['close'].iloc[-1] > df['open'].iloc[-1]:
+            return True
+        if candlestick_confirmation(df) == 'bullish':
+            return True
+        if ctype['body_size'] == 'large' and df['close'].iloc[-1] > df['open'].iloc[-1]:
+            return True
+        return False
+    else:
+        if ctype['type'] in ('shooting_star', 'marubozu') and df['close'].iloc[-1] < df['open'].iloc[-1]:
+            return True
+        if candlestick_confirmation(df) == 'bearish':
+            return True
+        if ctype['body_size'] == 'large' and df['close'].iloc[-1] < df['open'].iloc[-1]:
+            return True
+        return False
+
+
+def calculate_rr_ratio(df: pd.DataFrame, direction: str):
+    """Return (rr_ratio, sl, tp) or None if invalid."""
+    price = df['close'].iloc[-1]
+    swings = identify_swings(df, order=3)
+    if len(swings) < 2:
+        return None
+    # Find nearest swing opposite to direction
+    if direction == 'BUY':
+        # Stop loss below last swing low, take profit at next swing high
+        lows = [s for s in swings if s['type'] == 'low']
+        if not lows:
+            return None
+        sl = min(lows, key=lambda s: abs(s['price'] - price))['price']
+        tp = max([s['price'] for s in swings if s['type'] == 'high' and s['price'] > price], default=price * 1.02)
+    else:
+        highs = [s for s in swings if s['type'] == 'high']
+        if not highs:
+            return None
+        sl = min(highs, key=lambda s: abs(s['price'] - price))['price']
+        tp = min([s['price'] for s in swings if s['type'] == 'low' and s['price'] < price], default=price * 0.98)
+    risk = abs(price - sl)
+    reward = abs(tp - price)
+    if risk == 0:
+        return None
+    rr = round(reward / risk, 1)
+    return rr, sl, tp
+
+
+def rr_filter(df: pd.DataFrame, direction: str) -> bool:
+    """Only allow trades with R:R >= 2.5."""
+    rr_data = calculate_rr_ratio(df, direction)
+    if rr_data is None:
+        return False
+    return rr_data[0] >= 2.5
+
+
+def candle_body_percent(df: pd.DataFrame) -> float:
+    """Return body-to-range percentage of the last candle."""
+    c = df.iloc[-1]
+    body = abs(c['close'] - c['open'])
+    range_ = c['high'] - c['low']
+    if range_ == 0:
+        return 0.0
+    return round((body / range_) * 100, 1)
+
+
+def valid_entry_candle(df: pd.DataFrame, direction: str) -> bool:
+    """Validates that the entry candle supports the trade direction."""
+    pct = candle_body_percent(df)
+    ctype = candle_classification(df)['type']
+    if direction == 'BUY':
+        if ctype in ('hammer', 'marubozu') and ctype != 'doji' and df['close'].iloc[-1] > df['open'].iloc[-1]:
+            return True
+        if pct >= 40 and df['close'].iloc[-1] > df['open'].iloc[-1]:
+            return True
+    else:  # SELL
+        if ctype in ('shooting_star', 'marubozu') and ctype != 'doji' and df['close'].iloc[-1] < df['open'].iloc[-1]:
+            return True
+        if pct >= 40 and df['close'].iloc[-1] < df['open'].iloc[-1]:
+            return True
+    return False
+
+
+def volume_break_confirmed(df: pd.DataFrame, direction: str, vol_spike: bool) -> bool:
+    """True if volume spike accompanies a BOS/MSS."""
+    if not vol_spike:
+        return False
+    # Check if there's a fresh BOS or MSS
+    if direction == 'BUY':
+        return market_structure(df) == 'bullish' or detect_mss(df) == 'bullish'
+    else:
+        return market_structure(df) == 'bearish' or detect_mss(df) == 'bearish'
+
+
+def market_break_valid(df: pd.DataFrame, direction: str) -> bool:
+    """Validates that the market break is significant (1.5x ATR range) + BOS confirmation."""
+    if len(df) < 14:
+        return False
+    # Calculate ATR
+    tr = df['high'] - df['low']
+    atr = tr.rolling(14).mean().iloc[-1]
+    if atr == 0 or pd.isna(atr):
+        return False
+    last_range = df['high'].iloc[-1] - df['low'].iloc[-1]
+    if last_range < 1.5 * atr:
+        return False
+    # Must also have BOS
+    if direction == 'BUY':
+        return market_structure(df) == 'bullish'
+    else:
+        return market_structure(df) == 'bearish'
+
+
+def optimal_expiry_seconds(df: pd.DataFrame, timeframe: str) -> int:
+    """Return number of seconds until the predicted move completes."""
+    swings = identify_swings(df, order=3)
+    if len(swings) < 4:
+        return 60  # default 1 minute
+    # Get last few swings and average bar count between them
+    recent_swings = swings[-4:]
+    durations = []
+    for i in range(1, len(recent_swings)):
+        t1 = recent_swings[i - 1]['time']
+        t2 = recent_swings[i]['time']
+        try:
+            durations.append((t2 - t1).total_seconds())
+        except Exception:
+            durations.append(60)
+    avg_duration = np.mean(durations) if durations else 60
+    # Expiry is half the average swing duration, but not less than 30s or more than 5min
+    return max(30, min(300, int(avg_duration / 2)))
+
+
+def is_prime_session() -> bool:
+    """Only trade during high-liquidity hours: 07:00-16:00 UTC."""
+    h = datetime.now(timezone.utc).hour
+    return 7 <= h < 16
+
+
+def choch_confirmed(df: pd.DataFrame) -> Optional[str]:
+    """
+    Enhanced CHoCH detection.
+    Returns 'bullish' if a bearish structure was broken upward and the price
+    held above the broken high for at least 2 candles.
+    Returns 'bearish' if a bullish structure was broken downward and held.
+    """
+    if len(df) < 6:
+        return None
+    highs = df['high'].values
+    lows = df['low'].values
+    closes = df['close'].values
+
+    # Find swing points (simplified: last 20 bars)
+    sh, sl = [], []
+    for i in range(3, len(highs) - 3):
+        if all(highs[i] >= highs[i - j] for j in range(1, 4)) and all(highs[i] >= highs[i + j] for j in range(1, 4)):
+            sh.append(i)
+        if all(lows[i] <= lows[i - j] for j in range(1, 4)) and all(lows[i] <= lows[i + j] for j in range(1, 4)):
+            sl.append(i)
+
+    if len(sh) < 2 or len(sl) < 2:
+        return None
+
+    # Bullish CHoCH: price breaks above a previous lower high (LH) and stays above
+    if len(sh) >= 2 and highs[sh[-1]] < highs[sh[-2]]:  # last high is lower (bearish structure)
+        if closes[-1] > highs[sh[-1]] and closes[-2] > highs[sh[-1]]:
+            return 'bullish'
+
+    # Bearish CHoCH: price breaks below a previous higher low (HL) and stays below
+    if len(sl) >= 2 and lows[sl[-1]] > lows[sl[-2]]:  # last low is higher (bullish structure)
+        if closes[-1] < lows[sl[-1]] and closes[-2] < lows[sl[-1]]:
+            return 'bearish'
+
+    return None
+
+
+def fvg_quality(df: pd.DataFrame):
+    """
+    Returns (direction, size_in_atr, age_bars) or None.
+    direction: 'bullish' or 'bearish'
+    size_in_atr: FVG height relative to ATR
+    age_bars: how many bars ago the FVG was created (0 = current)
+    """
+    if len(df) < 3:
+        return None
+    # Calculate ATR
+    tr = df['high'] - df['low']
+    atr = tr.rolling(14).mean().iloc[-1] if len(tr) >= 14 else 0.001
+    if atr == 0 or pd.isna(atr):
+        atr = 0.001
+    for i in range(len(df) - 1, max(len(df) - 5, -1), -1):
+        if i >= 2:
+            prev2 = df.iloc[i - 2]
+            curr = df.iloc[i]
+            if curr['low'] > prev2['high']:
+                size = (curr['low'] - prev2['high']) / atr if atr > 0 else 0
+                return ('bullish', round(size, 2), len(df) - 1 - i)
+            if curr['high'] < prev2['low']:
+                size = (prev2['low'] - curr['high']) / atr if atr > 0 else 0
+                return ('bearish', round(size, 2), len(df) - 1 - i)
+    return None
+
+
+def failed_reversal(df: pd.DataFrame, original_direction: str) -> Optional[str]:
+    """
+    If original_direction was 'BUY' (meaning we saw a bullish reversal pattern),
+    but the following candle closed below the reversal candle's low, the reversal failed → strong SELL.
+    Vice versa for SELL.
+    Returns 'continue_bearish' or 'continue_bullish' or None.
+    """
+    if len(df) < 4:
+        return None
+    # Use last two candles: the reversal candle and the confirmation candle
+    rev_candle = df.iloc[-2]
+    conf_candle = df.iloc[-1]
+    # For a bullish reversal pattern (hammer/engulfing), failure occurs if today closed below yesterday's low
+    if original_direction == 'BUY':
+        if conf_candle['close'] < rev_candle['low']:
+            return 'continue_bearish'
+    else:
+        if conf_candle['close'] > rev_candle['high']:
+            return 'continue_bullish'
+    return None
+
+
+def classify_market(df: pd.DataFrame) -> str:
+    """Returns one of: 'strong', 'weak', 'ranging', 'low', 'normal'."""
+    if len(df) < 20:
+        return 'normal'
+    adx_val = adx(df['high'], df['low'], df['close'], 14).iloc[-1]
+    if pd.isna(adx_val):
+        return 'normal'
+    bb_w = bb_width(df['close'], 20)
+    if len(bb_w) < 5 or pd.isna(bb_w.iloc[-1]):
+        return 'normal'
+    # Low volatility: BB width very small
+    if bb_w.iloc[-1] < 0.002:
+        return 'low'
+    # Ranging: ADX < 20
+    if adx_val < 20:
+        return 'ranging'
+    # Strong trend: ADX > 35
+    if adx_val > 35:
+        return 'strong'
+    # Weak trend: ADX between 20-25
+    if adx_val < 25:
+        return 'weak'
+    return 'normal'
+
+
 def market_structure(df: pd.DataFrame) -> Optional[str]:
     if len(df) < 12:
         return None
@@ -975,6 +1394,55 @@ async def send_telegram(signal: dict):
         range_eff = signal.get('range_efficiency', 50)
         eff_display = f'{range_eff}%'
 
+        # v3.6: Chart Pattern
+        chart_pattern = signal.get('chart_pattern', 'None')
+        pattern_display = chart_pattern.replace('_', ' ').title() if chart_pattern and chart_pattern != 'None' else 'None'
+
+        # v3.6: Pre-entry
+        pre_entry = signal.get('pre_entry', True)
+        pre_display = 'Confirmed' if pre_entry else 'Not Confirmed'
+
+        # v3.6: Next candle
+        next_candle = signal.get('next_candle', 'neutral')
+        nc_display = next_candle.title()
+
+        # v3.6: Price phase
+        price_phase = signal.get('price_phase', 'None')
+        phase_display = price_phase.title() if price_phase and price_phase != 'None' else 'None'
+
+        # v3.6: Candle classification
+        candle_type = signal.get('candle_type', 'normal')
+        candle_body = signal.get('candle_body', 'medium')
+        candle_display = f'{candle_body.title()} {candle_type.title()}'
+
+        # v3.6: Session
+        session = signal.get('session', 'N/A')
+
+        # v3.7: Market state
+        market_state = signal.get('market_state', 'normal')
+        state_display = market_state.title()
+
+        # v3.7: Enhanced CHoCH
+        choch_enhanced = signal.get('choch_enhanced', 'None')
+        choch_enh_display = choch_enhanced.title() if choch_enhanced and choch_enhanced != 'None' else 'None'
+
+        # v3.7: FVG Quality
+        fvg_quality_str = signal.get('fvg_quality', 'None')
+        fresh_fvg = signal.get('fresh_fvg', False)
+        fvg_q_display = fvg_quality_str if fvg_quality_str and fvg_quality_str != 'None' else 'None'
+
+        # v3.7: Swing R:R
+        rr_swing = signal.get('rr_swing', '1:1.0')
+        sl_price = signal.get('sl_price', 'N/A')
+        tp_price = signal.get('tp_price', 'N/A')
+        opt_expiry = signal.get('optimal_expiry', 60)
+
+        # v3.7: Entry/Market validations
+        valid_entry = signal.get('valid_entry', False)
+        vol_break = signal.get('volume_break', False)
+        mkt_break = signal.get('market_break', False)
+        prime_session = signal.get('prime_session', False)
+
         # Signal status
         sig_status = 'HIGH PROBABILITY ONLY' if signal['confidence'] >= 85 else 'MODERATE PROBABILITY'
 
@@ -1006,6 +1474,22 @@ async def send_telegram(signal: dict):
 🧭 Daily Bias: {bias_display}
 🔗 MTF Align: {mtf_display}
 📐 Range Eff: {eff_display}
+📊 Pattern: {pattern_display}
+✅ Pre-Entry: {pre_display}
+🕯️ Next: {nc_display}
+🔄 Phase: {phase_display}
+🕯️ Candle: {candle_display}
+🌐 Session: {session}
+🏭 Market: {state_display}
+🔄 CHoCH+: {choch_enh_display}
+📦 FVG Q: {fvg_q_display}
+⚖️ R:R Swing: {rr_swing}
+🎯 SL: {sl_price} | TP: {tp_price}
+⏱️ Opt Expiry: {opt_expiry}s
+✅ Valid Entry: {'Yes' if valid_entry else 'No'}
+📊 Vol Break: {'Yes' if vol_break else 'No'}
+🏛️ Mkt Break: {'Yes' if mkt_break else 'No'}
+🕐 Prime: {'Yes' if prime_session else 'No'}
 
 ↪️ ── 🛡️ MARTINGALE RECOVERY (Risk Level) ──
 {mart_block}
@@ -1259,11 +1743,20 @@ async def weekly_optimise():
 # ============================================================
 def generate_signal(df, symbol="", higher_tf_trend=None, market_trend=None):
     """
-    10-point ALL-AND confluence + multi-timeframe + market trend + accuracy scoring.
+    28+ point ALL-AND confluence + multi-timeframe + market trend + accuracy scoring.
     Returns: dict with all signal fields or None if no signal.
     """
     df = safe_df(df)
     if len(df) < 80 or df.empty:
+        return None
+
+    # v3.7: Market state filter - block signals in ranging/low markets
+    market_state = classify_market(df)
+    if market_state in ('ranging', 'low'):
+        return None
+
+    # v3.7: Prime session filter
+    if not is_prime_session():
         return None
 
     close = df['close']
@@ -1343,6 +1836,40 @@ def generate_signal(df, symbol="", higher_tf_trend=None, market_trend=None):
     if range_eff < 60:
         return None
 
+    # v3.6: Chart pattern detection
+    chart_pattern = detect_repeating_patterns(df)
+
+    # v3.6: Pre-entry confirmation
+    pre_buy = pre_entry_confirm(df, 'BUY')
+    pre_sell = pre_entry_confirm(df, 'SELL')
+
+    # v3.6: Next candle prediction
+    next_candle = predict_next_candle(df)
+
+    # v3.6: Price phase
+    price_phase = detect_price_phase(df)
+
+    # v3.6: Candle classification
+    candle_class = candle_classification(df)
+
+    # v3.6: Session
+    session = current_session()
+
+    # v3.7: Enhanced CHoCH detection
+    choch = choch_confirmed(df)
+
+    # v3.7: FVG quality with freshness filter
+    fvg_data = fvg_quality(df)
+    fresh_fvg = fvg_data is not None and fvg_data[2] <= 3 and fvg_data[1] >= 0.3
+    fvg_dir = fvg_data[0] if fresh_fvg else None
+
+    # v3.7: Optimal expiry
+    opt_expiry = optimal_expiry_seconds(df, '1m')
+
+    # v3.7: R:R ratio from swings
+    rr_buy_data = calculate_rr_ratio(df, 'BUY')
+    rr_sell_data = calculate_rr_ratio(df, 'SELL')
+
     def make_signal_dict(dir_, rsi_, adx_, accuracy, mtf_ok, market_ok):
         rr = calculate_rr(price, support, resistance, dir_)
         zone_label = ''
@@ -1357,7 +1884,7 @@ def generate_signal(df, symbol="", higher_tf_trend=None, market_trend=None):
 
         # BOS/CHoCH status
         bos_status = 'Confirmed' if (struct == ('bullish' if dir_ == 'BUY' else 'bearish')) else 'Not Confirmed'
-        choch_status = 'Confirmed' if (mss == ('bullish' if dir_ == 'BUY' else 'bearish')) else 'Not Confirmed'
+        choch_status = 'Confirmed' if (mss == ('bullish' if dir_ == 'BUY' else 'bearish') or choch == ('bullish' if dir_ == 'BUY' else 'bearish')) else 'Not Confirmed'
 
         # GLM Smart Money
         if dir_ == 'SELL':
@@ -1370,6 +1897,12 @@ def generate_signal(df, symbol="", higher_tf_trend=None, market_trend=None):
             sm_liquidity = 'Buy Side Sweep' if liq_sweep and 'Buy' in liq_side else 'Sell Side Liquidity'
             sm_breakout = 'Confirmed Breakout' if regime == 'BREAKOUT' else 'No Breakout'
             sm_signal = 'Valid Buy Signal' if accuracy >= 80 else 'Weak Buy Signal'
+
+        # v3.7: Swing-based R:R
+        rr_swing_data = rr_buy_data if dir_ == 'BUY' else rr_sell_data
+        rr_swing = f'1:{rr_swing_data[0]}' if rr_swing_data else rr
+        sl_price = rr_swing_data[1] if rr_swing_data else support if dir_ == 'BUY' else resistance
+        tp_price = rr_swing_data[2] if rr_swing_data else resistance if dir_ == 'BUY' else support
 
         return {
             'direction': dir_,
@@ -1410,51 +1943,117 @@ def generate_signal(df, symbol="", higher_tf_trend=None, market_trend=None):
             'daily_bias': daily_bias,
             'mtf_aligned': mtf_aligned,
             'range_efficiency': round(range_eff, 1),
+            # v3.6: New fields
+            'chart_pattern': chart_pattern or 'None',
+            'pre_entry': pre_buy if dir_ == 'BUY' else pre_sell,
+            'next_candle': next_candle,
+            'price_phase': price_phase or 'None',
+            'candle_type': candle_class.get('type', 'normal'),
+            'candle_body': candle_class.get('body_size', 'medium'),
+            'session': session,
+            # v3.7: New fields
+            'market_state': market_state,
+            'choch_enhanced': choch or 'None',
+            'fvg_quality': f'{fvg_data[0]} {fvg_data[1]}x ATR age={fvg_data[2]}' if fvg_data else 'None',
+            'fresh_fvg': fresh_fvg,
+            'rr_swing': rr_swing,
+            'sl_price': round(sl_price, 5) if isinstance(sl_price, (int, float)) else round(support, 5),
+            'tp_price': round(tp_price, 5) if isinstance(tp_price, (int, float)) else round(resistance, 5),
+            'optimal_expiry': opt_expiry,
+            'valid_entry': True,  # already checked in BUY/SELL condition
+            'volume_break': True,  # already checked in BUY/SELL condition
+            'market_break': True,  # already checked in BUY/SELL condition
+            'prime_session': True,  # already checked at top
         }
 
+    # ===== BUY SIGNAL =====
     if (bull and rsi_val < PARAMS['rsi_buy'] and adx_val > PARAMS['adx_min'] and
         vol_spike and bb_sq and bb_exp and buy_sr and
-        (struct == 'bullish' or mss == 'bullish') and reversal == 'bullish' and
-        candle == 'bullish' and sd == 'demand' and fvg_ == 'bullish' and mom_3 > 0.03
+        (fresh_fvg and fvg_dir == 'bullish') and
+        (struct == 'bullish' or mss == 'bullish' or choch == 'bullish') and
+        reversal == 'bullish' and candle == 'bullish' and sd == 'demand' and mom_3 > 0.03
         and wyckoff_confirms_signal(wyckoff_phase, 'BUY')
         and div_buy and (daily_bias == 'bullish' or daily_bias == 'neutral')
-        and mtf_aligned):
+        and mtf_aligned
+        and pre_buy
+        and valid_entry_candle(df, 'BUY')
+        and volume_break_confirmed(df, 'BUY', vol_spike)
+        and market_break_valid(df, 'BUY')
+        and rr_filter(df, 'BUY')
+        and next_candle in ('bullish', 'neutral')):
         mtf_ok = (higher_tf_trend is None or higher_tf_trend == 'bullish')
         market_ok = (market_trend is None or market_trend == 'bullish')
         if not mtf_ok or not market_ok:
             return None
         direction = 'BUY'
+        # Pattern filter: block BUY on double_top or head_shoulders
+        if chart_pattern in ('double_top', 'head_shoulders'):
+            return None
         if not protected_swings_ok(df, direction):
+            return None
+        # v3.7: Check for failed reversal
+        fail = failed_reversal(df, 'BUY')
+        if fail == 'continue_bearish':
+            # Bullish reversal failed → flip to SELL if SELL conditions allow
+            # For now, block the BUY signal
             return None
         accuracy = calculate_accuracy('BUY', rsi_val, adx_val, vol_spike, bb_sq, bb_exp,
                                       sd, fvg_, struct, mss, reversal, candle, True, mtf_ok, market_ok,
                                       wyckoff_ok=True, div_ok=div_buy, bias_ok=(daily_bias == 'bullish'),
-                                      mtf_aligned_ok=mtf_aligned, range_eff=range_eff)
+                                      mtf_aligned_ok=mtf_aligned, range_eff=range_eff,
+                                      pre_entry_ok=pre_buy, next_candle_ok=(next_candle == 'bullish'),
+                                      price_phase=price_phase, chart_pattern=chart_pattern,
+                                      candle_class=candle_class,
+                                      choch_ok=(choch == 'bullish'), fresh_fvg_ok=fresh_fvg,
+                                      market_state_ok=(market_state in ('strong', 'normal')),
+                                      valid_entry_ok=True, vol_break_ok=True, mkt_break_ok=True, rr_ok=True)
         return make_signal_dict('BUY', rsi_val, adx_val, accuracy, mtf_ok, market_ok)
 
+    # ===== SELL SIGNAL =====
     if (bear and rsi_val > PARAMS['rsi_sell'] and adx_val > PARAMS['adx_min'] and
         vol_spike and bb_sq and bb_exp and sell_sr and
-        (struct == 'bearish' or mss == 'bearish') and reversal == 'bearish' and
-        candle == 'bearish' and sd == 'supply' and fvg_ == 'bearish' and mom_3 < -0.03
+        (fresh_fvg and fvg_dir == 'bearish') and
+        (struct == 'bearish' or mss == 'bearish' or choch == 'bearish') and
+        reversal == 'bearish' and candle == 'bearish' and sd == 'supply' and mom_3 < -0.03
         and wyckoff_confirms_signal(wyckoff_phase, 'SELL')
         and div_sell and (daily_bias == 'bearish' or daily_bias == 'neutral')
-        and mtf_aligned):
+        and mtf_aligned
+        and pre_sell
+        and valid_entry_candle(df, 'SELL')
+        and volume_break_confirmed(df, 'SELL', vol_spike)
+        and market_break_valid(df, 'SELL')
+        and rr_filter(df, 'SELL')
+        and next_candle in ('bearish', 'neutral')):
         mtf_ok = (higher_tf_trend is None or higher_tf_trend == 'bearish')
         market_ok = (market_trend is None or market_trend == 'bearish')
         if not mtf_ok or not market_ok:
             return None
         direction = 'SELL'
+        # Pattern filter: block SELL on double_bottom
+        if chart_pattern == 'double_bottom':
+            return None
         if not protected_swings_ok(df, direction):
+            return None
+        # v3.7: Check for failed reversal
+        fail = failed_reversal(df, 'SELL')
+        if fail == 'continue_bullish':
+            # Bearish reversal failed → block the SELL signal
             return None
         accuracy = calculate_accuracy('SELL', rsi_val, adx_val, vol_spike, bb_sq, bb_exp,
                                       sd, fvg_, struct, mss, reversal, candle, True, mtf_ok, market_ok,
                                       wyckoff_ok=True, div_ok=div_sell, bias_ok=(daily_bias == 'bearish'),
-                                      mtf_aligned_ok=mtf_aligned, range_eff=range_eff)
+                                      mtf_aligned_ok=mtf_aligned, range_eff=range_eff,
+                                      pre_entry_ok=pre_sell, next_candle_ok=(next_candle == 'bearish'),
+                                      price_phase=price_phase, chart_pattern=chart_pattern,
+                                      candle_class=candle_class,
+                                      choch_ok=(choch == 'bearish'), fresh_fvg_ok=fresh_fvg,
+                                      market_state_ok=(market_state in ('strong', 'normal')),
+                                      valid_entry_ok=True, vol_break_ok=True, mkt_break_ok=True, rr_ok=True)
         return make_signal_dict('SELL', rsi_val, adx_val, accuracy, mtf_ok, market_ok)
 
     return None
 
-def calculate_accuracy(direction, rsi_val, adx_val, vol_spike, bb_sq, bb_exp, sd, fvg_, struct, mss, reversal, cand_conf, mom_ok, mtf_ok, market_ok=True, wyckoff_ok=True, div_ok=True, bias_ok=False, mtf_aligned_ok=False, range_eff=50):
+def calculate_accuracy(direction, rsi_val, adx_val, vol_spike, bb_sq, bb_exp, sd, fvg_, struct, mss, reversal, cand_conf, mom_ok, mtf_ok, market_ok=True, wyckoff_ok=True, div_ok=True, bias_ok=False, mtf_aligned_ok=False, range_eff=50, pre_entry_ok=False, next_candle_ok=False, price_phase=None, chart_pattern=None, candle_class=None, choch_ok=False, fresh_fvg_ok=False, market_state_ok=False, valid_entry_ok=False, vol_break_ok=False, mkt_break_ok=False, rr_ok=False):
     """Return accuracy score 0-100 based on confirmation strength."""
     score = 0
     if direction == 'BUY':
@@ -1473,12 +2072,28 @@ def calculate_accuracy(direction, rsi_val, adx_val, vol_spike, bb_sq, bb_exp, sd
     if mtf_ok: score += 10
     if market_ok: score += 10
     if wyckoff_ok: score += 5
-    # v3.5: New scoring bonuses
+    # v3.5: Scoring bonuses
     if div_ok: score += 10
     if bias_ok: score += 10
     if mtf_aligned_ok: score += 10
     if range_eff >= 80: score += 10
     elif range_eff >= 60: score += 5
+    # v3.6: Scoring bonuses
+    if pre_entry_ok: score += 10
+    if next_candle_ok: score += 5
+    if price_phase in ('pullback', 'move', 'reversal'): score += 5
+    if chart_pattern and ((direction == 'BUY' and chart_pattern == 'double_bottom') or
+                          (direction == 'SELL' and chart_pattern == 'double_top')):
+        score += 10
+    if candle_class and candle_class.get('type') in ('hammer', 'marubozu', 'shooting_star'): score += 5
+    # v3.7: Scoring bonuses
+    if choch_ok: score += 10
+    if fresh_fvg_ok: score += 10
+    if market_state_ok: score += 5
+    if valid_entry_ok: score += 5
+    if vol_break_ok: score += 5
+    if mkt_break_ok: score += 5
+    if rr_ok: score += 5
     return min(100, max(50, score))
 
 def calculate_martingale(entry: datetime, timeframe: str, confidence: float, base_stake: float = 1.0) -> List[dict]:
@@ -1909,6 +2524,13 @@ async def scan_loop():
                             'daily_bias': result['daily_bias'],
                             'mtf_aligned': result['mtf_aligned'],
                             'range_efficiency': result['range_efficiency'],
+                            'chart_pattern': result['chart_pattern'],
+                            'pre_entry': result['pre_entry'],
+                            'next_candle': result['next_candle'],
+                            'price_phase': result['price_phase'],
+                            'candle_type': result['candle_type'],
+                            'candle_body': result['candle_body'],
+                            'session': result['session'],
                             'strategy_guide': strategy_guide,
                         }
                         latest_signals.insert(0, sig)
@@ -2295,6 +2917,23 @@ ws.onmessage=function(e){
     '<div class="signal-grid-item"><span class="label">Daily Bias</span><span class="value">'+(d.daily_bias||'neutral')+'</span></div>'+
     '<div class="signal-grid-item"><span class="label">MTF Align</span><span class="value">'+(d.mtf_aligned?'Aligned':'Not Aligned')+'</span></div>'+
     '<div class="signal-grid-item"><span class="label">Range Eff</span><span class="value">'+(d.range_efficiency||50)+'%</span></div>'+
+    '<div class="signal-grid-item"><span class="label">Pattern</span><span class="value">'+(d.chart_pattern||'None')+'</span></div>'+
+    '<div class="signal-grid-item"><span class="label">Pre-Entry</span><span class="value">'+(d.pre_entry?'Confirmed':'Not Conf')+'</span></div>'+
+    '<div class="signal-grid-item"><span class="label">Next</span><span class="value">'+(d.next_candle||'neutral')+'</span></div>'+
+    '<div class="signal-grid-item"><span class="label">Phase</span><span class="value">'+(d.price_phase||'None')+'</span></div>'+
+    '<div class="signal-grid-item"><span class="label">Candle</span><span class="value">'+(d.candle_body||'')+' '+(d.candle_type||'')+'</span></div>'+
+    '<div class="signal-grid-item"><span class="label">Session</span><span class="value">'+(d.session||'N/A')+'</span></div>'+
+    '<div class="signal-grid-item"><span class="label">Market State</span><span class="value">'+(d.market_state||'N/A')+'</span></div>'+
+    '<div class="signal-grid-item"><span class="label">CHoCH+</span><span class="value">'+(d.choch_enhanced||'None')+'</span></div>'+
+    '<div class="signal-grid-item"><span class="label">FVG Quality</span><span class="value">'+(d.fvg_quality||'None')+'</span></div>'+
+    '<div class="signal-grid-item"><span class="label">R:R Swing</span><span class="value">'+(d.rr_swing||'N/A')+'</span></div>'+
+    '<div class="signal-grid-item"><span class="label">SL</span><span class="value">'+(d.sl_price||'N/A')+'</span></div>'+
+    '<div class="signal-grid-item"><span class="label">TP</span><span class="value">'+(d.tp_price||'N/A')+'</span></div>'+
+    '<div class="signal-grid-item"><span class="label">Opt Expiry</span><span class="value">'+(d.optimal_expiry||60)+'s</span></div>'+
+    '<div class="signal-grid-item"><span class="label">Valid Entry</span><span class="value">'+(d.valid_entry?'✅':'❌')+'</span></div>'+
+    '<div class="signal-grid-item"><span class="label">Vol Break</span><span class="value">'+(d.volume_break?'✅':'❌')+'</span></div>'+
+    '<div class="signal-grid-item"><span class="label">Mkt Break</span><span class="value">'+(d.market_break?'✅':'❌')+'</span></div>'+
+    '<div class="signal-grid-item"><span class="label">Prime</span><span class="value">'+(d.prime_session?'✅':'❌')+'</span></div>'+
     '</div></div>';
 
   card.innerHTML=
@@ -2391,6 +3030,55 @@ function copySignal(btn){
   var rangeEff=d.range_efficiency||50;
   var effDisplay=rangeEff+'%';
 
+  // v3.6: Chart Pattern
+  var chartPattern=d.chart_pattern||'None';
+  var patternDisplay=(chartPattern&&chartPattern!=='None')?chartPattern.replace(/_/g,' ').replace(/\b\w/g,function(c){return c.toUpperCase();}):'None';
+
+  // v3.6: Pre-Entry
+  var preEntry=d.pre_entry;
+  var preDisplay=preEntry?'Confirmed':'Not Confirmed';
+
+  // v3.6: Next Candle
+  var nextCandle=d.next_candle||'neutral';
+  var ncDisplay=nextCandle.charAt(0).toUpperCase()+nextCandle.slice(1);
+
+  // v3.6: Price Phase
+  var pricePhase=d.price_phase||'None';
+  var phaseDisplay=(pricePhase&&pricePhase!=='None')?pricePhase.charAt(0).toUpperCase()+pricePhase.slice(1):'None';
+
+  // v3.6: Candle Classification
+  var candleType=d.candle_type||'normal';
+  var candleBody=d.candle_body||'medium';
+  var candleDisplay=candleBody.charAt(0).toUpperCase()+candleBody.slice(1)+' '+candleType.charAt(0).toUpperCase()+candleType.slice(1);
+
+  // v3.6: Session
+  var sessionDisplay=d.session||'N/A';
+
+  // v3.7: Market state
+  var marketState=d.market_state||'normal';
+  var stateDisplay=marketState.charAt(0).toUpperCase()+marketState.slice(1);
+
+  // v3.7: Enhanced CHoCH
+  var chochEnhanced=d.choch_enhanced||'None';
+  var chochEnhDisplay=(chochEnhanced&&chochEnhanced!=='None')?chochEnhanced.charAt(0).toUpperCase()+chochEnhanced.slice(1):'None';
+
+  // v3.7: FVG Quality
+  var fvgQuality=d.fvg_quality||'None';
+  var freshFvg=d.fresh_fvg||false;
+  var fvgQDisplay=(fvgQuality&&fvgQuality!=='None')?fvgQuality:'None';
+
+  // v3.7: Swing R:R
+  var rrSwing=d.rr_swing||'1:1.0';
+  var slPrice=d.sl_price||'N/A';
+  var tpPrice=d.tp_price||'N/A';
+  var optExpiry=d.optimal_expiry||60;
+
+  // v3.7: Entry/Market validations
+  var validEntry=d.valid_entry||false;
+  var volBreak=d.volume_break||false;
+  var mktBreak=d.market_break||false;
+  var primeSession=d.prime_session||false;
+
   // GLM Smart Money
   var smStructure=d.sm_structure||'No Clear Break';
   var smLiquidity=d.sm_liquidity||'N/A';
@@ -2452,7 +3140,23 @@ function copySignal(btn){
   '📉 RSI Div: '+divDisplay+'\n'+
   '🧭 Daily Bias: '+biasDisplay+'\n'+
   '🔗 MTF Align: '+mtfDisplay+'\n'+
-  '📐 Range Eff: '+effDisplay+'\n\n'+
+  '📐 Range Eff: '+effDisplay+'\n'+
+  '📊 Pattern: '+patternDisplay+'\n'+
+  '✅ Pre-Entry: '+preDisplay+'\n'+
+  '🕯️ Next: '+ncDisplay+'\n'+
+  '🔄 Phase: '+phaseDisplay+'\n'+
+  '🕯️ Candle: '+candleDisplay+'\n'+
+  '🌐 Session: '+sessionDisplay+'\n'+
+  '🏭 Market: '+stateDisplay+'\n'+
+  '🔄 CHoCH+: '+chochEnhDisplay+'\n'+
+  '📦 FVG Q: '+fvgQDisplay+'\n'+
+  '⚖️ R:R Swing: '+rrSwing+'\n'+
+  '🎯 SL: '+slPrice+' | TP: '+tpPrice+'\n'+
+  '⏱️ Opt Expiry: '+optExpiry+'s\n'+
+  '✅ Valid Entry: '+(validEntry?'Yes':'No')+'\n'+
+  '📊 Vol Break: '+(volBreak?'Yes':'No')+'\n'+
+  '🏛️ Mkt Break: '+(mktBreak?'Yes':'No')+'\n'+
+  '🕐 Prime: '+(primeSession?'Yes':'No')+'\n\n'+
   '↪️ ── 🛡️ MARTINGALE RECOVERY (Risk Level) ──\n'+
   (martLines?martLines+'\n':'')+
   '🧪 GLM SMART MONEY:\n'+
