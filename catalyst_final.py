@@ -1,8 +1,19 @@
 #!/usr/bin/env python3
 """
-CATALYST FINAL v3.7 - Self-Improving OTC Signal Engine
-28+ Confluences + R:R Filter + Valid Entry + Volume Break + Market Break + CHoCH Enhanced + FVG Quality + Failed Reversal + Market Class + Prime Session + Optimal Expiry | 80-95% Win Rate Target | 24/7
+CATALYST FINAL v3.8 - Self-Improving OTC Signal Engine
+28+ Confluences + R:R Filter + Valid Entry + Volume Break + Market Break + CHoCH Enhanced + FVG Quality + Failed Reversal + Market Class + Prime Session + Optimal Expiry + Weekly Optimiser + Daily Levels + Session Profiles + PostgreSQL/SQLite Dual DB + Railway Cron API | 80-95% Win Rate Target | 24/7
 IQ Option & Pocket Option | Memory-Based Confidence | Auto-Tuning | Telegram Alerts
+
+v3.8 CHANGES (Weekly Optimiser + Daily Levels Filter + Session Profiles + PostgreSQL + Railway Cron):
+- PostgreSQL/SQLite dual database support via DATABASE_URL env var
+- /api/scan endpoint for Railway cron-triggered full market scans
+- force_scan_cycle() for single-pass scan without while loop
+- Weekly APScheduler optimiser: tightens params if WR < 93%, relaxes if WR > 97%
+- Daily levels filter: blocks BUY near daily high, SELL near daily low
+- Session-specific parameter profiles (London, New York, Sydney/Tokyo)
+- get_session_params() merges session profile with base PARAMS
+- psycopg2-binary graceful import for Railway deployment
+- /api/scan returns immediate response, scan runs in background
 
 v3.7 CHANGES (R:R Filter + Valid Entry Candle + Volume Break + Market Break + CHoCH + FVG Quality + Failed Reversal + Market Class + Prime Session + Optimal Expiry):
 - R:R Ratio Calculation using swing points (calculate_rr_ratio) with rr_filter >= 2.5
@@ -91,6 +102,12 @@ DEPLOY:
   Open http://localhost:8000
 """
 import asyncio, json, sqlite3, logging, uuid, os, traceback, time, hashlib
+try:
+    import psycopg2
+    PSYCOPG2_AVAILABLE = True
+except ImportError:
+    psycopg2 = None
+    PSYCOPG2_AVAILABLE = False
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional, List, Tuple
 import numpy as np
@@ -157,6 +174,9 @@ try:
     APS_AVAILABLE = True
 except ImportError:
     APS_AVAILABLE = False
+
+# Database URL (PostgreSQL on Railway, SQLite locally)
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
 
 # Telegram Bot (optional)
 try:
@@ -1536,21 +1556,34 @@ PARAMS = {
 }
 MIN_CONFIDENCE = 80.0
 
+# v3.8: PostgreSQL/SQLite dual connection helper
+def get_connection():
+    """Return (connection, is_postgres) tuple.
+    Uses PostgreSQL if DATABASE_URL is set (Railway), else SQLite."""
+    if DATABASE_URL and PSYCOPG2_AVAILABLE:
+        try:
+            conn = psycopg2.connect(DATABASE_URL)
+            return conn, True
+        except Exception as e:
+            logger.warning(f"PostgreSQL connection failed, falling back to SQLite: {e}")
+    return sqlite3.connect(MEMORY_DB), False
+
 # v3.7: Daily levels cache (updated once per day from 15m/1d data)
 DAILY_LEVELS: Dict[str, dict] = {}
 
-# v3.7: Session-specific parameter profiles
+# v3.8: Session-specific parameter profiles (with default fallback)
 SESSION_PROFILES = {
-    'London':      {'rsi_buy': 30, 'rsi_sell': 70, 'adx_min': 30, 'vol_mult': 1.8},
-    'New York':    {'rsi_buy': 28, 'rsi_sell': 72, 'adx_min': 32, 'vol_mult': 2.0},
+    'London':       {'rsi_buy': 30, 'rsi_sell': 70, 'adx_min': 30, 'vol_mult': 1.8},
+    'New York':     {'rsi_buy': 28, 'rsi_sell': 72, 'adx_min': 32, 'vol_mult': 2.0},
     'Sydney/Tokyo': {'rsi_buy': 35, 'rsi_sell': 65, 'adx_min': 25, 'vol_mult': 1.4},
     'Low Liquidity': {'rsi_buy': 38, 'rsi_sell': 62, 'adx_min': 35, 'vol_mult': 2.2},
+    'default':      {'rsi_buy': 33, 'rsi_sell': 67, 'adx_min': 25, 'vol_mult': 1.5},
 }
 
 def get_session_params() -> dict:
     """Return session-specific PARAMS merged with base PARAMS."""
     sess = current_session()
-    profile = SESSION_PROFILES.get(sess, {})
+    profile = SESSION_PROFILES.get(sess, SESSION_PROFILES['default'])
     return {**PARAMS, **profile}
 
 def get_daily_levels(symbol: str) -> dict:
@@ -1583,46 +1616,82 @@ def is_near_daily_level(price: float, levels: dict, direction: str, buffer: floa
     return False
 
 def init_memory():
-    conn = sqlite3.connect(MEMORY_DB)
+    conn, is_pg = get_connection()
     cur = conn.cursor()
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS trades (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            signal_id TEXT UNIQUE,
-            symbol TEXT,
-            direction TEXT,
-            timeframe TEXT,
-            platform TEXT,
-            entry_time TIMESTAMP,
-            outcome TEXT DEFAULT 'pending',
-            rsi REAL,
-            adx REAL,
-            confidence REAL,
-            accuracy REAL DEFAULT 0
-        )
-    """)
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS daily_stats (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            date TEXT UNIQUE,
-            wins INTEGER DEFAULT 0,
-            losses INTEGER DEFAULT 0,
-            ignored INTEGER DEFAULT 0,
-            total INTEGER DEFAULT 0,
-            win_rate REAL DEFAULT 0,
-            avg_accuracy REAL DEFAULT 0,
-            avg_confidence REAL DEFAULT 0
-        )
-    """)
+    if is_pg:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS trades (
+                id SERIAL PRIMARY KEY,
+                signal_id TEXT UNIQUE,
+                symbol TEXT,
+                direction TEXT,
+                timeframe TEXT,
+                platform TEXT,
+                entry_time TIMESTAMP,
+                outcome TEXT DEFAULT 'pending',
+                rsi REAL,
+                adx REAL,
+                confidence REAL,
+                accuracy REAL DEFAULT 0
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS daily_stats (
+                id SERIAL PRIMARY KEY,
+                date TEXT UNIQUE,
+                wins INTEGER DEFAULT 0,
+                losses INTEGER DEFAULT 0,
+                ignored INTEGER DEFAULT 0,
+                total INTEGER DEFAULT 0,
+                win_rate REAL DEFAULT 0,
+                avg_accuracy REAL DEFAULT 0,
+                avg_confidence REAL DEFAULT 0
+            )
+        """)
+    else:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS trades (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                signal_id TEXT UNIQUE,
+                symbol TEXT,
+                direction TEXT,
+                timeframe TEXT,
+                platform TEXT,
+                entry_time TIMESTAMP,
+                outcome TEXT DEFAULT 'pending',
+                rsi REAL,
+                adx REAL,
+                confidence REAL,
+                accuracy REAL DEFAULT 0
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS daily_stats (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date TEXT UNIQUE,
+                wins INTEGER DEFAULT 0,
+                losses INTEGER DEFAULT 0,
+                ignored INTEGER DEFAULT 0,
+                total INTEGER DEFAULT 0,
+                win_rate REAL DEFAULT 0,
+                avg_accuracy REAL DEFAULT 0,
+                avg_confidence REAL DEFAULT 0
+            )
+        """)
     conn.commit()
     conn.close()
+    logger.info(f"Database initialized ({'PostgreSQL' if is_pg else 'SQLite'})")
 
 def remember_signal(sig_id, sym, dir_, tf, platform, entry, rsi_val, adx_val, conf, accuracy=0):
     try:
-        conn = sqlite3.connect(MEMORY_DB)
+        conn, is_pg = get_connection()
         cur = conn.cursor()
-        cur.execute("INSERT OR IGNORE INTO trades VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                    (None, sig_id, sym, dir_, tf, platform, entry, 'pending', rsi_val, adx_val, conf, accuracy))
+        if is_pg:
+            cur.execute("INSERT INTO trades (signal_id,symbol,direction,timeframe,platform,entry_time,outcome,rsi,adx,confidence,accuracy) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (signal_id) DO NOTHING",
+                        (sig_id, sym, dir_, tf, platform, entry, 'pending', rsi_val, adx_val, conf, accuracy))
+        else:
+            cur.execute("INSERT OR IGNORE INTO trades VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                        (None, sig_id, sym, dir_, tf, platform, entry, 'pending', rsi_val, adx_val, conf, accuracy))
         conn.commit()
         conn.close()
     except Exception as e:
@@ -1631,11 +1700,12 @@ def remember_signal(sig_id, sym, dir_, tf, platform, entry, rsi_val, adx_val, co
 def learn_from_outcome(sig_id, outcome):
     """Auto-tune parameters based on trade outcomes."""
     try:
-        conn = sqlite3.connect(MEMORY_DB)
+        conn, is_pg = get_connection()
         cur = conn.cursor()
-        cur.execute("UPDATE trades SET outcome=? WHERE signal_id=?", (outcome, sig_id))
+        ph = "%s" if is_pg else "?"
+        cur.execute(f"UPDATE trades SET outcome={ph} WHERE signal_id={ph}", (outcome, sig_id))
 
-        cur.execute("SELECT outcome FROM trades WHERE outcome IN ('win','loss') ORDER BY entry_time DESC LIMIT 50")
+        cur.execute(f"SELECT outcome FROM trades WHERE outcome IN ('win','loss') ORDER BY entry_time DESC LIMIT 50")
         real_rows = cur.fetchall()
 
         global PARAMS, MIN_CONFIDENCE
@@ -1671,18 +1741,19 @@ def learn_from_outcome(sig_id, outcome):
             elif ignore_rate < 0.1 and total - ignored >= 10:
                 MIN_CONFIDENCE = max(75, MIN_CONFIDENCE - 1)
 
-        _update_daily_stats(cur)
+        _update_daily_stats(cur, is_pg)
         conn.commit()
         conn.close()
     except Exception as e:
         logger.error(f"DB learn error: {e}")
 
-def _update_daily_stats(cur):
+def _update_daily_stats(cur, is_pg=False):
     """Recalculate today's daily_stats row."""
     today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
-    cur.execute("""
+    ph = "%s" if is_pg else "?"
+    cur.execute(f"""
         SELECT outcome, confidence, accuracy FROM trades
-        WHERE date(entry_time) = ? AND outcome IN ('win','loss','ignored')
+        WHERE date(entry_time) = {ph} AND outcome IN ('win','loss','ignored')
     """, (today,))
     rows = cur.fetchall()
     if not rows:
@@ -1697,13 +1768,22 @@ def _update_daily_stats(cur):
     avg_conf = round(sum(confs) / len(confs), 1) if confs else 0
     avg_acc = round(sum(accs) / len(accs), 1) if accs else 0
 
-    cur.execute("""
-        INSERT OR REPLACE INTO daily_stats VALUES (?,?,?,?,?,?,?,?,?)
-    """, (None, today, wins, losses, ignored, total, wr, avg_acc, avg_conf))
+    if is_pg:
+        cur.execute("""
+            INSERT INTO daily_stats (date, wins, losses, ignored, total, win_rate, avg_accuracy, avg_confidence)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+            ON CONFLICT (date) DO UPDATE SET wins=EXCLUDED.wins, losses=EXCLUDED.losses,
+            ignored=EXCLUDED.ignored, total=EXCLUDED.total, win_rate=EXCLUDED.win_rate,
+            avg_accuracy=EXCLUDED.avg_accuracy, avg_confidence=EXCLUDED.avg_confidence
+        """, (today, wins, losses, ignored, total, wr, avg_acc, avg_conf))
+    else:
+        cur.execute("""
+            INSERT OR REPLACE INTO daily_stats VALUES (?,?,?,?,?,?,?,?,?)
+        """, (None, today, wins, losses, ignored, total, wr, avg_acc, avg_conf))
 
 def get_stats() -> dict:
     try:
-        conn = sqlite3.connect(MEMORY_DB)
+        conn, is_pg = get_connection()
         cur = conn.cursor()
         cur.execute("SELECT outcome FROM trades WHERE outcome IN ('win','loss')")
         real = cur.fetchall()
@@ -1718,18 +1798,21 @@ def get_stats() -> dict:
         return {
             "total_trades": total_real, "wins": wins, "losses": total_real - wins,
             "win_rate": wr, "ignored": ignored, "pending": pending,
-            "params": PARAMS, "min_confidence": MIN_CONFIDENCE
+            "params": PARAMS, "min_confidence": MIN_CONFIDENCE,
+            "database": "PostgreSQL" if is_pg else "SQLite"
         }
     except:
         return {"total_trades": 0, "wins": 0, "losses": 0, "win_rate": 0,
-                "ignored": 0, "pending": 0, "params": PARAMS, "min_confidence": MIN_CONFIDENCE}
+                "ignored": 0, "pending": 0, "params": PARAMS, "min_confidence": MIN_CONFIDENCE,
+                "database": "unknown"}
 
 def get_daily_stats(days: int = 30) -> List[dict]:
     """Get daily stats for the last N days for chart rendering."""
     try:
-        conn = sqlite3.connect(MEMORY_DB)
+        conn, is_pg = get_connection()
         cur = conn.cursor()
-        cur.execute("SELECT date, wins, losses, total, win_rate, avg_accuracy, avg_confidence FROM daily_stats ORDER BY date DESC LIMIT ?", (days,))
+        ph = "%s" if is_pg else "?"
+        cur.execute(f"SELECT date, wins, losses, total, win_rate, avg_accuracy, avg_confidence FROM daily_stats ORDER BY date DESC LIMIT {ph}", (days,))
         rows = cur.fetchall()
         conn.close()
         return [{"date": r[0], "wins": r[1], "losses": r[2], "total": r[3],
@@ -1739,12 +1822,13 @@ def get_daily_stats(days: int = 30) -> List[dict]:
 
 def historical_confidence(rsi_val, adx_val, direction, platform) -> float:
     try:
-        conn = sqlite3.connect(MEMORY_DB)
+        conn, is_pg = get_connection()
         cur = conn.cursor()
-        cur.execute("""
+        ph = "%s" if is_pg else "?"
+        cur.execute(f"""
             SELECT outcome FROM trades
-            WHERE direction=? AND platform=? AND outcome IN ('win','loss')
-            AND rsi BETWEEN ? AND ? AND adx BETWEEN ? AND ?
+            WHERE direction={ph} AND platform={ph} AND outcome IN ('win','loss')
+            AND rsi BETWEEN {ph} AND {ph} AND adx BETWEEN {ph} AND {ph}
             ORDER BY entry_time DESC LIMIT 30
         """, (direction, platform, rsi_val - 5, rsi_val + 5, adx_val - 10, adx_val + 10))
         rows = cur.fetchall()
@@ -1762,7 +1846,7 @@ def historical_confidence(rsi_val, adx_val, direction, platform) -> float:
 async def weekly_optimise():
     """Deep optimization: analyze last 500 trades and adjust parameters."""
     try:
-        conn = sqlite3.connect(MEMORY_DB)
+        conn, is_pg = get_connection()
         cur = conn.cursor()
         cur.execute("SELECT rsi, adx, confidence, outcome FROM trades WHERE outcome IN ('win','loss') ORDER BY entry_time DESC LIMIT 500")
         rows = cur.fetchall()
@@ -2407,7 +2491,7 @@ def _demo_data(symbol, tf):
 # ============================================================
 # 6. FASTAPI APP & WEBSOCKET
 # ============================================================
-app = FastAPI(title="CATALYST FINAL", version="3.3")
+app = FastAPI(title="CATALYST FINAL", version="3.8")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 init_memory()
 latest_signals: List[dict] = []
@@ -2416,6 +2500,197 @@ clients = set()
 scheduler = None
 if APS_AVAILABLE:
     scheduler = AsyncIOScheduler()
+
+# v3.8: Single-pass scan for Railway cron
+async def force_scan_cycle():
+    """Runs exactly one full scan of all pairs/timeframes (no while loop).
+    Called by /api/scan endpoint for Railway cron every 5 minutes."""
+    loop = asyncio.get_event_loop()
+    try:
+        if not iq_connected and IQ_API_AVAILABLE and USE_IQ_OPTION:
+            if IQ_EMAIL and IQ_PASSWORD and IQ_EMAIL != "your_iq_option_email@example.com":
+                await loop.run_in_executor(None, connect_iq_option)
+        if not po_connected and PO_API_AVAILABLE and USE_POCKET_OPTION:
+            if PO_EMAIL and PO_PASSWORD and PO_EMAIL != "your_pocket_option_email@example.com":
+                await loop.run_in_executor(None, connect_pocket_option)
+
+        for platform, tfs in [("IQ Option", IQ_TFS), ("Pocket Option", PO_TFS)]:
+            for sym in PAIRS:
+                higher_tf_trend = get_higher_tf_trend(sym)
+                if higher_tf_trend is None:
+                    try:
+                        df_5m = await loop.run_in_executor(None, lambda s=sym: get_data_sync(s, '5m'))
+                        if df_5m is not None and len(df_5m) >= 20:
+                            trend_5m = compute_5m_trend(df_5m)
+                            if trend_5m:
+                                cache_higher_tf_trend(sym, trend_5m)
+                                higher_tf_trend = trend_5m
+                    except Exception as e:
+                        logger.debug(f"5m trend error for {sym}: {e}")
+
+                market_trend = get_market_trend(sym)
+                if market_trend is None:
+                    try:
+                        df_15m = await loop.run_in_executor(None, lambda s=sym: get_data_sync(s, '15m'))
+                        if df_15m is not None and len(df_15m) >= 20:
+                            trend_15m = compute_15m_trend(df_15m)
+                            if trend_15m:
+                                cache_market_trend(sym, trend_15m)
+                                market_trend = trend_15m
+                    except Exception as e:
+                        logger.debug(f"15m trend error for {sym}: {e}")
+
+                if not news_safe(sym):
+                    continue
+
+                for tf in tfs:
+                    try:
+                        tf_trend = higher_tf_trend if tf != '5m' else None
+                        df = await loop.run_in_executor(None, lambda s=sym, t=tf: get_data_sync(s, t))
+                        if df is None or df.empty:
+                            continue
+
+                        result = generate_signal(df, sym, tf_trend, market_trend)
+                        if result is None:
+                            continue
+
+                        dir_ = result['direction']
+                        rsi_ = result['rsi']
+                        adx_ = result['adx']
+                        accuracy = result['accuracy']
+
+                        mem_conf = historical_confidence(rsi_, adx_, dir_, platform)
+                        final_conf = round((accuracy + mem_conf) / 2, 1)
+
+                        if final_conf < MIN_CONFIDENCE:
+                            continue
+
+                        now_utc = datetime.now(timezone.utc)
+                        entry_time = now_utc + timedelta(minutes=1)
+                        signal_price = df['close'].iloc[-1]
+                        sig_id = str(uuid.uuid4())
+                        remember_signal(sig_id, sym, dir_, tf, platform, entry_time, rsi_, adx_, final_conf, accuracy)
+
+                        martingale = calculate_martingale(entry_time, tf, final_conf)
+                        tf_duration = {'30s': 0.5, '45s': 0.75, '1m': 1, '2m': 2, '3m': 3, '5m': 5}
+                        duration_min = tf_duration.get(tf, 1)
+
+                        volatility = 'High Volatility' if accuracy >= 85 else ('Medium Volatility' if accuracy >= 70 else 'Low Volatility')
+
+                        if result['regime'] == 'BREAKOUT':
+                            strategy_guide = [
+                                'Wait for confirmed breakout candle close',
+                                'Enter on pullback to breakout level',
+                                'Use ATR-based stop loss',
+                                f'Take profit at {result["rr"]} R:R',
+                                'Trail stop after 1R profit',
+                                'Risk 1% per trade maximum',
+                            ]
+                        elif dir_ == 'SELL':
+                            strategy_guide = [
+                                'Wait for confirmed setups only',
+                                'Use BOS/CHoCH for confirmation',
+                                'Enter at FVG fill zones',
+                                f'Take profit at {result["rr"]} R:R',
+                                'Tighter stops recommended',
+                                'Move stop to breakeven after 1R',
+                                'Risk 1% per trade',
+                                'Use tighter stops',
+                                f'GLM Probability: {final_conf}% win rate',
+                            ]
+                        else:
+                            strategy_guide = [
+                                'Wait for confirmed setups only',
+                                'Use BOS/CHoCH for confirmation',
+                                'Enter at FVG fill zones',
+                                f'Take profit at {result["rr"]} R:R',
+                                'Tighter stops recommended',
+                                'Move stop to breakeven after 1R',
+                                'Risk 1% per trade',
+                                'Use tighter stops',
+                                f'GLM Probability: {final_conf}% win rate',
+                            ]
+
+                        sig = {
+                            'signal_id': sig_id,
+                            'symbol': sym,
+                            'direction': dir_,
+                            'timeframe': tf,
+                            'platform': platform,
+                            'generated_at': now_utc.isoformat(),
+                            'entry_time': entry_time.isoformat(),
+                            'duration_minutes': duration_min,
+                            'confidence': final_conf,
+                            'accuracy': round(accuracy, 1),
+                            'volatility': volatility,
+                            'martingale': martingale,
+                            'params': dict(PARAMS),
+                            'confirmed': ENTRY_CONFIRM_ENABLED and (iq_connected or po_connected),
+                            'mtf_trend': tf_trend or 'N/A',
+                            'market_trend': market_trend or 'N/A',
+                            'regime': result['regime'],
+                            'regime_desc': result['regime_desc'],
+                            'trend': result['trend'],
+                            'bos': result['bos'],
+                            'choch': result['choch'],
+                            'fvg': result['fvg'],
+                            'fvg_type': result['fvg_type'],
+                            'liquidity_sweep': result['liquidity_sweep'],
+                            'liquidity_side': result['liquidity_side'],
+                            'volume_class': result['volume_class'],
+                            'zone': result['zone'],
+                            'rsi': result['rsi'],
+                            'adx': result['adx'],
+                            'stoch_val': result['stoch_val'],
+                            'stoch_status': result['stoch_status'],
+                            'bb_status': result['bb_status'],
+                            'rr': result['rr'],
+                            'support': result['support'],
+                            'resistance': result['resistance'],
+                            'price': result['price'],
+                            'order_block': result['order_block'],
+                            'sm_structure': result['sm_structure'],
+                            'sm_liquidity': result['sm_liquidity'],
+                            'sm_breakout': result['sm_breakout'],
+                            'sm_signal': result['sm_signal'],
+                            'wyckoff_phase': result['wyckoff_phase'],
+                            'rsi_divergence': result['rsi_divergence'],
+                            'daily_bias': result['daily_bias'],
+                            'mtf_aligned': result['mtf_aligned'],
+                            'range_efficiency': result['range_efficiency'],
+                            'chart_pattern': result['chart_pattern'],
+                            'pre_entry': result['pre_entry'],
+                            'next_candle': result['next_candle'],
+                            'price_phase': result['price_phase'],
+                            'candle_type': result['candle_type'],
+                            'candle_body': result['candle_body'],
+                            'session': result['session'],
+                            'strategy_guide': strategy_guide,
+                        }
+                        latest_signals.insert(0, sig)
+                        if len(latest_signals) > 50:
+                            latest_signals.pop()
+
+                        # WebSocket broadcast
+                        payload = {'type': 'new_signal', **sig}
+                        dead = []
+                        for ws in clients:
+                            try:
+                                await ws.send_json(payload)
+                            except:
+                                dead.append(ws)
+                        for ws in dead:
+                            clients.discard(ws)
+
+                        # Send Telegram alert (fire-and-forget)
+                        asyncio.create_task(send_telegram(sig))
+
+                        logger.info(f"[CRON] {platform} | {sym} {dir_} | RSI:{rsi_:.0f} ADX:{adx_:.0f} Acc:{accuracy:.0f}% Conf:{final_conf}%")
+                    except Exception as e:
+                        logger.error(f"Error {platform} {sym} {tf}: {traceback.format_exc()}")
+        logger.info("force_scan_cycle completed")
+    except Exception as e:
+        logger.error(f"force_scan_cycle error: {e}")
 
 async def scan_loop():
     """Main scanning loop - dual broker, MTF, entry confirmation, news filter."""
@@ -2641,6 +2916,15 @@ async def ws(websocket: WebSocket):
     except:
         clients.discard(websocket)
 
+@app.get("/api/scan")
+async def manual_scan():
+    """v3.8: Trigger a full market scan immediately.
+    Railway cron calls this every 5 minutes via:
+    curl -s https://catalyst-signals.up.railway.app/api/scan
+    Returns immediately; scan runs in background."""
+    asyncio.create_task(force_scan_cycle())
+    return {"status": "scan started", "timestamp": datetime.now(timezone.utc).isoformat()}
+
 @app.post("/api/trade/outcome")
 async def outcome(signal_id: str, outcome: str):
     if outcome not in ('win', 'loss', 'ignored'):
@@ -2675,7 +2959,7 @@ async def system_status():
     stats = get_stats()
     return {
         "status": "online",
-        "version": "3.3",
+        "version": "3.8",
         "engine": "CATALYST FINAL",
         "iq_connected": iq_connected,
         "po_connected": po_connected,
@@ -2689,6 +2973,7 @@ async def system_status():
         "min_confidence": MIN_CONFIDENCE,
         "win_rate": stats["win_rate"],
         "total_trades": stats["total_trades"],
+        "database": stats.get("database", "unknown"),
         "platforms": ["IQ Option", "Pocket Option"],
         "pairs": PAIRS,
         "pairs_count": len(PAIRS)
@@ -2710,7 +2995,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>CATALYST FINAL v3.5</title>
+<title>CATALYST FINAL v3.8</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
@@ -2790,7 +3075,7 @@ body{background:#050510;color:#e0e0e0;font-family:Segoe UI,sans-serif}
 <body>
 <div class="app">
 <div class="header">
-  <div class="logo">CATALYST<span>FINAL</span> <small style="font-size:0.4em;color:#888">v3.5</small></div>
+  <div class="logo">CATALYST<span>FINAL</span> <small style="font-size:0.4em;color:#888">v3.8</small></div>
   <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
     <span class="session-badge session-active" id="session-badge">...</span>
     <span class="status" id="sys-status">LIVE</span>
@@ -3304,9 +3589,10 @@ app.router.lifespan_context = lifespan
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
-    logger.info(f"Starting CATALYST FINAL v3.5 on port {port}")
+    logger.info(f"Starting CATALYST FINAL v3.8 on port {port}")
     logger.info(f"PO Email: {PO_EMAIL}")
     logger.info(f"IQ Available: {IQ_API_AVAILABLE}, PO Available: {PO_API_AVAILABLE}")
     logger.info(f"Telegram: {TG_AVAILABLE}, News Filter: {EC_API_AVAILABLE}, Scheduler: {APS_AVAILABLE}")
+    logger.info(f"PostgreSQL: {PSYCOPG2_AVAILABLE}, DATABASE_URL set: {bool(DATABASE_URL)}")
     logger.info(f"Params: {PARAMS}, Min Confidence: {MIN_CONFIDENCE}")
     uvicorn.run(app, host="0.0.0.0", port=port)
