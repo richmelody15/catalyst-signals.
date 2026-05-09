@@ -1,8 +1,22 @@
 #!/usr/bin/env python3
 """
-CATALYST FINAL v3.2 - Self-Improving OTC Signal Engine
-10 Confluences + Accuracy Level (0-100%) | 80-95% Win Rate Target | 24/7
+CATALYST FINAL v3.4 - Self-Improving OTC Signal Engine
+11 Confluences + Wyckoff + Accuracy Level (0-100%) | 80-95% Win Rate Target | 24/7
 IQ Option & Pocket Option | Memory-Based Confidence | Auto-Tuning | Telegram Alerts
+
+v3.4 CHANGES (Wyckoff Phase Detection + Filter):
+- Wyckoff phase detection: accumulation, manipulation (spring/upthrust), distribution
+- Wyckoff filter: only allows BUY in accumulation/manipulation, SELL in distribution/manipulation
+- Wyckoff phase displayed in signal cards, Copy Signal, and Telegram
+- If no clear Wyckoff phase, trade is allowed (no filter)
+
+v3.3 CHANGES (Full Enhanced Format in Copy + Telegram):
+- Copy Signal button now outputs FULL v3.2+ enhanced signal format
+- Telegram send_telegram() now outputs FULL enhanced signal format
+- Both copy and Telegram formats match exactly: Market Regime, BOS/CHoCH, FVG,
+  Liquidity, Volume, Zone, RSI, Stochastic, BB Width, R:R, GLM Smart Money,
+  Strategy Guide, Support/Resistance, GLM Probability branding
+- Format matches: CATALYST AI SIGNAL header + all sections
 
 v3.2 CHANGES (Enhanced Signal Format):
 - Market Regime Detection: BREAKOUT, RANGING, TRENDING with description
@@ -356,6 +370,87 @@ def calculate_rr(price: float, support: float, resistance: float, direction: str
     rr = reward / risk
     return f'1:{rr:.1f}'
 
+def detect_wyckoff_phase(df: pd.DataFrame) -> Optional[str]:
+    """
+    Returns the current Wyckoff phase:
+    'accumulation', 'manipulation', 'distribution', or None.
+    Uses last 40 candles.
+    """
+    if len(df) < 40:
+        return None
+
+    close = df['close'].values[-40:]
+    high  = df['high'].values[-40:]
+    low   = df['low'].values[-40:]
+    volume = df['volume'].values[-40:]
+
+    # 1. Determine price range (high-low spread) trend
+    range_series = high - low
+    recent_range = np.mean(range_series[-10:])
+    older_range = np.mean(range_series[-20:-10])
+    range_contracting = recent_range < older_range * 0.9
+
+    # 2. Volume trend
+    recent_vol = np.mean(volume[-10:])
+    older_vol = np.mean(volume[-20:-10])
+    vol_rising = recent_vol > older_vol * 1.1
+    vol_falling = recent_vol < older_vol * 0.9
+
+    # 3. Find swing highs/lows of last 20 candles
+    sh, sl = [], []
+    for i in range(3, 20-3):
+        if all(high[i] >= high[i-j] for j in range(1,4)) and all(high[i] >= high[i+j] for j in range(1,4)):
+            sh.append(i)
+        if all(low[i] <= low[i-j] for j in range(1,4)) and all(low[i] <= low[i+j] for j in range(1,4)):
+            sl.append(i)
+
+    if len(sh) < 2 or len(sl) < 2:
+        return None
+
+    current_price = close[-1]
+    last_swing_high = high[sh[-1]]
+    last_swing_low = low[sl[-1]]
+
+    # 4. Accumulation: price near support, volume rising, range contracting
+    if current_price <= last_swing_low * 1.002 and vol_rising and range_contracting:
+        return 'accumulation'
+
+    # 5. Distribution: price near resistance, volume falling, range contracting
+    if current_price >= last_swing_high * 0.998 and vol_falling and range_contracting:
+        return 'distribution'
+
+    # 6. Manipulation (false break): price briefly broke a swing and reversed
+    # Spring: price broke below support, then quickly recovered above it
+    if len(sl) >= 2:
+        prev_low = low[sl[-2]]
+        if low[sl[-1]] < prev_low and close[-1] > prev_low:
+            return 'manipulation'  # bear trap -> bullish
+
+    # Upthrust: price broke above resistance, then quickly fell back below
+    if len(sh) >= 2:
+        prev_high = high[sh[-2]]
+        if high[sh[-1]] > prev_high and close[-1] < prev_high:
+            return 'manipulation'  # bull trap -> bearish
+
+    return None
+
+
+def wyckoff_confirms_signal(phase: Optional[str], direction: str) -> bool:
+    """
+    Returns True if the Wyckoff phase supports the trade direction.
+    - Accumulation / Manipulation (spring) -> BUY is allowed.
+    - Distribution / Manipulation (upthrust) -> SELL is allowed.
+    - If phase is None (no clear phase), we allow the trade (no filter).
+    """
+    if phase is None:
+        return True   # no Wyckoff filter if phase is unclear
+    if direction == 'BUY' and phase in ('accumulation', 'manipulation'):
+        return True
+    if direction == 'SELL' and phase in ('distribution', 'manipulation'):
+        return True
+    return False
+
+
 def market_structure(df: pd.DataFrame) -> Optional[str]:
     if len(df) < 12:
         return None
@@ -613,7 +708,7 @@ def news_safe(symbol: str) -> bool:
 # 3d. TELEGRAM ALERTS
 # ============================================================
 async def send_telegram(signal: dict):
-    """Send formatted signal alert via Telegram. No-ops if not configured."""
+    """Send formatted signal alert via Telegram with full v3.2 enhanced format. No-ops if not configured."""
     if not TG_AVAILABLE or not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         return
     try:
@@ -625,34 +720,139 @@ async def send_telegram(signal: dict):
         # Clean symbol
         sym = signal['symbol'].replace('-OTC', '').replace('_OTC', '').replace(' (OTC)', '')
 
+        # Market regime
+        regime = signal.get('regime', 'RANGING')
+        regime_desc = signal.get('regime_desc', '')
+
+        # BOS/CHoCH
+        bos_status = signal.get('bos', 'Not Confirmed')
+        choch_status = signal.get('choch', 'Not Confirmed')
+
+        # FVG
+        fvg_status = signal.get('fvg', 'Inactive')
+
+        # Liquidity
+        liq_sweep = signal.get('liquidity_sweep', False)
+        liq_side = signal.get('liquidity_side', 'None')
+        liq_display = liq_side if liq_sweep else 'None'
+
+        # Volume & Zone
+        vol_class = signal.get('volume_class', 'Normal')
+        zone = signal.get('zone', 'None Detected')
+
+        # Stochastic
+        stoch_status = signal.get('stoch_status', 'Neutral')
+        stoch_val = signal.get('stoch_val', 50)
+        if stoch_val > 80:
+            stoch_display = 'Overbought'
+        elif stoch_val < 20:
+            stoch_display = 'Oversold'
+        elif signal['direction'] == 'BUY' and stoch_val < 50:
+            stoch_display = 'Bullish Crossover'
+        elif signal['direction'] == 'SELL' and stoch_val > 50:
+            stoch_display = 'Bearish Crossover'
+        else:
+            stoch_display = stoch_status
+
+        # BB Width
+        bb_status = signal.get('bb_status', 'Stable')
+        bb_display = 'Expanding' if bb_status == 'Expanding' else ('Contracting' if bb_status == 'Contracting' else 'Squeezing')
+
+        # R:R
+        rr = signal.get('rr', '1:1.0')
+
+        # GLM Smart Money
+        sm_structure = signal.get('sm_structure', 'No Clear Break')
+        sm_liquidity = signal.get('sm_liquidity', 'N/A')
+        sm_breakout = signal.get('sm_breakout', 'No Breakout')
+        sm_signal = signal.get('sm_signal', 'N/A')
+
+        # Add arrow to structure
+        if 'Up' in sm_structure:
+            sm_structure_display = sm_structure.replace('Up', '↑')
+        elif 'Down' in sm_structure:
+            sm_structure_display = sm_structure.replace('Down', '↓')
+        else:
+            sm_structure_display = sm_structure
+
         # Martingale lines
         mart_lines = []
         for i, m in enumerate(signal.get('martingale', [])):
             m_dt = datetime.fromisoformat(m['entry_time'].replace('Z', '+00:00'))
             t = m_dt.astimezone(timezone(timedelta(hours=1))).strftime('%H:%M') + ' WAT'
-            mart_lines.append(f"↪️ M{i+1} │ {m['multiplier']}x │ ${m['amount']} │ Entry: {t}")
+            mart_lines.append(f"  M{i+1} │ {m['multiplier']}x │ ${m['amount']} │ Entry: {t}")
         mart_block = "\n".join(mart_lines) if mart_lines else ""
 
-        msg = f"""
-🔔 NEW SIGNAL!
+        # Strategy Guide
+        strategy_guide = signal.get('strategy_guide', [])
+        strat_lines = []
+        for s in strategy_guide:
+            if 'confirm' in s.lower() or 'wait' in s.lower() or 'bos' in s.lower() or 'fvg' in s.lower() or 'pullback' in s.lower() or 'enter' in s.lower():
+                icon = '✅'
+            elif 'profit' in s.lower() or 'stop' in s.lower() or 'take' in s.lower() or 'trail' in s.lower() or 'exit' in s.lower() or 'bream' in s.lower():
+                icon = '🚪'
+            else:
+                icon = '🛡️'
+            strat_lines.append(f"  {icon} {s}")
+        strat_block = "\n".join(strat_lines) if strat_lines else ""
+
+        # Support/Resistance
+        support = signal.get('support', 'N/A')
+        resistance = signal.get('resistance', 'N/A')
+        sr_display = f"  Support: {support}\n  Resistance: {resistance}" if support and resistance else ""
+
+        # Wyckoff phase
+        wyckoff_phase = signal.get('wyckoff_phase', 'None')
+        wyckoff_display = wyckoff_phase.title() if wyckoff_phase and wyckoff_phase != 'None' else 'No Clear Phase'
+
+        # Signal status
+        sig_status = 'HIGH PROBABILITY ONLY' if signal['confidence'] >= 85 else 'MODERATE PROBABILITY'
+
+        msg = f"""🔔 CATALYST AI SIGNAL!
 
 🎫 Trade: {sym}
 ⏳ Timer: {signal['timeframe']} (OTC)
 ➡️ Entry: {entry_str}
 📈 Direction: {signal['direction']} {emoji}
-🎯 AI Confidence: {signal['confidence']}%
-📊 Accuracy Level: {signal['accuracy']}%
+🎯 GLM Probability: {signal['confidence']}% WIN RATE
+📊 Market: {signal.get('volatility', 'High Volatility')}
+
+🔮 Market Regime: {regime}
+   {regime_desc}
 
 🧠 Trend: {signal.get('trend', 'Analyzing...')}
-📉 RSI: {signal['rsi']} | ADX: {signal['adx']}
-📦 Market Structure: SMC Confirmed
+📉 BOS: {bos_status}
+🔄 CHoCH: {choch_status}
+📦 FVG: {fvg_status}
+💧 Liquidity: {liq_display}
+📦 Volume: {vol_class}
+🏗️ Zone: {zone}
+📉 RSI: {signal['rsi']}
+📊 Stochastic: {stoch_display}
+📊 BB Width: {bb_display}
+⚖️ RR: {rr}
+🏛️ Wyckoff: {wyckoff_display}
 
+↪️ ── 🛡️ MARTINGALE RECOVERY (Risk Level) ──
 {mart_block}
 
+🧪 GLM SMART MONEY:
+  Structure: {sm_structure_display}
+  Liquidity: {sm_liquidity}
+  Breakout: {sm_breakout}
+  Signal: {sm_signal}
+
+📋 STRATEGY GUIDE:
+{strat_block}
+
+📐 SUPPORT/RESISTANCE:
+{sr_display}
+
 Note: Trade 1% - 3% of your capability and capital
-⚠️ Please trade responsibly.
-AI analyzes data in real time outcomes may vary.
-🎯 SIGNAL STATUS: HIGH PROBABILITY ONLY
+🎯 SIGNAL STATUS: {sig_status}
+
+🎯 GLM PROBABILITY: {signal['confidence']}% WIN RATE
+   {sig_status}
 """
         await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg)
         logger.info(f"📱 Telegram alert sent for {signal['symbol']}")
@@ -946,6 +1146,9 @@ def generate_signal(df, symbol="", higher_tf_trend=None, market_trend=None):
     bb_status = classify_bb_width(bb_w)
     trend_dir = 'Bullish' if ema5.iloc[-1] > ema20.iloc[-1] else 'Bearish'
 
+    # v3.4: Wyckoff phase detection
+    wyckoff_phase = detect_wyckoff_phase(df)
+
     def make_signal_dict(dir_, rsi_, adx_, accuracy, mtf_ok, market_ok):
         rr = calculate_rr(price, support, resistance, dir_)
         zone_label = ''
@@ -1006,12 +1209,15 @@ def generate_signal(df, symbol="", higher_tf_trend=None, market_trend=None):
             'sm_liquidity': sm_liquidity,
             'sm_breakout': sm_breakout,
             'sm_signal': sm_signal,
+            # v3.4: Wyckoff phase
+            'wyckoff_phase': wyckoff_phase or 'None',
         }
 
     if (bull and rsi_val < PARAMS['rsi_buy'] and adx_val > PARAMS['adx_min'] and
         vol_spike and bb_sq and bb_exp and buy_sr and
         (struct == 'bullish' or mss == 'bullish') and reversal == 'bullish' and
-        candle == 'bullish' and sd == 'demand' and fvg_ == 'bullish' and mom_3 > 0.03):
+        candle == 'bullish' and sd == 'demand' and fvg_ == 'bullish' and mom_3 > 0.03
+        and wyckoff_confirms_signal(wyckoff_phase, 'BUY')):
         mtf_ok = (higher_tf_trend is None or higher_tf_trend == 'bullish')
         market_ok = (market_trend is None or market_trend == 'bullish')
         if not mtf_ok or not market_ok:
@@ -1023,7 +1229,8 @@ def generate_signal(df, symbol="", higher_tf_trend=None, market_trend=None):
     if (bear and rsi_val > PARAMS['rsi_sell'] and adx_val > PARAMS['adx_min'] and
         vol_spike and bb_sq and bb_exp and sell_sr and
         (struct == 'bearish' or mss == 'bearish') and reversal == 'bearish' and
-        candle == 'bearish' and sd == 'supply' and fvg_ == 'bearish' and mom_3 < -0.03):
+        candle == 'bearish' and sd == 'supply' and fvg_ == 'bearish' and mom_3 < -0.03
+        and wyckoff_confirms_signal(wyckoff_phase, 'SELL')):
         mtf_ok = (higher_tf_trend is None or higher_tf_trend == 'bearish')
         market_ok = (market_trend is None or market_trend == 'bearish')
         if not mtf_ok or not market_ok:
@@ -1034,7 +1241,7 @@ def generate_signal(df, symbol="", higher_tf_trend=None, market_trend=None):
 
     return None
 
-def calculate_accuracy(direction, rsi_val, adx_val, vol_spike, bb_sq, bb_exp, sd, fvg_, struct, mss, reversal, cand_conf, mom_ok, mtf_ok, market_ok=True):
+def calculate_accuracy(direction, rsi_val, adx_val, vol_spike, bb_sq, bb_exp, sd, fvg_, struct, mss, reversal, cand_conf, mom_ok, mtf_ok, market_ok=True, wyckoff_ok=True):
     """Return accuracy score 0-100 based on confirmation strength."""
     score = 0
     if direction == 'BUY':
@@ -1052,6 +1259,7 @@ def calculate_accuracy(direction, rsi_val, adx_val, vol_spike, bb_sq, bb_exp, sd
     if mom_ok: score += 10
     if mtf_ok: score += 10
     if market_ok: score += 10
+    if wyckoff_ok: score += 5
     return min(100, max(50, score))
 
 def calculate_martingale(entry: datetime, timeframe: str, confidence: float, base_stake: float = 1.0) -> List[dict]:
@@ -1290,7 +1498,7 @@ def _demo_data(symbol, tf):
 # ============================================================
 # 6. FASTAPI APP & WEBSOCKET
 # ============================================================
-app = FastAPI(title="CATALYST FINAL", version="3.1")
+app = FastAPI(title="CATALYST FINAL", version="3.3")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 init_memory()
 latest_signals: List[dict] = []
@@ -1477,6 +1685,7 @@ async def scan_loop():
                             'sm_liquidity': result['sm_liquidity'],
                             'sm_breakout': result['sm_breakout'],
                             'sm_signal': result['sm_signal'],
+                            'wyckoff_phase': result['wyckoff_phase'],
                             'strategy_guide': strategy_guide,
                         }
                         latest_signals.insert(0, sig)
@@ -1546,7 +1755,7 @@ async def system_status():
     stats = get_stats()
     return {
         "status": "online",
-        "version": "3.2",
+        "version": "3.3",
         "engine": "CATALYST FINAL",
         "iq_connected": iq_connected,
         "po_connected": po_connected,
@@ -1581,7 +1790,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>CATALYST FINAL v3.2</title>
+<title>CATALYST FINAL v3.4</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
@@ -1620,6 +1829,11 @@ body{background:#050510;color:#e0e0e0;font-family:Segoe UI,sans-serif}
 .regime-badge.breakout{background:rgba(255,68,68,0.2);color:#ff6666}
 .regime-badge.trending{background:rgba(0,180,216,0.2);color:#00b4d8}
 .regime-badge.ranging{background:rgba(255,215,0,0.2);color:#ffd700}
+.wyckoff-badge{display:inline-block;padding:3px 10px;border-radius:8px;font-size:0.85em;font-weight:bold;margin:5px 0}
+.wyckoff-badge.accumulation{background:rgba(0,255,136,0.2);color:#00ff88}
+.wyckoff-badge.distribution{background:rgba(255,68,68,0.2);color:#ff4444}
+.wyckoff-badge.manipulation{background:rgba(255,165,0,0.2);color:#ffa500}
+.wyckoff-badge.none{background:rgba(128,128,128,0.2);color:#888}
 .signal-section{margin:10px 0;padding:10px;background:#111;border-radius:8px;font-size:0.9em}
 .signal-section-title{color:#ffd700;font-weight:bold;margin-bottom:5px;font-size:0.95em}
 .signal-grid{display:grid;grid-template-columns:1fr 1fr;gap:4px 12px}
@@ -1656,7 +1870,7 @@ body{background:#050510;color:#e0e0e0;font-family:Segoe UI,sans-serif}
 <body>
 <div class="app">
 <div class="header">
-  <div class="logo">CATALYST<span>FINAL</span> <small style="font-size:0.4em;color:#888">v3.2</small></div>
+  <div class="logo">CATALYST<span>FINAL</span> <small style="font-size:0.4em;color:#888">v3.4</small></div>
   <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
     <span class="session-badge session-active" id="session-badge">...</span>
     <span class="status" id="sys-status">LIVE</span>
@@ -1853,6 +2067,7 @@ ws.onmessage=function(e){
     '<div class="signal-grid-item"><span class="label">Stochastic</span><span class="value">'+(d.stoch_status||'Neutral')+'</span></div>'+
     '<div class="signal-grid-item"><span class="label">BB Width</span><span class="value">'+(d.bb_status||'Stable')+'</span></div>'+
     '<div class="signal-grid-item"><span class="label">R:R</span><span class="value">'+(d.rr||'1:1.0')+'</span></div>'+
+    '<div class="signal-grid-item"><span class="label">Wyckoff</span><span class="value">'+(d.wyckoff_phase||'None')+'</span></div>'+
     '</div></div>';
 
   card.innerHTML=
@@ -1862,6 +2077,7 @@ ws.onmessage=function(e){
     '<div class="timing-details">Entry: '+entS+' | End: '+endS+' ('+d.duration_minutes*60+'s) | '+otcLabel+'</div>'+
     '<div>Market: '+(d.volatility||'High Volatility')+' | GLM Probability: '+d.confidence+'%</div>'+
     '<div style="margin:5px 0">'+regimeHtml+' <span style="color:#888;font-size:0.85em">'+(d.regime_desc||'')+'</span></div>'+
+    '<div style="margin:3px 0"><span class="wyckoff-badge '+((d.wyckoff_phase||'none').toLowerCase())+'">🏛️ Wyckoff: '+((d.wyckoff_phase&&d.wyckoff_phase!=='None')?d.wyckoff_phase.charAt(0).toUpperCase()+d.wyckoff_phase.slice(1):'No Clear Phase')+'</span></div>'+
     gridHtml+
     mHtml+
     smHtml+
@@ -1893,29 +2109,119 @@ function copySignal(btn){
   var sym=d.symbol.replace('-OTC','').replace('_OTC','').replace(' (OTC)','');
   var entryD=new Date(d.entry_time);
   var entryStr=entryD.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',timeZone:'Africa/Lagos'})+' WAT';
+
+  // Market regime
+  var regime=d.regime||'RANGING';
+  var regimeDesc=d.regime_desc||'';
+
+  // BOS/CHoCH
+  var bosStatus=d.bos||'Not Confirmed';
+  var chochStatus=d.choch||'Not Confirmed';
+
+  // FVG
+  var fvgStatus=d.fvg||'Inactive';
+
+  // Liquidity
+  var liqDisplay=d.liquidity_sweep?d.liquidity_side:'None';
+
+  // Volume & Zone
+  var volClass=d.volume_class||'Normal';
+  var zone=d.zone||'None Detected';
+
+  // Stochastic
+  var stochVal=d.stoch_val||50;
+  var stochDisplay;
+  if(stochVal>80)stochDisplay='Overbought';
+  else if(stochVal<20)stochDisplay='Oversold';
+  else if(d.direction==='BUY'&&stochVal<50)stochDisplay='Bullish Crossover';
+  else if(d.direction==='SELL'&&stochVal>50)stochDisplay='Bearish Crossover';
+  else stochDisplay=d.stoch_status||'Neutral';
+
+  // BB Width
+  var bbStatus=d.bb_status||'Stable';
+  var bbDisplay=bbStatus==='Expanding'?'Expanding':(bbStatus==='Contracting'?'Contracting':'Squeezing');
+
+  // R:R
+  var rr=d.rr||'1:1.0';
+
+  // Wyckoff
+  var wyckoffPhase=d.wyckoff_phase||'None';
+  var wyckoffDisplay=(wyckoffPhase&&wyckoffPhase!=='None')?wyckoffPhase.charAt(0).toUpperCase()+wyckoffPhase.slice(1):'No Clear Phase';
+
+  // GLM Smart Money
+  var smStructure=d.sm_structure||'No Clear Break';
+  var smLiquidity=d.sm_liquidity||'N/A';
+  var smBreakout=d.sm_breakout||'No Breakout';
+  var smSignal=d.sm_signal||'N/A';
+  if(smStructure.indexOf('Up')>=0)smStructure=smStructure.replace('Up','↑');
+  if(smStructure.indexOf('Down')>=0)smStructure=smStructure.replace('Down','↓');
+
+  // Martingale lines
   var martLines='';
   if(d.martingale&&d.martingale.length){
     d.martingale.forEach(function(m,i){
       var mD=new Date(m.entry_time);
       var mT=mD.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',timeZone:'Africa/Lagos'})+' WAT';
-      martLines+='↪️ M'+(i+1)+' │ '+m.multiplier+'x │ $'+m.amount+' │ Entry: '+mT+'\n';
+      martLines+='  M'+(i+1)+' │ '+m.multiplier+'x │ $'+m.amount+' │ Entry: '+mT+'\n';
     });
   }
-  var msg='🔔 NEW SIGNAL!\n\n'+
+
+  // Strategy Guide
+  var stratLines='';
+  if(d.strategy_guide&&d.strategy_guide.length){
+    d.strategy_guide.forEach(function(s){
+      var icon='🛡️';
+      if(s.match(/confirm|wait|bos|fvg|pullback|enter/i))icon='✅';
+      else if(s.match(/profit|stop|take|trail|exit/i))icon='🚪';
+      stratLines+='  '+icon+' '+s+'\n';
+    });
+  }
+
+  // Support/Resistance
+  var srLines='';
+  if(d.support)srLines+='  Support: '+d.support+'\n';
+  if(d.resistance)srLines+='  Resistance: '+d.resistance+'\n';
+
+  // Signal status
+  var sigStatus=d.confidence>=85?'HIGH PROBABILITY ONLY':'MODERATE PROBABILITY';
+
+  var msg='🔔 CATALYST AI SIGNAL!\n\n'+
   '🎫 Trade: '+sym+'\n'+
   '⏳ Timer: '+d.timeframe+' (OTC)\n'+
   '➡️ Entry: '+entryStr+'\n'+
   '📈 Direction: '+d.direction+' '+emoji+'\n'+
-  '🎯 AI Confidence: '+d.confidence+'%\n'+
-  '📊 Accuracy Level: '+d.accuracy+'%\n\n'+
+  '🎯 GLM Probability: '+d.confidence+'% WIN RATE\n'+
+  '📊 Market: '+(d.volatility||'High Volatility')+'\n\n'+
+  '🔮 Market Regime: '+regime+'\n'+
+  '   '+regimeDesc+'\n\n'+
   '🧠 Trend: '+(d.trend||'Analyzing...')+'\n'+
-  '📉 RSI: '+d.rsi+' | ADX: '+d.adx+'\n'+
-  '📦 Market Structure: SMC Confirmed\n\n'+
+  '📉 BOS: '+bosStatus+'\n'+
+  '🔄 CHoCH: '+chochStatus+'\n'+
+  '📦 FVG: '+fvgStatus+'\n'+
+  '💧 Liquidity: '+liqDisplay+'\n'+
+  '📦 Volume: '+volClass+'\n'+
+  '🏗️ Zone: '+zone+'\n'+
+  '📉 RSI: '+d.rsi+'\n'+
+  '📊 Stochastic: '+stochDisplay+'\n'+
+  '📊 BB Width: '+bbDisplay+'\n'+
+  '⚖️ RR: '+rr+'\n'+
+  '🏛️ Wyckoff: '+wyckoffDisplay+'\n\n'+
+  '↪️ ── 🛡️ MARTINGALE RECOVERY (Risk Level) ──\n'+
   (martLines?martLines+'\n':'')+
+  '🧪 GLM SMART MONEY:\n'+
+  '  Structure: '+smStructure+'\n'+
+  '  Liquidity: '+smLiquidity+'\n'+
+  '  Breakout: '+smBreakout+'\n'+
+  '  Signal: '+smSignal+'\n\n'+
+  '📋 STRATEGY GUIDE:\n'+
+  (stratLines?stratLines+'\n':'')+
+  '📐 SUPPORT/RESISTANCE:\n'+
+  (srLines?srLines+'\n':'')+
   'Note: Trade 1% - 3% of your capability and capital\n'+
-  '⚠️ Please trade responsibly.\n'+
-  'AI analyzes data in real time outcomes may vary.\n'+
-  '🎯 SIGNAL STATUS: HIGH PROBABILITY ONLY';
+  '🎯 SIGNAL STATUS: '+sigStatus+'\n\n'+
+  '🎯 GLM PROBABILITY: '+d.confidence+'% WIN RATE\n'+
+  '   '+sigStatus;
+
   navigator.clipboard.writeText(msg).then(function(){
     btn.textContent='✅ Copied!';
     btn.style.background='#00ff88';
@@ -1962,7 +2268,7 @@ app.router.lifespan_context = lifespan
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
-    logger.info(f"Starting CATALYST FINAL v3.2 on port {port}")
+    logger.info(f"Starting CATALYST FINAL v3.4 on port {port}")
     logger.info(f"PO Email: {PO_EMAIL}")
     logger.info(f"IQ Available: {IQ_API_AVAILABLE}, PO Available: {PO_API_AVAILABLE}")
     logger.info(f"Telegram: {TG_AVAILABLE}, News Filter: {EC_API_AVAILABLE}, Scheduler: {APS_AVAILABLE}")
