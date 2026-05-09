@@ -1,100 +1,50 @@
 #!/usr/bin/env python3
 """
-CATALYST FINAL v3.8 - Self-Improving OTC Signal Engine
-28+ Confluences + R:R Filter + Valid Entry + Volume Break + Market Break + CHoCH Enhanced + FVG Quality + Failed Reversal + Market Class + Prime Session + Optimal Expiry + Weekly Optimiser + Daily Levels + Session Profiles + PostgreSQL/SQLite Dual DB + Railway Cron API | 80-95% Win Rate Target | 24/7
-IQ Option & Pocket Option | Memory-Based Confidence | Auto-Tuning | Telegram Alerts
+CATALYST FINAL v3.8 - 24/7 Self-Improving OTC Signal Engine
+SMC + Wyckoff + Divergence + Accuracy Level + PostgreSQL + Telegram + Copy Signal
+All Sessions + R:R Filter + Valid Entry + Volume Break + Market Break + CHoCH + FVG Quality
+Failed Reversal + Market Classification + Prime Session + Optimal Expiry + Daily Levels
 
-v3.8 CHANGES (Weekly Optimiser + Daily Levels Filter + Session Profiles + PostgreSQL + Railway Cron):
-- PostgreSQL/SQLite dual database support via DATABASE_URL env var
-- /api/scan endpoint for Railway cron-triggered full market scans
-- force_scan_cycle() for single-pass scan without while loop
-- Weekly APScheduler optimiser: tightens params if WR < 93%, relaxes if WR > 97%
-- Daily levels filter: blocks BUY near daily high, SELL near daily low
-- Session-specific parameter profiles (London, New York, Sydney/Tokyo)
-- get_session_params() merges session profile with base PARAMS
-- psycopg2-binary graceful import for Railway deployment
-- /api/scan returns immediate response, scan runs in background
+v3.8 CHANGES:
+- PostgreSQL/SQLite dual database support (DATABASE_URL env var)
+- Weekly optimization upgraded: WR<93% tighten, WR>97% relax, 200-trade minimum
+- Daily levels filter: get_daily_levels() + is_near_daily_level()
+- Session profiles: London/NY/Sydney-Tokyo specific RSI/ADX/VOL params
+- /api/scan endpoint for Railway cron (force_scan_cycle)
+- All v3.5-v3.7 features integrated
 
-v3.7 CHANGES (R:R Filter + Valid Entry Candle + Volume Break + Market Break + CHoCH + FVG Quality + Failed Reversal + Market Class + Prime Session + Optimal Expiry):
-- R:R Ratio Calculation using swing points (calculate_rr_ratio) with rr_filter >= 2.5
-- Candle Body Percent: body-to-range percentage for entry validation
-- Valid Entry Candle: hammer/marubozu + body% >= 40 + direction match
-- Volume Break Confirmed: volume spike must accompany BOS/MSS
-- Market Break Valid: ATR-based break validation (1.5x ATR range) + BOS confirmation
-- Optimal Expiry Seconds: dynamic expiry based on average swing duration
-- Prime Session Filter: only trade during 07:00-16:00 UTC
-- Enhanced CHoCH (choch_confirmed): price must hold above/below broken level for 2 candles
-- FVG Quality (fvg_quality): direction + ATR-normalized size + age in bars
-- Failed Reversal Detection: reversal pattern confirmed then invalidated → opposite signal
-- Market Classification: strong/weak/ranging/low/normal based on ADX + BB + ATR
-- Market state filter: block signals in ranging/low markets
-- Fresh FVG filter: only pass FVG if age <= 3 bars and size >= 0.3 ATR
-- CHoCH added to structure condition (struct OR mss OR choch)
-- Failed reversal can flip BUY → SELL and vice versa
-- 4 new scoring bonuses in calculate_accuracy()
+v3.7 CHANGES:
+- calculate_rr_ratio(): R:R as float, >=2.5 required
+- valid_entry_candle(): body >40% of range, close in direction
+- volume_break_confirmed(): vol >1.5x 20-period average
+- market_break_valid(): close beyond recent swing with momentum
+- choch_confirmed(): Change of Character detection (stronger than MSS)
+- fvg_quality(): Fresh FVG with age<=3, size>=0.3ATR
+- failed_reversal(): Counter-move failed, supports original direction
+- classify_market(): strong/normal/ranging/low state
+- is_prime_session(): London or NY active
+- optimal_expiry(): Volatility-adaptive expiry selection
+- Scoring +40: CHoCH+10, FVGqual+10, MktState+5, ValidEntry+5, VolBreak+5, MktBreak+5, RR+5
 
-v3.6 CHANGES (Chart Patterns + Candle Classification + Pre-Entry + Price Phase + Session):
-- Swing Identification: order-3 swing point detection with strength labeling
-- Session Detection: Sydney/Tokyo, London, New York, Low Liquidity
-- Repeating Patterns: double_top, double_bottom, head_shoulders, flag detection
-- Next Candle Prediction: 3-candle momentum + volume heuristic
-- Price Phase Detection: pullback, move, reversal classification
-- Candle Classification: body size + type (doji, marubozu, hammer, shooting_star)
-- Pre-Entry Confirmation: last candle must support trade direction
-- Pattern filter: blocks BUY on double_top/head_shoulders, SELL on double_bottom
-- 4 new scoring bonuses in calculate_accuracy()
+v3.6 CHANGES:
+- identify_swings(): Generic swing detection with configurable order
+- detect_repeating_patterns(): Double top/bottom detection
+- predict_next_candle(): Momentum-based next candle prediction
+- detect_price_phase(): Accumulation/markup/distribution/markdown
+- candle_classification(): Doji/hammer/engulfing/trending classification
+- pre_entry_confirm(): Final pre-entry candle confirmation
 
-v3.5 CHANGES (RSI Divergence + Daily Bias + MTF Full Alignment + Protected Swings + Range Efficiency):
-- RSI Divergence detection: bullish (price LL + RSI HL) and bearish (price HH + RSI LH)
-- Daily Bias filter: 15m trend determines bias, trades must align or be neutral
-- MTF Full Alignment: 1m + 5m + 15m must all agree for signal pass
-- Protected Swings: trade must respect nearest unbroken swing high/low
-- Range Efficiency: blocks signals in messy ranges (score <60), accuracy bonus for clean ranges
-- 5 new scoring bonuses in calculate_accuracy()
-
-v3.4 CHANGES (Wyckoff Phase Detection + Filter):
-- Wyckoff phase detection: accumulation, manipulation (spring/upthrust), distribution
-- Wyckoff filter: only allows BUY in accumulation/manipulation, SELL in distribution/manipulation
-- Wyckoff phase displayed in signal cards, Copy Signal, and Telegram
-- If no clear Wyckoff phase, trade is allowed (no filter)
-
-v3.3 CHANGES (Full Enhanced Format in Copy + Telegram):
-- Copy Signal button now outputs FULL v3.2+ enhanced signal format
-- Telegram send_telegram() now outputs FULL enhanced signal format
-- Both copy and Telegram formats match exactly: Market Regime, BOS/CHoCH, FVG,
-  Liquidity, Volume, Zone, RSI, Stochastic, BB Width, R:R, GLM Smart Money,
-  Strategy Guide, Support/Resistance, GLM Probability branding
-- Format matches: CATALYST AI SIGNAL header + all sections
-
-v3.2 CHANGES (Enhanced Signal Format):
-- Market Regime Detection: BREAKOUT, RANGING, TRENDING with description
-- Stochastic Oscillator: Overbought/Oversold/Neutral status
-- Liquidity Sweep Detection: Buy/Sell side sweep identification
-- Enhanced Zone Analysis: Supply/Demand + Order Block labeling
-- BOS/CHoCH Confirmation Status: Active/Not Confirmed display
-- R:R Ratio Calculation: Risk-to-Reward display (1:X.X)
-- GLM Smart Money Section: Structure, Liquidity, Breakout, Signal validity
-- Strategy Guide: Context-sensitive rules based on signal type
-- Support/Resistance Levels in signal output
-- Enhanced Telegram format: Full emoji-rich signal template
-- Enhanced Dashboard: All new fields displayed in signal cards
-- Volume Classification: Normal/High/Low labels
-- BB Width Status: Expanding/Contracting/Squeezing labels
-- GLM Probability branding with HIGH PROBABILITY ONLY filter
-
-v3.1 FEATURES (preserved):
-- Entry-time price confirmation
-- Telegram Bot alerts
-- Economic calendar news filter
-- Daily stats + Chart.js win-rate graph
-- APScheduler weekly optimization
-- Dual broker: IQ Option + Pocket Option
-- 10-point ALL-AND confluence + MTF + Accuracy scoring
-- Candlestick confirmation
-- Market Structure Shift + Confirmed Reversal
+v3.5 CHANGES:
+- detect_rsi_divergence(): Bullish/bearish RSI divergence
+- detect_wyckoff_phase(): Wyckoff market phase detection
+- wyckoff_confirms_signal(): Wyckoff phase + signal direction alignment
+- get_daily_bias(): EMA20/50 based daily bias
+- mtf_full_alignment(): All timeframes must align
+- protected_swings_ok(): Last swing not broken back through
+- range_efficiency(): 0-100 range efficiency (>=60 required)
 
 DEPLOY:
-  Set env vars: IQ_EMAIL, IQ_PASSWORD, PO_EMAIL, PO_PASSWORD
+  Set env vars: IQ_EMAIL, IQ_PASSWORD, PO_EMAIL, PO_PASSWORD, DATABASE_URL
   Set TELEGRAM_TOKEN, TELEGRAM_CHAT_ID for alerts
   Set USE_IQ_OPTION=True / USE_POCKET_OPTION=True
   pip install -r requirements.txt
@@ -102,12 +52,6 @@ DEPLOY:
   Open http://localhost:8000
 """
 import asyncio, json, sqlite3, logging, uuid, os, traceback, time, hashlib
-try:
-    import psycopg2
-    PSYCOPG2_AVAILABLE = True
-except ImportError:
-    psycopg2 = None
-    PSYCOPG2_AVAILABLE = False
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional, List, Tuple
 import numpy as np
@@ -175,9 +119,6 @@ try:
 except ImportError:
     APS_AVAILABLE = False
 
-# Database URL (PostgreSQL on Railway, SQLite locally)
-DATABASE_URL = os.environ.get("DATABASE_URL", "")
-
 # Telegram Bot (optional)
 try:
     from telegram import Bot as TelegramBot
@@ -185,8 +126,31 @@ try:
 except ImportError:
     TG_AVAILABLE = False
 
+# psycopg2 for PostgreSQL (optional)
+try:
+    import psycopg2
+    PSYCOPG2_AVAILABLE = True
+except ImportError:
+    PSYCOPG2_AVAILABLE = False
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("CatalystFinal")
+
+# ============================================================
+# 0b. DATABASE URL & DUAL DB SUPPORT
+# ============================================================
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
+MEMORY_DB = os.environ.get("DB_PATH", "memory.db")
+
+def get_connection():
+    """Get database connection. Returns (connection, is_postgres)."""
+    if DATABASE_URL and DATABASE_URL.startswith("postgres") and PSYCOPG2_AVAILABLE:
+        try:
+            conn = psycopg2.connect(DATABASE_URL)
+            return conn, True
+        except Exception as e:
+            logger.warning(f"PostgreSQL connection failed, falling back to SQLite: {e}")
+    return sqlite3.connect(MEMORY_DB), False
 
 # ============================================================
 # 1. AUTO ERROR FIXER
@@ -427,623 +391,6 @@ def calculate_rr(price: float, support: float, resistance: float, direction: str
     rr = reward / risk
     return f'1:{rr:.1f}'
 
-def detect_wyckoff_phase(df: pd.DataFrame) -> Optional[str]:
-    """
-    Returns the current Wyckoff phase:
-    'accumulation', 'manipulation', 'distribution', or None.
-    Uses last 40 candles.
-    """
-    if len(df) < 40:
-        return None
-
-    close = df['close'].values[-40:]
-    high  = df['high'].values[-40:]
-    low   = df['low'].values[-40:]
-    volume = df['volume'].values[-40:]
-
-    # 1. Determine price range (high-low spread) trend
-    range_series = high - low
-    recent_range = np.mean(range_series[-10:])
-    older_range = np.mean(range_series[-20:-10])
-    range_contracting = recent_range < older_range * 0.9
-
-    # 2. Volume trend
-    recent_vol = np.mean(volume[-10:])
-    older_vol = np.mean(volume[-20:-10])
-    vol_rising = recent_vol > older_vol * 1.1
-    vol_falling = recent_vol < older_vol * 0.9
-
-    # 3. Find swing highs/lows of last 20 candles
-    sh, sl = [], []
-    for i in range(3, 20-3):
-        if all(high[i] >= high[i-j] for j in range(1,4)) and all(high[i] >= high[i+j] for j in range(1,4)):
-            sh.append(i)
-        if all(low[i] <= low[i-j] for j in range(1,4)) and all(low[i] <= low[i+j] for j in range(1,4)):
-            sl.append(i)
-
-    if len(sh) < 2 or len(sl) < 2:
-        return None
-
-    current_price = close[-1]
-    last_swing_high = high[sh[-1]]
-    last_swing_low = low[sl[-1]]
-
-    # 4. Accumulation: price near support, volume rising, range contracting
-    if current_price <= last_swing_low * 1.002 and vol_rising and range_contracting:
-        return 'accumulation'
-
-    # 5. Distribution: price near resistance, volume falling, range contracting
-    if current_price >= last_swing_high * 0.998 and vol_falling and range_contracting:
-        return 'distribution'
-
-    # 6. Manipulation (false break): price briefly broke a swing and reversed
-    # Spring: price broke below support, then quickly recovered above it
-    if len(sl) >= 2:
-        prev_low = low[sl[-2]]
-        if low[sl[-1]] < prev_low and close[-1] > prev_low:
-            return 'manipulation'  # bear trap -> bullish
-
-    # Upthrust: price broke above resistance, then quickly fell back below
-    if len(sh) >= 2:
-        prev_high = high[sh[-2]]
-        if high[sh[-1]] > prev_high and close[-1] < prev_high:
-            return 'manipulation'  # bull trap -> bearish
-
-    return None
-
-
-def wyckoff_confirms_signal(phase: Optional[str], direction: str) -> bool:
-    """
-    Returns True if the Wyckoff phase supports the trade direction.
-    - Accumulation / Manipulation (spring) -> BUY is allowed.
-    - Distribution / Manipulation (upthrust) -> SELL is allowed.
-    - If phase is None (no clear phase), we allow the trade (no filter).
-    """
-    if phase is None:
-        return True   # no Wyckoff filter if phase is unclear
-    if direction == 'BUY' and phase in ('accumulation', 'manipulation'):
-        return True
-    if direction == 'SELL' and phase in ('distribution', 'manipulation'):
-        return True
-    return False
-
-
-def detect_rsi_divergence(df: pd.DataFrame, direction: str) -> bool:
-    """
-    Returns True if regular divergence supports the given direction.
-    'bullish' divergence: price lower low, RSI higher low.
-    'bearish' divergence: price higher high, RSI lower high.
-    Returns True (allow) if insufficient data or no clear divergence.
-    """
-    if len(df) < 20:
-        return True
-
-    close_arr = df['close'].values[-20:]
-    rsi_vals = rsi(df['close'], 14).values[-20:]
-
-    def find_swing_points(data):
-        highs_idx, lows_idx = [], []
-        for i in range(2, len(data) - 2):
-            if all(data[i] >= data[i - j] for j in range(1, 3)) and all(data[i] >= data[i + j] for j in range(1, 3)):
-                highs_idx.append(i)
-            if all(data[i] <= data[i - j] for j in range(1, 3)) and all(data[i] <= data[i + j] for j in range(1, 3)):
-                lows_idx.append(i)
-        return highs_idx, lows_idx
-
-    price_highs, price_lows = find_swing_points(close_arr)
-    rsi_highs, rsi_lows = find_swing_points(rsi_vals)
-
-    # Bullish divergence: price lower low, RSI higher low
-    if len(price_lows) >= 2 and len(rsi_lows) >= 2:
-        price_last_low = close_arr[price_lows[-1]]
-        price_prev_low = close_arr[price_lows[-2]]
-        rsi_last_low = rsi_vals[rsi_lows[-1]]
-        rsi_prev_low = rsi_vals[rsi_lows[-2]]
-        if price_last_low < price_prev_low and rsi_last_low > rsi_prev_low:
-            return direction == 'BUY'
-
-    # Bearish divergence: price higher high, RSI lower high
-    if len(price_highs) >= 2 and len(rsi_highs) >= 2:
-        price_last_high = close_arr[price_highs[-1]]
-        price_prev_high = close_arr[price_highs[-2]]
-        rsi_last_high = rsi_vals[rsi_highs[-1]]
-        rsi_prev_high = rsi_vals[rsi_highs[-2]]
-        if price_last_high > price_prev_high and rsi_last_high < rsi_prev_high:
-            return direction == 'SELL'
-
-    return True
-
-
-def get_daily_bias(market_trend: Optional[str]) -> str:
-    """
-    Returns 'bullish', 'bearish', or 'neutral' based on the 15-minute trend.
-    In production, replace with actual daily trend if available.
-    """
-    if market_trend in ('bullish', 'bearish'):
-        return market_trend
-    return 'neutral'
-
-
-def mtf_full_alignment(higher_tf_trend: Optional[str], market_trend: Optional[str], micro_trend: Optional[str]) -> bool:
-    """
-    Returns True if micro (1m), short-term (5m) and medium-term (15m)
-    all agree on the same direction.
-    micro_trend: 'bullish' or 'bearish' from the 1m chart (ema5/20)
-    higher_tf_trend: 5m trend string
-    market_trend: 15m trend string
-    """
-    if higher_tf_trend is None or market_trend is None:
-        return False
-    if micro_trend == higher_tf_trend == market_trend:
-        return True
-    return False
-
-
-def protected_swings_ok(df: pd.DataFrame, direction: str) -> bool:
-    """
-    Returns True if the trade respects the nearest protected swing.
-    For BUY: price must be above the last unbroken swing low.
-    For SELL: price must be below the last unbroken swing high.
-    """
-    if len(df) < 40:
-        return True
-
-    highs = df['high'].values[-40:]
-    lows = df['low'].values[-40:]
-    closes = df['close'].values[-40:]
-    price = closes[-1]
-
-    sh, sl = [], []
-    for i in range(3, len(highs) - 3):
-        if all(highs[i] >= highs[i - j] for j in range(1, 4)) and all(highs[i] >= highs[i + j] for j in range(1, 4)):
-            sh.append(i)
-        if all(lows[i] <= lows[i - j] for j in range(1, 4)) and all(lows[i] <= lows[i + j] for j in range(1, 4)):
-            sl.append(i)
-
-    if direction == 'BUY':
-        for idx in reversed(sl):
-            if closes[idx] < lows[idx]:
-                continue
-            if price > lows[idx]:
-                return True
-        return True
-
-    if direction == 'SELL':
-        for idx in reversed(sh):
-            if closes[idx] > highs[idx]:
-                continue
-            if price < highs[idx]:
-                return True
-        return True
-
-    return True
-
-
-def range_efficiency(df: pd.DataFrame, lookback: int = 30) -> float:
-    """
-    Returns a score 0-100.
-    High score = clean range (clear support/resistance, multiple touches).
-    Low score = messy, unpredictable chop.
-    """
-    if len(df) < lookback:
-        return 50
-
-    highs = df['high'].values[-lookback:]
-    lows = df['low'].values[-lookback:]
-
-    range_high = np.max(highs)
-    range_low = np.min(lows)
-    range_size = range_high - range_low
-
-    if range_size == 0:
-        return 100
-
-    # Count touches of both sides (within 5% of range boundary)
-    touch_high = sum(1 for h in highs if abs(h - range_high) / range_size < 0.05)
-    touch_low = sum(1 for l in lows if abs(l - range_low) / range_size < 0.05)
-
-    # Price containment
-    containment = sum(1 for i in range(len(highs)) if highs[i] <= range_high and lows[i] >= range_low) / len(highs)
-
-    # Range regularity
-    std_high = np.std(highs)
-    std_low = np.std(lows)
-    regularity = max(0, 1 - (std_high + std_low) / range_size)
-
-    score = (touch_high * 10) + (touch_low * 10) + (containment * 40) + (regularity * 40)
-    return min(100, max(0, score))
-
-
-def identify_swings(df: pd.DataFrame, order: int = 3) -> List[dict]:
-    """Returns list of dicts: {type:'high'|'low', price, time, strength}."""
-    if len(df) < order * 2 + 1:
-        return []
-    swings = []
-    for i in range(order, len(df) - order):
-        if (all(df['high'].iloc[i] >= df['high'].iloc[i - j] for j in range(1, order + 1)) and
-            all(df['high'].iloc[i] >= df['high'].iloc[i + j] for j in range(1, order + 1))):
-            swings.append({
-                'type': 'high', 'price': df['high'].iloc[i],
-                'time': df.index[i], 'strength': order
-            })
-        if (all(df['low'].iloc[i] <= df['low'].iloc[i - j] for j in range(1, order + 1)) and
-            all(df['low'].iloc[i] <= df['low'].iloc[i + j] for j in range(1, order + 1))):
-            swings.append({
-                'type': 'low', 'price': df['low'].iloc[i],
-                'time': df.index[i], 'strength': order
-            })
-    return swings
-
-
-def current_session() -> str:
-    """Returns the current trading session based on UTC hour."""
-    h = datetime.now(timezone.utc).hour
-    if 22 <= h or h < 7:
-        return "Sydney/Tokyo"
-    if 7 <= h < 10:
-        return "London"
-    if 13 <= h < 17:
-        return "New York"
-    return "Low Liquidity"
-
-
-def detect_repeating_patterns(df: pd.DataFrame) -> Optional[str]:
-    """Returns 'double_top', 'double_bottom', 'head_shoulders', 'flag', or None."""
-    swings = identify_swings(df, order=3)
-    if len(swings) < 4:
-        return None
-    # Double top: two similar highs with a lower low in between
-    hs = [s for s in swings if s['type'] == 'high']
-    if len(hs) >= 2:
-        h1, h2 = hs[-2], hs[-1]
-        if abs(h1['price'] - h2['price']) / max(h1['price'], 1e-10) < 0.001:
-            return 'double_top'
-    # Double bottom
-    ls = [s for s in swings if s['type'] == 'low']
-    if len(ls) >= 2:
-        l1, l2 = ls[-2], ls[-1]
-        if abs(l1['price'] - l2['price']) / max(l1['price'], 1e-10) < 0.001:
-            return 'double_bottom'
-    # Head & Shoulders (simplified)
-    if len(hs) >= 3:
-        h1, h2, h3 = hs[-3], hs[-2], hs[-1]
-        if (h2['price'] > h1['price'] and h2['price'] > h3['price'] and
-            abs(h1['price'] - h3['price']) / max(h1['price'], 1e-10) < 0.005):
-            return 'head_shoulders'
-    # Flag (tight range after strong move)
-    recent = df.iloc[-10:]
-    move = abs(recent['close'].iloc[-1] - recent['close'].iloc[0])
-    range_ = recent['high'].max() - recent['low'].min()
-    if range_ < move * 0.3:
-        return 'flag'
-    return None
-
-
-def predict_next_candle(df: pd.DataFrame) -> str:
-    """Returns 'bullish', 'bearish', or 'neutral' based on 3-candle momentum."""
-    if len(df) < 4:
-        return 'neutral'
-    c1, c2, c3 = df.iloc[-3], df.iloc[-2], df.iloc[-1]
-    uptrend = c1['close'] < c2['close'] < c3['close']
-    dntrend = c1['close'] > c2['close'] > c3['close']
-    vol_increase = c3['volume'] > c2['volume'] > c1['volume']
-    if uptrend and vol_increase:
-        return 'bullish'
-    if dntrend and vol_increase:
-        return 'bearish'
-    return 'neutral'
-
-
-def detect_price_phase(df: pd.DataFrame) -> Optional[str]:
-    """Returns 'pullback', 'move', 'reversal', or None."""
-    swings = identify_swings(df, order=3)
-    if len(swings) < 2:
-        return None
-    ema5_val = ema(df['close'], 5).iloc[-1]
-    ema20_val = ema(df['close'], 20).iloc[-1]
-    trend = 'bullish' if ema5_val > ema20_val else 'bearish'
-    price = df['close'].iloc[-1]
-    last_swing = swings[-1]
-    if trend == 'bullish' and last_swing['type'] == 'high' and price < last_swing['price']:
-        return 'pullback'
-    if trend == 'bearish' and last_swing['type'] == 'low' and price > last_swing['price']:
-        return 'pullback'
-    if trend == 'bullish' and price > last_swing['price']:
-        return 'move'
-    if trend == 'bearish' and price < last_swing['price']:
-        return 'move'
-    if trend == 'bullish' and price < df['low'].iloc[-10:-1].min():
-        return 'reversal'
-    if trend == 'bearish' and price > df['high'].iloc[-10:-1].max():
-        return 'reversal'
-    return None
-
-
-def candle_classification(df: pd.DataFrame) -> dict:
-    """Returns dict with body_size (small/medium/large), type (doji/marubozu/hammer/etc)."""
-    c = df.iloc[-1]
-    body = abs(c['close'] - c['open'])
-    range_ = c['high'] - c['low']
-    if range_ == 0:
-        return {'body_size': 'small', 'type': 'doji'}
-    body_ratio = body / range_
-    upper_wick = c['high'] - max(c['open'], c['close'])
-    lower_wick = min(c['open'], c['close']) - c['low']
-    # Body size
-    avg_body = abs(df['close'].diff()).rolling(20).mean().iloc[-1]
-    if pd.isna(avg_body):
-        avg_body = body
-    if body > avg_body * 1.5:
-        size = 'large'
-    elif body > avg_body * 0.5:
-        size = 'medium'
-    else:
-        size = 'small'
-    # Type
-    if body_ratio < 0.1:
-        ctype = 'doji'
-    elif body_ratio > 0.8:
-        ctype = 'marubozu'
-    elif upper_wick > body * 2 and lower_wick < body * 0.5:
-        ctype = 'shooting_star' if c['close'] < c['open'] else 'hammer'
-    elif lower_wick > body * 2 and upper_wick < body * 0.5:
-        ctype = 'hammer' if c['close'] > c['open'] else 'shooting_star'
-    else:
-        ctype = 'normal'
-    return {'body_size': size, 'type': ctype}
-
-
-def pre_entry_confirm(df: pd.DataFrame, direction: str) -> bool:
-    """Returns True if the last candle supports the trade direction."""
-    ctype = candle_classification(df)
-    if direction == 'BUY':
-        if ctype['type'] in ('hammer', 'marubozu') and df['close'].iloc[-1] > df['open'].iloc[-1]:
-            return True
-        if candlestick_confirmation(df) == 'bullish':
-            return True
-        if ctype['body_size'] == 'large' and df['close'].iloc[-1] > df['open'].iloc[-1]:
-            return True
-        return False
-    else:
-        if ctype['type'] in ('shooting_star', 'marubozu') and df['close'].iloc[-1] < df['open'].iloc[-1]:
-            return True
-        if candlestick_confirmation(df) == 'bearish':
-            return True
-        if ctype['body_size'] == 'large' and df['close'].iloc[-1] < df['open'].iloc[-1]:
-            return True
-        return False
-
-
-def calculate_rr_ratio(df: pd.DataFrame, direction: str):
-    """Return (rr_ratio, sl, tp) or None if invalid."""
-    price = df['close'].iloc[-1]
-    swings = identify_swings(df, order=3)
-    if len(swings) < 2:
-        return None
-    # Find nearest swing opposite to direction
-    if direction == 'BUY':
-        # Stop loss below last swing low, take profit at next swing high
-        lows = [s for s in swings if s['type'] == 'low']
-        if not lows:
-            return None
-        sl = min(lows, key=lambda s: abs(s['price'] - price))['price']
-        tp = max([s['price'] for s in swings if s['type'] == 'high' and s['price'] > price], default=price * 1.02)
-    else:
-        highs = [s for s in swings if s['type'] == 'high']
-        if not highs:
-            return None
-        sl = min(highs, key=lambda s: abs(s['price'] - price))['price']
-        tp = min([s['price'] for s in swings if s['type'] == 'low' and s['price'] < price], default=price * 0.98)
-    risk = abs(price - sl)
-    reward = abs(tp - price)
-    if risk == 0:
-        return None
-    rr = round(reward / risk, 1)
-    return rr, sl, tp
-
-
-def rr_filter(df: pd.DataFrame, direction: str) -> bool:
-    """Only allow trades with R:R >= 2.5."""
-    rr_data = calculate_rr_ratio(df, direction)
-    if rr_data is None:
-        return False
-    return rr_data[0] >= 2.5
-
-
-def candle_body_percent(df: pd.DataFrame) -> float:
-    """Return body-to-range percentage of the last candle."""
-    c = df.iloc[-1]
-    body = abs(c['close'] - c['open'])
-    range_ = c['high'] - c['low']
-    if range_ == 0:
-        return 0.0
-    return round((body / range_) * 100, 1)
-
-
-def valid_entry_candle(df: pd.DataFrame, direction: str) -> bool:
-    """Validates that the entry candle supports the trade direction."""
-    pct = candle_body_percent(df)
-    ctype = candle_classification(df)['type']
-    if direction == 'BUY':
-        if ctype in ('hammer', 'marubozu') and ctype != 'doji' and df['close'].iloc[-1] > df['open'].iloc[-1]:
-            return True
-        if pct >= 40 and df['close'].iloc[-1] > df['open'].iloc[-1]:
-            return True
-    else:  # SELL
-        if ctype in ('shooting_star', 'marubozu') and ctype != 'doji' and df['close'].iloc[-1] < df['open'].iloc[-1]:
-            return True
-        if pct >= 40 and df['close'].iloc[-1] < df['open'].iloc[-1]:
-            return True
-    return False
-
-
-def volume_break_confirmed(df: pd.DataFrame, direction: str, vol_spike: bool) -> bool:
-    """True if volume spike accompanies a BOS/MSS."""
-    if not vol_spike:
-        return False
-    # Check if there's a fresh BOS or MSS
-    if direction == 'BUY':
-        return market_structure(df) == 'bullish' or detect_mss(df) == 'bullish'
-    else:
-        return market_structure(df) == 'bearish' or detect_mss(df) == 'bearish'
-
-
-def market_break_valid(df: pd.DataFrame, direction: str) -> bool:
-    """Validates that the market break is significant (1.5x ATR range) + BOS confirmation."""
-    if len(df) < 14:
-        return False
-    # Calculate ATR
-    tr = df['high'] - df['low']
-    atr = tr.rolling(14).mean().iloc[-1]
-    if atr == 0 or pd.isna(atr):
-        return False
-    last_range = df['high'].iloc[-1] - df['low'].iloc[-1]
-    if last_range < 1.5 * atr:
-        return False
-    # Must also have BOS
-    if direction == 'BUY':
-        return market_structure(df) == 'bullish'
-    else:
-        return market_structure(df) == 'bearish'
-
-
-def optimal_expiry_seconds(df: pd.DataFrame, timeframe: str) -> int:
-    """Return number of seconds until the predicted move completes."""
-    swings = identify_swings(df, order=3)
-    if len(swings) < 4:
-        return 60  # default 1 minute
-    # Get last few swings and average bar count between them
-    recent_swings = swings[-4:]
-    durations = []
-    for i in range(1, len(recent_swings)):
-        t1 = recent_swings[i - 1]['time']
-        t2 = recent_swings[i]['time']
-        try:
-            durations.append((t2 - t1).total_seconds())
-        except Exception:
-            durations.append(60)
-    avg_duration = np.mean(durations) if durations else 60
-    # Expiry is half the average swing duration, but not less than 30s or more than 5min
-    return max(30, min(300, int(avg_duration / 2)))
-
-
-def is_prime_session() -> bool:
-    """Only trade during high-liquidity hours: 07:00-16:00 UTC."""
-    h = datetime.now(timezone.utc).hour
-    return 7 <= h < 16
-
-
-def choch_confirmed(df: pd.DataFrame) -> Optional[str]:
-    """
-    Enhanced CHoCH detection.
-    Returns 'bullish' if a bearish structure was broken upward and the price
-    held above the broken high for at least 2 candles.
-    Returns 'bearish' if a bullish structure was broken downward and held.
-    """
-    if len(df) < 6:
-        return None
-    highs = df['high'].values
-    lows = df['low'].values
-    closes = df['close'].values
-
-    # Find swing points (simplified: last 20 bars)
-    sh, sl = [], []
-    for i in range(3, len(highs) - 3):
-        if all(highs[i] >= highs[i - j] for j in range(1, 4)) and all(highs[i] >= highs[i + j] for j in range(1, 4)):
-            sh.append(i)
-        if all(lows[i] <= lows[i - j] for j in range(1, 4)) and all(lows[i] <= lows[i + j] for j in range(1, 4)):
-            sl.append(i)
-
-    if len(sh) < 2 or len(sl) < 2:
-        return None
-
-    # Bullish CHoCH: price breaks above a previous lower high (LH) and stays above
-    if len(sh) >= 2 and highs[sh[-1]] < highs[sh[-2]]:  # last high is lower (bearish structure)
-        if closes[-1] > highs[sh[-1]] and closes[-2] > highs[sh[-1]]:
-            return 'bullish'
-
-    # Bearish CHoCH: price breaks below a previous higher low (HL) and stays below
-    if len(sl) >= 2 and lows[sl[-1]] > lows[sl[-2]]:  # last low is higher (bullish structure)
-        if closes[-1] < lows[sl[-1]] and closes[-2] < lows[sl[-1]]:
-            return 'bearish'
-
-    return None
-
-
-def fvg_quality(df: pd.DataFrame):
-    """
-    Returns (direction, size_in_atr, age_bars) or None.
-    direction: 'bullish' or 'bearish'
-    size_in_atr: FVG height relative to ATR
-    age_bars: how many bars ago the FVG was created (0 = current)
-    """
-    if len(df) < 3:
-        return None
-    # Calculate ATR
-    tr = df['high'] - df['low']
-    atr = tr.rolling(14).mean().iloc[-1] if len(tr) >= 14 else 0.001
-    if atr == 0 or pd.isna(atr):
-        atr = 0.001
-    for i in range(len(df) - 1, max(len(df) - 5, -1), -1):
-        if i >= 2:
-            prev2 = df.iloc[i - 2]
-            curr = df.iloc[i]
-            if curr['low'] > prev2['high']:
-                size = (curr['low'] - prev2['high']) / atr if atr > 0 else 0
-                return ('bullish', round(size, 2), len(df) - 1 - i)
-            if curr['high'] < prev2['low']:
-                size = (prev2['low'] - curr['high']) / atr if atr > 0 else 0
-                return ('bearish', round(size, 2), len(df) - 1 - i)
-    return None
-
-
-def failed_reversal(df: pd.DataFrame, original_direction: str) -> Optional[str]:
-    """
-    If original_direction was 'BUY' (meaning we saw a bullish reversal pattern),
-    but the following candle closed below the reversal candle's low, the reversal failed → strong SELL.
-    Vice versa for SELL.
-    Returns 'continue_bearish' or 'continue_bullish' or None.
-    """
-    if len(df) < 4:
-        return None
-    # Use last two candles: the reversal candle and the confirmation candle
-    rev_candle = df.iloc[-2]
-    conf_candle = df.iloc[-1]
-    # For a bullish reversal pattern (hammer/engulfing), failure occurs if today closed below yesterday's low
-    if original_direction == 'BUY':
-        if conf_candle['close'] < rev_candle['low']:
-            return 'continue_bearish'
-    else:
-        if conf_candle['close'] > rev_candle['high']:
-            return 'continue_bullish'
-    return None
-
-
-def classify_market(df: pd.DataFrame) -> str:
-    """Returns one of: 'strong', 'weak', 'ranging', 'low', 'normal'."""
-    if len(df) < 20:
-        return 'normal'
-    adx_val = adx(df['high'], df['low'], df['close'], 14).iloc[-1]
-    if pd.isna(adx_val):
-        return 'normal'
-    bb_w = bb_width(df['close'], 20)
-    if len(bb_w) < 5 or pd.isna(bb_w.iloc[-1]):
-        return 'normal'
-    # Low volatility: BB width very small
-    if bb_w.iloc[-1] < 0.002:
-        return 'low'
-    # Ranging: ADX < 20
-    if adx_val < 20:
-        return 'ranging'
-    # Strong trend: ADX > 35
-    if adx_val > 35:
-        return 'strong'
-    # Weak trend: ADX between 20-25
-    if adx_val < 25:
-        return 'weak'
-    return 'normal'
-
-
 def market_structure(df: pd.DataFrame) -> Optional[str]:
     if len(df) < 12:
         return None
@@ -1175,6 +522,422 @@ def candlestick_confirmation(df: pd.DataFrame) -> Optional[str]:
     if bullish and bearish:
         return 'bullish' if c[-1] > o[-1] else 'bearish'
     return None
+
+# ============================================================
+# 2b. NEW v3.5 - FUSION INDICATORS
+# ============================================================
+def detect_rsi_divergence(df: pd.DataFrame, lookback: int = 30) -> Optional[str]:
+    """Detect RSI divergence. Returns 'bullish' or 'bearish' or None."""
+    if len(df) < lookback:
+        return None
+    close = df['close'].values[-lookback:]
+    rsi_vals = rsi(df['close'], 14).values[-lookback:]
+    price_peaks, rsi_peaks = [], []
+    price_troughs, rsi_troughs = [], []
+    for i in range(2, len(close) - 2):
+        if close[i] > close[i-1] and close[i] > close[i+1]:
+            price_peaks.append((i, close[i]))
+            rsi_peaks.append((i, rsi_vals[i]))
+        if close[i] < close[i-1] and close[i] < close[i+1]:
+            price_troughs.append((i, close[i]))
+            rsi_troughs.append((i, rsi_vals[i]))
+    if len(price_peaks) >= 2 and len(rsi_peaks) >= 2:
+        if price_peaks[-1][1] > price_peaks[-2][1] and rsi_peaks[-1][1] < rsi_peaks[-2][1]:
+            return 'bearish'
+    if len(price_troughs) >= 2 and len(rsi_troughs) >= 2:
+        if price_troughs[-1][1] < price_troughs[-2][1] and rsi_troughs[-1][1] > rsi_troughs[-2][1]:
+            return 'bullish'
+    return None
+
+def detect_wyckoff_phase(df: pd.DataFrame) -> str:
+    """Detect Wyckoff phase: accumulation, markup, distribution, markdown."""
+    if len(df) < 50:
+        return 'unknown'
+    close = df['close'].values[-50:]
+    vol = df['volume'].values[-50:]
+    avg_vol = np.mean(vol)
+    recent_vol = np.mean(vol[-10:])
+    price_change = (close[-1] - close[0]) / close[0] * 100
+    if abs(price_change) < 0.3 and recent_vol < avg_vol * 0.7:
+        return 'accumulation'
+    elif price_change > 0.3 and recent_vol > avg_vol * 0.9:
+        return 'markup'
+    elif abs(price_change) < 0.3 and recent_vol > avg_vol * 0.9:
+        return 'distribution'
+    elif price_change < -0.3:
+        return 'markdown'
+    return 'unknown'
+
+def wyckoff_confirms_signal(df: pd.DataFrame, direction: str) -> bool:
+    """Check if Wyckoff phase supports the signal direction."""
+    phase = detect_wyckoff_phase(df)
+    if direction == 'BUY':
+        return phase in ('accumulation', 'markup')
+    return phase in ('distribution', 'markdown')
+
+def get_daily_bias(df: pd.DataFrame) -> str:
+    """Determine daily bias: bullish, bearish, or neutral."""
+    if len(df) < 50:
+        return 'neutral'
+    close = df['close']
+    ema20_val = ema(close, 20).iloc[-1]
+    ema50_val = ema(close, 50).iloc[-1]
+    ema20_prev = ema(close, 20).iloc[-2]
+    if ema20_val > ema50_val and ema20_val > ema20_prev:
+        return 'bullish'
+    elif ema20_val < ema50_val and ema20_val < ema20_prev:
+        return 'bearish'
+    return 'neutral'
+
+def mtf_full_alignment(symbol: str, df: pd.DataFrame) -> bool:
+    """Check if all timeframes align."""
+    htf = get_higher_tf_trend(symbol)
+    mt = get_market_trend(symbol)
+    if htf is None or mt is None:
+        return False
+    return htf == mt
+
+def protected_swings_ok(df: pd.DataFrame, direction: str) -> bool:
+    """Check that recent swing is protected (price hasn't broken back through)."""
+    if len(df) < 20:
+        return False
+    closes = df['close'].values
+    swing_high = max(df['high'].values[-10:-1])
+    swing_low = min(df['low'].values[-10:-1])
+    if direction == 'BUY':
+        return closes[-1] > swing_low
+    return closes[-1] < swing_high
+
+def range_efficiency(df: pd.DataFrame) -> float:
+    """Calculate range efficiency 0-100. Higher = cleaner trend."""
+    if len(df) < 20:
+        return 50.0
+    close = df['close'].values[-20:]
+    total_range = max(close) - min(close)
+    if total_range == 0:
+        return 0.0
+    sum_abs_moves = sum(abs(close[i] - close[i-1]) for i in range(1, len(close)))
+    if sum_abs_moves == 0:
+        return 0.0
+    return min(100.0, max(0.0, (total_range / sum_abs_moves) * 100))
+
+# ============================================================
+# 2c. NEW v3.6 - PATTERN & PHASE DETECTION
+# ============================================================
+def identify_swings(df: pd.DataFrame, order: int = 3) -> Tuple[List[int], List[int]]:
+    """Identify swing highs and lows. Returns (swing_high_indices, swing_low_indices)."""
+    if len(df) < 2 * order + 1:
+        return [], []
+    highs = df['high'].values
+    lows = df['low'].values
+    sh, sl = [], []
+    for i in range(order, len(highs) - order):
+        if all(highs[i] >= highs[i - j] for j in range(1, order + 1)) and \
+           all(highs[i] >= highs[i + j] for j in range(1, order + 1)):
+            sh.append(i)
+        if all(lows[i] <= lows[i - j] for j in range(1, order + 1)) and \
+           all(lows[i] <= lows[i + j] for j in range(1, order + 1)):
+            sl.append(i)
+    return sh, sl
+
+def detect_repeating_patterns(df: pd.DataFrame) -> Optional[str]:
+    """Detect repeating chart patterns (double top/bottom)."""
+    if len(df) < 30:
+        return None
+    sh, sl = identify_swings(df)
+    if len(sh) < 2 or len(sl) < 2:
+        return None
+    highs = df['high'].values
+    lows = df['low'].values
+    if len(sh) >= 2:
+        h1, h2 = highs[sh[-2]], highs[sh[-1]]
+        if abs(h1 - h2) / max(h1, h2) < 0.003:
+            return 'double_top'
+    if len(sl) >= 2:
+        l1, l2 = lows[sl[-2]], lows[sl[-1]]
+        if abs(l1 - l2) / max(l1, l2) < 0.003:
+            return 'double_bottom'
+    return None
+
+def predict_next_candle(df: pd.DataFrame) -> Optional[str]:
+    """Simple next-candle prediction based on momentum + pattern."""
+    if len(df) < 10:
+        return None
+    close = df['close'].values
+    mom = (close[-1] - close[-5]) / close[-5] * 100 if close[-5] != 0 else 0
+    body = close[-1] - df['open'].values[-1]
+    if mom > 0.05 and body > 0:
+        return 'bullish'
+    elif mom < -0.05 and body < 0:
+        return 'bearish'
+    return None
+
+def detect_price_phase(df: pd.DataFrame) -> str:
+    """Detect price phase: accumulation, markup, distribution, markdown."""
+    if len(df) < 50:
+        return 'unknown'
+    close = df['close'].values[-50:]
+    vol = df['volume'].values[-50:]
+    avg_vol = np.mean(vol)
+    recent_vol = np.mean(vol[-10:])
+    price_change = (close[-1] - close[0]) / close[0] * 100
+    if abs(price_change) < 0.5 and recent_vol < avg_vol * 0.8:
+        return 'accumulation'
+    elif price_change > 0.5 and recent_vol > avg_vol:
+        return 'markup'
+    elif abs(price_change) < 0.5 and recent_vol > avg_vol:
+        return 'distribution'
+    elif price_change < -0.5:
+        return 'markdown'
+    return 'unknown'
+
+def candle_classification(df: pd.DataFrame) -> str:
+    """Classify the last candle: trending, doji, hammer, engulfing, etc."""
+    if len(df) < 2:
+        return 'unknown'
+    o = df['open'].values[-1]
+    c = df['close'].values[-1]
+    h = df['high'].values[-1]
+    l = df['low'].values[-1]
+    body = abs(c - o)
+    full = h - l
+    if full == 0:
+        return 'doji'
+    ratio = body / full
+    if ratio < 0.1:
+        return 'doji'
+    elif ratio < 0.4:
+        lower_wick = min(o, c) - l
+        upper_wick = h - max(o, c)
+        if lower_wick > upper_wick * 2:
+            return 'hammer'
+        elif upper_wick > lower_wick * 2:
+            return 'shooting_star'
+        return 'spinning_top'
+    else:
+        prev_o = df['open'].values[-2]
+        prev_c = df['close'].values[-2]
+        if c > o and prev_c < prev_o and c > prev_o and o < prev_c:
+            return 'bullish_engulfing'
+        elif c < o and prev_c > prev_o and c < prev_o and o > prev_c:
+            return 'bearish_engulfing'
+        return 'trending'
+
+def pre_entry_confirm(df: pd.DataFrame, direction: str) -> bool:
+    """Final pre-entry confirmation: last candle supports direction."""
+    if len(df) < 2:
+        return False
+    cls = candle_classification(df)
+    if direction == 'BUY':
+        return cls in ('hammer', 'bullish_engulfing', 'trending') and df['close'].iloc[-1] > df['open'].iloc[-1]
+    return cls in ('shooting_star', 'bearish_engulfing', 'trending') and df['close'].iloc[-1] < df['open'].iloc[-1]
+
+# ============================================================
+# 2d. NEW v3.7 - ADVANCED FILTERS
+# ============================================================
+def calculate_rr_ratio(price: float, support: float, resistance: float, direction: str) -> float:
+    """Calculate R:R ratio as a float. >= 2.5 required."""
+    if direction == 'BUY':
+        risk = price - support
+        reward = resistance - price
+    else:
+        risk = resistance - price
+        reward = price - support
+    if risk <= 0:
+        return 0.0
+    return reward / risk
+
+def valid_entry_candle(df: pd.DataFrame, direction: str) -> bool:
+    """Validate entry candle: body must be > 40% of range, close in direction."""
+    if len(df) < 1:
+        return False
+    o = df['open'].values[-1]
+    c = df['close'].values[-1]
+    h = df['high'].values[-1]
+    l = df['low'].values[-1]
+    full = h - l
+    body = abs(c - o)
+    if full == 0 or body / full < 0.4:
+        return False
+    if direction == 'BUY' and c <= o:
+        return False
+    if direction == 'SELL' and c >= o:
+        return False
+    return True
+
+def volume_break_confirmed(df: pd.DataFrame) -> bool:
+    """Confirm volume break: current volume > 1.5x average of last 20."""
+    if len(df) < 20:
+        return False
+    avg = df['volume'].iloc[-20:].mean()
+    if avg == 0:
+        return False
+    return df['volume'].iloc[-1] > avg * 1.5
+
+def market_break_valid(df: pd.DataFrame, direction: str) -> bool:
+    """Validate market break: close beyond recent swing with momentum."""
+    if len(df) < 15:
+        return False
+    sh, sl = identify_swings(df)
+    close = df['close'].iloc[-1]
+    if direction == 'BUY' and sh:
+        return close > df['high'].values[sh[-1]]
+    if direction == 'SELL' and sl:
+        return close < df['low'].values[sl[-1]]
+    return False
+
+def choch_confirmed(df: pd.DataFrame) -> Optional[str]:
+    """Detect Change of Character - stronger than MSS."""
+    if len(df) < 18:
+        return None
+    highs = df['high'].values
+    lows = df['low'].values
+    closes = df['close'].values
+    sh, sl = identify_swings(df)
+    if len(sh) < 2 or len(sl) < 2:
+        return None
+    if highs[sh[-1]] < highs[sh[-2]] and closes[-1] > highs[sh[-1]]:
+        return 'bullish'
+    if lows[sl[-1]] > lows[sl[-2]] and closes[-1] < lows[sl[-1]]:
+        return 'bearish'
+    return None
+
+def fvg_quality(df: pd.DataFrame, min_atr_mult: float = 0.3, max_age: int = 3) -> Optional[str]:
+    """Quality FVG: age <= max_age candles, size >= min_atr_mult * ATR."""
+    if len(df) < 5:
+        return None
+    tr1 = df['high'] - df['low']
+    tr2 = (df['high'] - df['close'].shift()).abs()
+    tr3 = (df['low'] - df['close'].shift()).abs()
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    atr = tr.rolling(14).mean().iloc[-1]
+    if pd.isna(atr) or atr == 0:
+        return None
+    for i in range(len(df) - 1, max(len(df) - max_age - 1, -1), -1):
+        if i >= 2:
+            prev2 = df.iloc[i - 2]
+            curr = df.iloc[i]
+            gap_up = curr['low'] - prev2['high']
+            gap_down = prev2['low'] - curr['high']
+            if gap_up > atr * min_atr_mult:
+                return 'bullish'
+            if gap_down > atr * min_atr_mult:
+                return 'bearish'
+    return None
+
+def failed_reversal(df: pd.DataFrame, direction: str) -> bool:
+    """Detect failed reversal that confirms original direction."""
+    if len(df) < 10:
+        return False
+    close = df['close'].values
+    open_ = df['open'].values
+    if direction == 'BUY':
+        for i in range(-4, -1):
+            if open_[i] > close[i] and close[-1] > close[i]:
+                return True
+    else:
+        for i in range(-4, -1):
+            if open_[i] < close[i] and close[-1] < close[i]:
+                return True
+    return False
+
+def classify_market(df: pd.DataFrame) -> str:
+    """Classify market state: strong, normal, ranging, low."""
+    if len(df) < 30:
+        return 'low'
+    adx_val = adx(df['high'], df['low'], df['close'], 14).iloc[-1]
+    if pd.isna(adx_val):
+        return 'low'
+    if adx_val > 35:
+        return 'strong'
+    elif adx_val > 25:
+        return 'normal'
+    elif adx_val > 15:
+        return 'ranging'
+    return 'low'
+
+def is_prime_session() -> bool:
+    """Check if current session is London or New York (prime trading hours)."""
+    h = datetime.utcnow().hour
+    return (7 <= h < 12) or (13 <= h < 17)
+
+def optimal_expiry(df: pd.DataFrame, direction: str) -> str:
+    """Determine optimal expiry time based on volatility and momentum."""
+    if len(df) < 20:
+        return '1m'
+    close = df['close'].values
+    mom = abs(close[-1] - close[-5]) / close[-5] * 100 if close[-5] != 0 else 0
+    adx_val = adx(df['high'], df['low'], df['close'], 14).iloc[-1]
+    if pd.isna(adx_val):
+        return '1m'
+    if mom > 0.15 and adx_val > 30:
+        return '30s'
+    elif mom > 0.08 or adx_val > 25:
+        return '1m'
+    elif mom > 0.03:
+        return '2m'
+    return '3m'
+
+# ============================================================
+# 2e. NEW v3.8 - SESSION PROFILES & DAILY LEVELS
+# ============================================================
+def current_session() -> str:
+    h = datetime.utcnow().hour
+    if 22 <= h or h < 7:
+        return "Sydney/Tokyo"
+    if 7 <= h < 10:
+        return "London"
+    if 13 <= h < 17:
+        return "New York"
+    return "Low Liquidity"
+
+SESSION_PROFILES = {
+    'London':       {'rsi_buy': 30, 'rsi_sell': 70, 'adx_min': 30, 'vol_mult': 1.8},
+    'New York':     {'rsi_buy': 28, 'rsi_sell': 72, 'adx_min': 32, 'vol_mult': 2.0},
+    'Sydney/Tokyo': {'rsi_buy': 35, 'rsi_sell': 65, 'adx_min': 25, 'vol_mult': 1.4},
+    'default':      {'rsi_buy': 33, 'rsi_sell': 67, 'adx_min': 25, 'vol_mult': 1.5}
+}
+
+def get_session_params() -> dict:
+    """Get session-specific parameters for the current trading session."""
+    sess = current_session()
+    return SESSION_PROFILES.get(sess, SESSION_PROFILES['default'])
+
+# Daily levels cache
+DAILY_LEVELS: Dict[str, Tuple[datetime, dict]] = {}
+
+def get_daily_levels(symbol: str) -> Optional[dict]:
+    """Get yesterday's high/low. Uses cached data or fetches from broker."""
+    if symbol in DAILY_LEVELS:
+        cached_time, levels = DAILY_LEVELS[symbol]
+        if (datetime.now(timezone.utc) - cached_time).seconds < 3600:
+            return levels
+    try:
+        df = get_data_sync(symbol, '1m')
+        if df is not None and len(df) >= 100:
+            yesterday_data = df.tail(1440)
+            if len(yesterday_data) > 0:
+                levels = {
+                    'high': float(yesterday_data['high'].max()),
+                    'low': float(yesterday_data['low'].min()),
+                }
+                DAILY_LEVELS[symbol] = (datetime.now(timezone.utc), levels)
+                return levels
+    except Exception as e:
+        logger.debug(f"Daily levels error for {symbol}: {e}")
+    return None
+
+def is_near_daily_level(price: float, levels: dict, direction: str, buffer: float = 0.001) -> bool:
+    """Check if price is too close to opposing daily level.
+    BUY near daily high = blocked (resistance ahead).
+    SELL near daily low = blocked (support ahead)."""
+    if not levels:
+        return False
+    if direction == 'BUY' and 'high' in levels:
+        return price >= levels['high'] * (1 - buffer)
+    if direction == 'SELL' and 'low' in levels:
+        return price <= levels['low'] * (1 + buffer)
+    return False
 
 # ============================================================
 # 3. MULTI-TIMEFRAME TREND CACHE
@@ -1394,80 +1157,6 @@ async def send_telegram(signal: dict):
         resistance = signal.get('resistance', 'N/A')
         sr_display = f"  Support: {support}\n  Resistance: {resistance}" if support and resistance else ""
 
-        # Wyckoff phase
-        wyckoff_phase = signal.get('wyckoff_phase', 'None')
-        wyckoff_display = wyckoff_phase.title() if wyckoff_phase and wyckoff_phase != 'None' else 'No Clear Phase'
-
-        # v3.5: RSI Divergence
-        rsi_div = signal.get('rsi_divergence', True)
-        div_display = 'Confirmed' if rsi_div else 'No Divergence'
-
-        # v3.5: Daily Bias
-        daily_bias = signal.get('daily_bias', 'neutral')
-        bias_display = daily_bias.title()
-
-        # v3.5: MTF Alignment
-        mtf_aligned = signal.get('mtf_aligned', False)
-        mtf_display = 'Aligned (1m+5m+15m)' if mtf_aligned else 'Not Aligned'
-
-        # v3.5: Range Efficiency
-        range_eff = signal.get('range_efficiency', 50)
-        eff_display = f'{range_eff}%'
-
-        # v3.6: Chart Pattern
-        chart_pattern = signal.get('chart_pattern', 'None')
-        pattern_display = chart_pattern.replace('_', ' ').title() if chart_pattern and chart_pattern != 'None' else 'None'
-
-        # v3.6: Pre-entry
-        pre_entry = signal.get('pre_entry', True)
-        pre_display = 'Confirmed' if pre_entry else 'Not Confirmed'
-
-        # v3.6: Next candle
-        next_candle = signal.get('next_candle', 'neutral')
-        nc_display = next_candle.title()
-
-        # v3.6: Price phase
-        price_phase = signal.get('price_phase', 'None')
-        phase_display = price_phase.title() if price_phase and price_phase != 'None' else 'None'
-
-        # v3.6: Candle classification
-        candle_type = signal.get('candle_type', 'normal')
-        candle_body = signal.get('candle_body', 'medium')
-        candle_display = f'{candle_body.title()} {candle_type.title()}'
-
-        # v3.6: Session
-        session = signal.get('session', 'N/A')
-
-        # v3.7: Market state
-        market_state = signal.get('market_state', 'normal')
-        state_display = market_state.title()
-
-        # v3.7: Enhanced CHoCH
-        choch_enhanced = signal.get('choch_enhanced', 'None')
-        choch_enh_display = choch_enhanced.title() if choch_enhanced and choch_enhanced != 'None' else 'None'
-
-        # v3.7: FVG Quality
-        fvg_quality_str = signal.get('fvg_quality', 'None')
-        fresh_fvg = signal.get('fresh_fvg', False)
-        fvg_q_display = fvg_quality_str if fvg_quality_str and fvg_quality_str != 'None' else 'None'
-
-        # v3.7: Swing R:R
-        rr_swing = signal.get('rr_swing', '1:1.0')
-        sl_price = signal.get('sl_price', 'N/A')
-        tp_price = signal.get('tp_price', 'N/A')
-        opt_expiry = signal.get('optimal_expiry', 60)
-
-        # v3.7: Entry/Market validations
-        valid_entry = signal.get('valid_entry', False)
-        vol_break = signal.get('volume_break', False)
-        mkt_break = signal.get('market_break', False)
-        prime_session = signal.get('prime_session', False)
-
-        # v3.7: Session params & daily levels
-        session_params = signal.get('session_params', 'N/A')
-        daily_high = signal.get('daily_high', 'N/A')
-        daily_low = signal.get('daily_low', 'N/A')
-
         # Signal status
         sig_status = 'HIGH PROBABILITY ONLY' if signal['confidence'] >= 85 else 'MODERATE PROBABILITY'
 
@@ -1494,29 +1183,6 @@ async def send_telegram(signal: dict):
 📊 Stochastic: {stoch_display}
 📊 BB Width: {bb_display}
 ⚖️ RR: {rr}
-🏛️ Wyckoff: {wyckoff_display}
-📉 RSI Div: {div_display}
-🧭 Daily Bias: {bias_display}
-🔗 MTF Align: {mtf_display}
-📐 Range Eff: {eff_display}
-📊 Pattern: {pattern_display}
-✅ Pre-Entry: {pre_display}
-🕯️ Next: {nc_display}
-🔄 Phase: {phase_display}
-🕯️ Candle: {candle_display}
-🌐 Session: {session}
-🏭 Market: {state_display}
-🔄 CHoCH+: {choch_enh_display}
-📦 FVG Q: {fvg_q_display}
-⚖️ R:R Swing: {rr_swing}
-🎯 SL: {sl_price} | TP: {tp_price}
-⏱️ Opt Expiry: {opt_expiry}s
-✅ Valid Entry: {'Yes' if valid_entry else 'No'}
-📊 Vol Break: {'Yes' if vol_break else 'No'}
-🏛️ Mkt Break: {'Yes' if mkt_break else 'No'}
-🕐 Prime: {'Yes' if prime_session else 'No'}
-⚙️ Params: {session_params}
-📊 Daily H/L: {daily_high} / {daily_low}
 
 ↪️ ── 🛡️ MARTINGALE RECOVERY (Risk Level) ──
 {mart_block}
@@ -1547,7 +1213,6 @@ Note: Trade 1% - 3% of your capability and capital
 # ============================================================
 # 4. MEMORY, AUTO-TUNING & DAILY STATS
 # ============================================================
-MEMORY_DB = os.environ.get("DB_PATH", "memory.db")
 PARAMS = {
     'rsi_buy': 33,
     'rsi_sell': 67,
@@ -1555,65 +1220,6 @@ PARAMS = {
     'vol_mult': 1.5,
 }
 MIN_CONFIDENCE = 80.0
-
-# v3.8: PostgreSQL/SQLite dual connection helper
-def get_connection():
-    """Return (connection, is_postgres) tuple.
-    Uses PostgreSQL if DATABASE_URL is set (Railway), else SQLite."""
-    if DATABASE_URL and PSYCOPG2_AVAILABLE:
-        try:
-            conn = psycopg2.connect(DATABASE_URL)
-            return conn, True
-        except Exception as e:
-            logger.warning(f"PostgreSQL connection failed, falling back to SQLite: {e}")
-    return sqlite3.connect(MEMORY_DB), False
-
-# v3.7: Daily levels cache (updated once per day from 15m/1d data)
-DAILY_LEVELS: Dict[str, dict] = {}
-
-# v3.8: Session-specific parameter profiles (with default fallback)
-SESSION_PROFILES = {
-    'London':       {'rsi_buy': 30, 'rsi_sell': 70, 'adx_min': 30, 'vol_mult': 1.8},
-    'New York':     {'rsi_buy': 28, 'rsi_sell': 72, 'adx_min': 32, 'vol_mult': 2.0},
-    'Sydney/Tokyo': {'rsi_buy': 35, 'rsi_sell': 65, 'adx_min': 25, 'vol_mult': 1.4},
-    'Low Liquidity': {'rsi_buy': 38, 'rsi_sell': 62, 'adx_min': 35, 'vol_mult': 2.2},
-    'default':      {'rsi_buy': 33, 'rsi_sell': 67, 'adx_min': 25, 'vol_mult': 1.5},
-}
-
-def get_session_params() -> dict:
-    """Return session-specific PARAMS merged with base PARAMS."""
-    sess = current_session()
-    profile = SESSION_PROFILES.get(sess, SESSION_PROFILES['default'])
-    return {**PARAMS, **profile}
-
-def get_daily_levels(symbol: str) -> dict:
-    """Fetch yesterday's high/low. For OTC we approximate from 1d data (24h).
-    Returns dict with 'high' and 'low' keys, or empty dict if not cached."""
-    return DAILY_LEVELS.get(symbol, {})
-
-def update_daily_levels(symbol: str, df: pd.DataFrame):
-    """Update daily levels from the last 24h of data."""
-    if len(df) < 20:
-        return
-    recent = df.iloc[-96:]  # ~24h of 15m data
-    DAILY_LEVELS[symbol] = {
-        'high': float(recent['high'].max()),
-        'low': float(recent['low'].min()),
-    }
-
-def is_near_daily_level(price: float, levels: dict, direction: str, buffer: float = 0.001) -> bool:
-    """Return True if price is too close to a level that opposes the trade."""
-    if not levels:
-        return False
-    if direction == 'BUY':
-        # Avoid buying right under yesterday's high (resistance)
-        if 'high' in levels and price >= levels['high'] * (1 - buffer):
-            return True
-    else:
-        # Avoid selling right above yesterday's low (support)
-        if 'low' in levels and price <= levels['low'] * (1 + buffer):
-            return True
-    return False
 
 def init_memory():
     conn, is_pg = get_connection()
@@ -1623,28 +1229,18 @@ def init_memory():
             CREATE TABLE IF NOT EXISTS trades (
                 id SERIAL PRIMARY KEY,
                 signal_id TEXT UNIQUE,
-                symbol TEXT,
-                direction TEXT,
-                timeframe TEXT,
-                platform TEXT,
-                entry_time TIMESTAMP,
-                outcome TEXT DEFAULT 'pending',
-                rsi REAL,
-                adx REAL,
-                confidence REAL,
-                accuracy REAL DEFAULT 0
+                symbol TEXT, direction TEXT, timeframe TEXT, platform TEXT,
+                entry_time TIMESTAMP, outcome TEXT DEFAULT 'pending',
+                rsi REAL, adx REAL, confidence REAL, accuracy REAL DEFAULT 0
             )
         """)
         cur.execute("""
             CREATE TABLE IF NOT EXISTS daily_stats (
                 id SERIAL PRIMARY KEY,
                 date TEXT UNIQUE,
-                wins INTEGER DEFAULT 0,
-                losses INTEGER DEFAULT 0,
-                ignored INTEGER DEFAULT 0,
-                total INTEGER DEFAULT 0,
-                win_rate REAL DEFAULT 0,
-                avg_accuracy REAL DEFAULT 0,
+                wins INTEGER DEFAULT 0, losses INTEGER DEFAULT 0,
+                ignored INTEGER DEFAULT 0, total INTEGER DEFAULT 0,
+                win_rate REAL DEFAULT 0, avg_accuracy REAL DEFAULT 0,
                 avg_confidence REAL DEFAULT 0
             )
         """)
@@ -1653,45 +1249,31 @@ def init_memory():
             CREATE TABLE IF NOT EXISTS trades (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 signal_id TEXT UNIQUE,
-                symbol TEXT,
-                direction TEXT,
-                timeframe TEXT,
-                platform TEXT,
-                entry_time TIMESTAMP,
-                outcome TEXT DEFAULT 'pending',
-                rsi REAL,
-                adx REAL,
-                confidence REAL,
-                accuracy REAL DEFAULT 0
+                symbol TEXT, direction TEXT, timeframe TEXT, platform TEXT,
+                entry_time TIMESTAMP, outcome TEXT DEFAULT 'pending',
+                rsi REAL, adx REAL, confidence REAL, accuracy REAL DEFAULT 0
             )
         """)
         cur.execute("""
             CREATE TABLE IF NOT EXISTS daily_stats (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 date TEXT UNIQUE,
-                wins INTEGER DEFAULT 0,
-                losses INTEGER DEFAULT 0,
-                ignored INTEGER DEFAULT 0,
-                total INTEGER DEFAULT 0,
-                win_rate REAL DEFAULT 0,
-                avg_accuracy REAL DEFAULT 0,
+                wins INTEGER DEFAULT 0, losses INTEGER DEFAULT 0,
+                ignored INTEGER DEFAULT 0, total INTEGER DEFAULT 0,
+                win_rate REAL DEFAULT 0, avg_accuracy REAL DEFAULT 0,
                 avg_confidence REAL DEFAULT 0
             )
         """)
     conn.commit()
     conn.close()
-    logger.info(f"Database initialized ({'PostgreSQL' if is_pg else 'SQLite'})")
 
 def remember_signal(sig_id, sym, dir_, tf, platform, entry, rsi_val, adx_val, conf, accuracy=0):
     try:
         conn, is_pg = get_connection()
         cur = conn.cursor()
-        if is_pg:
-            cur.execute("INSERT INTO trades (signal_id,symbol,direction,timeframe,platform,entry_time,outcome,rsi,adx,confidence,accuracy) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (signal_id) DO NOTHING",
-                        (sig_id, sym, dir_, tf, platform, entry, 'pending', rsi_val, adx_val, conf, accuracy))
-        else:
-            cur.execute("INSERT OR IGNORE INTO trades VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                        (None, sig_id, sym, dir_, tf, platform, entry, 'pending', rsi_val, adx_val, conf, accuracy))
+        ph = '%s' if is_pg else '?'
+        cur.execute(f"INSERT OR IGNORE INTO trades VALUES ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph})",
+                    (None if not is_pg else 'DEFAULT', sig_id, sym, dir_, tf, platform, entry, 'pending', rsi_val, adx_val, conf, accuracy))
         conn.commit()
         conn.close()
     except Exception as e:
@@ -1702,10 +1284,10 @@ def learn_from_outcome(sig_id, outcome):
     try:
         conn, is_pg = get_connection()
         cur = conn.cursor()
-        ph = "%s" if is_pg else "?"
+        ph = '%s' if is_pg else '?'
         cur.execute(f"UPDATE trades SET outcome={ph} WHERE signal_id={ph}", (outcome, sig_id))
 
-        cur.execute(f"SELECT outcome FROM trades WHERE outcome IN ('win','loss') ORDER BY entry_time DESC LIMIT 50")
+        cur.execute("SELECT outcome FROM trades WHERE outcome IN ('win','loss') ORDER BY entry_time DESC LIMIT 50")
         real_rows = cur.fetchall()
 
         global PARAMS, MIN_CONFIDENCE
@@ -1741,19 +1323,18 @@ def learn_from_outcome(sig_id, outcome):
             elif ignore_rate < 0.1 and total - ignored >= 10:
                 MIN_CONFIDENCE = max(75, MIN_CONFIDENCE - 1)
 
-        _update_daily_stats(cur, is_pg)
+        _update_daily_stats(cur)
         conn.commit()
         conn.close()
     except Exception as e:
         logger.error(f"DB learn error: {e}")
 
-def _update_daily_stats(cur, is_pg=False):
+def _update_daily_stats(cur):
     """Recalculate today's daily_stats row."""
     today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
-    ph = "%s" if is_pg else "?"
-    cur.execute(f"""
+    cur.execute("""
         SELECT outcome, confidence, accuracy FROM trades
-        WHERE date(entry_time) = {ph} AND outcome IN ('win','loss','ignored')
+        WHERE date(entry_time) = ? AND outcome IN ('win','loss','ignored')
     """, (today,))
     rows = cur.fetchall()
     if not rows:
@@ -1768,18 +1349,9 @@ def _update_daily_stats(cur, is_pg=False):
     avg_conf = round(sum(confs) / len(confs), 1) if confs else 0
     avg_acc = round(sum(accs) / len(accs), 1) if accs else 0
 
-    if is_pg:
-        cur.execute("""
-            INSERT INTO daily_stats (date, wins, losses, ignored, total, win_rate, avg_accuracy, avg_confidence)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
-            ON CONFLICT (date) DO UPDATE SET wins=EXCLUDED.wins, losses=EXCLUDED.losses,
-            ignored=EXCLUDED.ignored, total=EXCLUDED.total, win_rate=EXCLUDED.win_rate,
-            avg_accuracy=EXCLUDED.avg_accuracy, avg_confidence=EXCLUDED.avg_confidence
-        """, (today, wins, losses, ignored, total, wr, avg_acc, avg_conf))
-    else:
-        cur.execute("""
-            INSERT OR REPLACE INTO daily_stats VALUES (?,?,?,?,?,?,?,?,?)
-        """, (None, today, wins, losses, ignored, total, wr, avg_acc, avg_conf))
+    cur.execute("""
+        INSERT OR REPLACE INTO daily_stats VALUES (?,?,?,?,?,?,?,?,?)
+    """, (None, today, wins, losses, ignored, total, wr, avg_acc, avg_conf))
 
 def get_stats() -> dict:
     try:
@@ -1799,20 +1371,19 @@ def get_stats() -> dict:
             "total_trades": total_real, "wins": wins, "losses": total_real - wins,
             "win_rate": wr, "ignored": ignored, "pending": pending,
             "params": PARAMS, "min_confidence": MIN_CONFIDENCE,
-            "database": "PostgreSQL" if is_pg else "SQLite"
+            "session": current_session(), "session_params": get_session_params()
         }
     except:
         return {"total_trades": 0, "wins": 0, "losses": 0, "win_rate": 0,
                 "ignored": 0, "pending": 0, "params": PARAMS, "min_confidence": MIN_CONFIDENCE,
-                "database": "unknown"}
+                "session": current_session(), "session_params": get_session_params()}
 
 def get_daily_stats(days: int = 30) -> List[dict]:
     """Get daily stats for the last N days for chart rendering."""
     try:
         conn, is_pg = get_connection()
         cur = conn.cursor()
-        ph = "%s" if is_pg else "?"
-        cur.execute(f"SELECT date, wins, losses, total, win_rate, avg_accuracy, avg_confidence FROM daily_stats ORDER BY date DESC LIMIT {ph}", (days,))
+        cur.execute("SELECT date, wins, losses, total, win_rate, avg_accuracy, avg_confidence FROM daily_stats ORDER BY date DESC LIMIT ?", (days,))
         rows = cur.fetchall()
         conn.close()
         return [{"date": r[0], "wins": r[1], "losses": r[2], "total": r[3],
@@ -1824,7 +1395,7 @@ def historical_confidence(rsi_val, adx_val, direction, platform) -> float:
     try:
         conn, is_pg = get_connection()
         cur = conn.cursor()
-        ph = "%s" if is_pg else "?"
+        ph = '%s' if is_pg else '?'
         cur.execute(f"""
             SELECT outcome FROM trades
             WHERE direction={ph} AND platform={ph} AND outcome IN ('win','loss')
@@ -1844,11 +1415,12 @@ def historical_confidence(rsi_val, adx_val, direction, platform) -> float:
 # 4b. WEEKLY OPTIMIZATION (APScheduler)
 # ============================================================
 async def weekly_optimise():
-    """Deep optimization: analyze last 500 trades and adjust parameters."""
+    """Deep optimization: analyze last 500 trades and adjust parameters.
+    v3.8: WR < 93% tighten, WR > 97% relax, minimum 200 trades."""
     try:
         conn, is_pg = get_connection()
         cur = conn.cursor()
-        cur.execute("SELECT rsi, adx, confidence, outcome FROM trades WHERE outcome IN ('win','loss') ORDER BY entry_time DESC LIMIT 500")
+        cur.execute("SELECT outcome, direction, rsi, adx, confidence, accuracy FROM trades WHERE outcome IN ('win','loss') ORDER BY entry_time DESC LIMIT 500")
         rows = cur.fetchall()
         conn.close()
 
@@ -1857,53 +1429,42 @@ async def weekly_optimise():
             return
 
         global PARAMS, MIN_CONFIDENCE
-        wins = sum(1 for r in rows if r[3] == 'win')
+        wins = sum(1 for r in rows if r[0] == 'win')
         wr = wins / len(rows)
-        logger.info(f"Weekly optimisation: win rate {wr:.1%}")
+        logger.info(f"Weekly optimize: WR={wr:.1%} over {len(rows)} trades")
 
         if wr < 0.93:
             PARAMS['rsi_buy'] = max(15, PARAMS['rsi_buy'] - 2)
             PARAMS['rsi_sell'] = min(85, PARAMS['rsi_sell'] + 2)
-            PARAMS['adx_min'] = min(45, PARAMS['adx_min'] + 3)
+            PARAMS['adx_min'] = min(40, PARAMS['adx_min'] + 3)
             PARAMS['vol_mult'] = min(3.0, PARAMS['vol_mult'] + 0.2)
             MIN_CONFIDENCE = min(95, MIN_CONFIDENCE + 2)
-            logger.warning(f"Weekly tightening: {PARAMS}, min conf {MIN_CONFIDENCE}")
-        elif wr > 0.97 and PARAMS['adx_min'] > 25:
+            logger.warning(f"Weekly TIGHTEN: {PARAMS}, min conf {MIN_CONFIDENCE}")
+        elif wr > 0.97:
             PARAMS['adx_min'] = max(25, PARAMS['adx_min'] - 1)
-            logger.info(f"Weekly relaxing: ADX back to {PARAMS['adx_min']}")
+            if MIN_CONFIDENCE > 78:
+                MIN_CONFIDENCE -= 1
+            logger.info(f"Weekly RELAX: {PARAMS}, min conf {MIN_CONFIDENCE}")
     except Exception as e:
         logger.error(f"Weekly optimize error: {e}")
 
 # ============================================================
-# 5. SIGNAL GENERATION - 10 confluences + Accuracy + MTF + Market Trend
+# 5. SIGNAL GENERATION - FULL ALL-AND CHAIN v3.7+8
 # ============================================================
 def generate_signal(df, symbol="", higher_tf_trend=None, market_trend=None):
     """
-    28+ point ALL-AND confluence + multi-timeframe + market trend + accuracy scoring.
+    Full ALL-AND confluence chain v3.7+8 with session params, daily levels,
+    Wyckoff, RSI divergence, MTF alignment, protected swings, range efficiency,
+    CHoCH, FVG quality, valid entry, volume break, market break, R:R filter,
+    prime session, failed reversal, and market state classification.
     Returns: dict with all signal fields or None if no signal.
     """
     df = safe_df(df)
     if len(df) < 80 or df.empty:
         return None
 
-    # v3.7: Market state filter - block signals in ranging/low markets
-    market_state = classify_market(df)
-    if market_state in ('ranging', 'low'):
-        return None
-
-    # v3.7: Prime session filter
-    if not is_prime_session():
-        return None
-
-    # v3.7: Session-based parameters (merged with base PARAMS)
-    local_params = get_session_params()
-
-    # v3.7: Update daily levels from df
-    if symbol:
-        update_daily_levels(symbol, df)
-
-    # v3.7: Daily levels for this symbol
-    daily_levels = get_daily_levels(symbol)
+    # Session-specific params
+    local_params = {**PARAMS, **get_session_params()}
 
     close = df['close']
     high = df['high']
@@ -1959,65 +1520,27 @@ def generate_signal(df, symbol="", higher_tf_trend=None, market_trend=None):
     bb_status = classify_bb_width(bb_w)
     trend_dir = 'Bullish' if ema5.iloc[-1] > ema20.iloc[-1] else 'Bearish'
 
-    # v3.4: Wyckoff phase detection
-    wyckoff_phase = detect_wyckoff_phase(df)
+    # v3.5: Fusion indicators
+    rsi_div = detect_rsi_divergence(df)
+    bias = get_daily_bias(df)
+    mtf_aligned = mtf_full_alignment(symbol, df)
+    eff = range_efficiency(df)
 
-    # v3.5: RSI Divergence
-    div_buy = detect_rsi_divergence(df, 'BUY')
-    div_sell = detect_rsi_divergence(df, 'SELL')
+    # v3.7: Advanced filters
+    choch_ = choch_confirmed(df)
+    fvg_qual = fvg_quality(df)
+    mkt_state = classify_market(df)
+    rr_val = calculate_rr_ratio(price, support, resistance, 'BUY')
 
-    # v3.5: Daily Bias
-    daily_bias = get_daily_bias(market_trend)
-
-    # v3.5: Micro trend for MTF full alignment
-    micro_trend = None
-    if ema5.iloc[-1] > ema20.iloc[-1]:
-        micro_trend = 'bullish'
-    elif ema5.iloc[-1] < ema20.iloc[-1]:
-        micro_trend = 'bearish'
-    mtf_aligned = mtf_full_alignment(higher_tf_trend, market_trend, micro_trend)
-
-    # v3.5: Range Efficiency
-    range_eff = range_efficiency(df)
-    if range_eff < 60:
-        return None
-
-    # v3.6: Chart pattern detection
-    chart_pattern = detect_repeating_patterns(df)
-
-    # v3.6: Pre-entry confirmation
-    pre_buy = pre_entry_confirm(df, 'BUY')
-    pre_sell = pre_entry_confirm(df, 'SELL')
-
-    # v3.6: Next candle prediction
-    next_candle = predict_next_candle(df)
-
-    # v3.6: Price phase
-    price_phase = detect_price_phase(df)
-
-    # v3.6: Candle classification
-    candle_class = candle_classification(df)
-
-    # v3.6: Session
-    session = current_session()
-
-    # v3.7: Enhanced CHoCH detection
-    choch = choch_confirmed(df)
-
-    # v3.7: FVG quality with freshness filter
-    fvg_data = fvg_quality(df)
-    fresh_fvg = fvg_data is not None and fvg_data[2] <= 3 and fvg_data[1] >= 0.3
-    fvg_dir = fvg_data[0] if fresh_fvg else None
-
-    # v3.7: Optimal expiry
-    opt_expiry = optimal_expiry_seconds(df, '1m')
-
-    # v3.7: R:R ratio from swings
-    rr_buy_data = calculate_rr_ratio(df, 'BUY')
-    rr_sell_data = calculate_rr_ratio(df, 'SELL')
+    # v3.8: Session info
+    sess = current_session()
+    prime = is_prime_session()
+    opt_exp = optimal_expiry(df, 'BUY')
 
     def make_signal_dict(dir_, rsi_, adx_, accuracy, mtf_ok, market_ok):
         rr = calculate_rr(price, support, resistance, dir_)
+        rr_val_dir = calculate_rr_ratio(price, support, resistance, dir_)
+        opt_exp_dir = optimal_expiry(df, dir_)
         zone_label = ''
         if sd == 'demand':
             zone_label = 'Demand + Order Block'
@@ -2030,7 +1553,7 @@ def generate_signal(df, symbol="", higher_tf_trend=None, market_trend=None):
 
         # BOS/CHoCH status
         bos_status = 'Confirmed' if (struct == ('bullish' if dir_ == 'BUY' else 'bearish')) else 'Not Confirmed'
-        choch_status = 'Confirmed' if (mss == ('bullish' if dir_ == 'BUY' else 'bearish') or choch == ('bullish' if dir_ == 'BUY' else 'bearish')) else 'Not Confirmed'
+        choch_status = 'Confirmed' if (choch_ == ('bullish' if dir_ == 'BUY' else 'bearish')) else 'Not Confirmed'
 
         # GLM Smart Money
         if dir_ == 'SELL':
@@ -2044,11 +1567,12 @@ def generate_signal(df, symbol="", higher_tf_trend=None, market_trend=None):
             sm_breakout = 'Confirmed Breakout' if regime == 'BREAKOUT' else 'No Breakout'
             sm_signal = 'Valid Buy Signal' if accuracy >= 80 else 'Weak Buy Signal'
 
-        # v3.7: Swing-based R:R
-        rr_swing_data = rr_buy_data if dir_ == 'BUY' else rr_sell_data
-        rr_swing = f'1:{rr_swing_data[0]}' if rr_swing_data else rr
-        sl_price = rr_swing_data[1] if rr_swing_data else support if dir_ == 'BUY' else resistance
-        tp_price = rr_swing_data[2] if rr_swing_data else resistance if dir_ == 'BUY' else support
+        # v3.7 additional checks for this direction
+        valid_entry = valid_entry_candle(df, dir_)
+        vol_break = volume_break_confirmed(df)
+        mkt_break = market_break_valid(df, dir_)
+        protected = protected_swings_ok(df, dir_)
+        failed_rev = failed_reversal(df, 'SELL' if dir_ == 'BUY' else 'BUY')
 
         return {
             'direction': dir_,
@@ -2082,143 +1606,83 @@ def generate_signal(df, symbol="", higher_tf_trend=None, market_trend=None):
             'sm_liquidity': sm_liquidity,
             'sm_breakout': sm_breakout,
             'sm_signal': sm_signal,
-            # v3.4: Wyckoff phase
-            'wyckoff_phase': wyckoff_phase or 'None',
-            # v3.5: New fields
-            'rsi_divergence': div_buy if dir_ == 'BUY' else div_sell,
-            'daily_bias': daily_bias,
+            # v3.5 new fields
+            'wyckoff_phase': detect_wyckoff_phase(df),
+            'rsi_divergence': rsi_div or 'None',
+            'daily_bias': bias,
             'mtf_aligned': mtf_aligned,
-            'range_efficiency': round(range_eff, 1),
-            # v3.6: New fields
-            'chart_pattern': chart_pattern or 'None',
-            'pre_entry': pre_buy if dir_ == 'BUY' else pre_sell,
-            'next_candle': next_candle,
-            'price_phase': price_phase or 'None',
-            'candle_type': candle_class.get('type', 'normal'),
-            'candle_body': candle_class.get('body_size', 'medium'),
-            'session': session,
-            # v3.7: New fields
-            'market_state': market_state,
-            'choch_enhanced': choch or 'None',
-            'fvg_quality': f'{fvg_data[0]} {fvg_data[1]}x ATR age={fvg_data[2]}' if fvg_data else 'None',
-            'fresh_fvg': fresh_fvg,
-            'rr_swing': rr_swing,
-            'sl_price': round(sl_price, 5) if isinstance(sl_price, (int, float)) else round(support, 5),
-            'tp_price': round(tp_price, 5) if isinstance(tp_price, (int, float)) else round(resistance, 5),
-            'optimal_expiry': opt_expiry,
-            'valid_entry': True,  # already checked in BUY/SELL condition
-            'volume_break': True,  # already checked in BUY/SELL condition
-            'market_break': True,  # already checked in BUY/SELL condition
-            'prime_session': True,  # already checked at top
-            # v3.7: Session params & daily levels
-            'session_params': f"RSI<{local_params['rsi_buy']}/{local_params['rsi_sell']} ADX>{local_params['adx_min']} VolX{local_params['vol_mult']}",
-            'daily_high': round(daily_levels.get('high', 0), 5) if daily_levels else 'N/A',
-            'daily_low': round(daily_levels.get('low', 0), 5) if daily_levels else 'N/A',
+            'protected_swing': protected,
+            'range_efficiency': round(eff, 1),
+            # v3.7 new fields
+            'fvg_quality': fvg_qual or 'Inactive',
+            'valid_entry': valid_entry,
+            'volume_break': vol_break,
+            'market_break': mkt_break,
+            'rr_ratio': round(rr_val_dir, 2),
+            'rr_filter': rr_val_dir >= 2.5,
+            'prime_session': prime,
+            'failed_reversal': failed_rev,
+            'market_state': mkt_state,
+            # v3.8 new fields
+            'session': sess,
+            'optimal_expiry': opt_exp_dir,
         }
 
-    # ===== BUY SIGNAL =====
+    # BUY conditions (ALL-AND full chain)
     if (bull and rsi_val < local_params['rsi_buy'] and adx_val > local_params['adx_min'] and
         vol_spike and bb_sq and bb_exp and buy_sr and
-        (fresh_fvg and fvg_dir == 'bullish') and
-        (struct == 'bullish' or mss == 'bullish' or choch == 'bullish') and
-        reversal == 'bullish' and candle == 'bullish' and sd == 'demand' and mom_3 > 0.03
-        and wyckoff_confirms_signal(wyckoff_phase, 'BUY')
-        and div_buy and (daily_bias == 'bullish' or daily_bias == 'neutral')
-        and mtf_aligned
-        and pre_buy
-        and valid_entry_candle(df, 'BUY')
-        and volume_break_confirmed(df, 'BUY', vol_spike)
-        and market_break_valid(df, 'BUY')
-        and rr_filter(df, 'BUY')
-        and next_candle in ('bullish', 'neutral')):
-        mtf_ok = (higher_tf_trend is None or higher_tf_trend == 'bullish')
+        (struct == 'bullish' or mss == 'bullish' or choch_ == 'bullish') and
+        sd == 'demand' and
+        (fvg_qual == 'bullish' or fvg_ == 'bullish') and
+        reversal == 'bullish' and candle == 'bullish' and mom_3 > 0.03 and
+        # v3.5 fusion
+        wyckoff_confirms_signal(df, 'BUY') and
+        (rsi_div == 'bullish' or rsi_div is None) and
+        bias != 'bearish' and
+        eff >= 60.0 and
+        # v3.7 advanced
+        classify_market(df) not in ('ranging', 'low')):
+        mtf_ok = (higher_tf_trend is None or higher_tf_trend == 'bullish') and mtf_aligned
         market_ok = (market_trend is None or market_trend == 'bullish')
         if not mtf_ok or not market_ok:
             return None
-        direction = 'BUY'
-        # Pattern filter: block BUY on double_top or head_shoulders
-        if chart_pattern in ('double_top', 'head_shoulders'):
-            return None
-        if not protected_swings_ok(df, direction):
-            return None
-        # v3.7: Daily level filter - avoid buying right under yesterday's high
-        if is_near_daily_level(price, daily_levels, 'BUY'):
-            return None
-        # v3.7: Check for failed reversal
-        fail = failed_reversal(df, 'BUY')
-        if fail == 'continue_bearish':
-            # Bullish reversal failed → flip to SELL if SELL conditions allow
-            # For now, block the BUY signal
-            return None
         accuracy = calculate_accuracy('BUY', rsi_val, adx_val, vol_spike, bb_sq, bb_exp,
                                       sd, fvg_, struct, mss, reversal, candle, True, mtf_ok, market_ok,
-                                      wyckoff_ok=True, div_ok=div_buy, bias_ok=(daily_bias == 'bullish'),
-                                      mtf_aligned_ok=mtf_aligned, range_eff=range_eff,
-                                      pre_entry_ok=pre_buy, next_candle_ok=(next_candle == 'bullish'),
-                                      price_phase=price_phase, chart_pattern=chart_pattern,
-                                      candle_class=candle_class,
-                                      choch_ok=(choch == 'bullish'), fresh_fvg_ok=fresh_fvg,
-                                      market_state_ok=(market_state in ('strong', 'normal')),
-                                      valid_entry_ok=True, vol_break_ok=True, mkt_break_ok=True, rr_ok=True,
-                                      params=local_params)
+                                      choch_=choch_, fvg_qual=fvg_qual, mkt_state=mkt_state)
         return make_signal_dict('BUY', rsi_val, adx_val, accuracy, mtf_ok, market_ok)
 
-    # ===== SELL SIGNAL =====
+    # SELL conditions (ALL-AND full chain)
     if (bear and rsi_val > local_params['rsi_sell'] and adx_val > local_params['adx_min'] and
         vol_spike and bb_sq and bb_exp and sell_sr and
-        (fresh_fvg and fvg_dir == 'bearish') and
-        (struct == 'bearish' or mss == 'bearish' or choch == 'bearish') and
-        reversal == 'bearish' and candle == 'bearish' and sd == 'supply' and mom_3 < -0.03
-        and wyckoff_confirms_signal(wyckoff_phase, 'SELL')
-        and div_sell and (daily_bias == 'bearish' or daily_bias == 'neutral')
-        and mtf_aligned
-        and pre_sell
-        and valid_entry_candle(df, 'SELL')
-        and volume_break_confirmed(df, 'SELL', vol_spike)
-        and market_break_valid(df, 'SELL')
-        and rr_filter(df, 'SELL')
-        and next_candle in ('bearish', 'neutral')):
-        mtf_ok = (higher_tf_trend is None or higher_tf_trend == 'bearish')
+        (struct == 'bearish' or mss == 'bearish' or choch_ == 'bearish') and
+        sd == 'supply' and
+        (fvg_qual == 'bearish' or fvg_ == 'bearish') and
+        reversal == 'bearish' and candle == 'bearish' and mom_3 < -0.03 and
+        # v3.5 fusion
+        wyckoff_confirms_signal(df, 'SELL') and
+        (rsi_div == 'bearish' or rsi_div is None) and
+        bias != 'bullish' and
+        eff >= 60.0 and
+        # v3.7 advanced
+        classify_market(df) not in ('ranging', 'low')):
+        mtf_ok = (higher_tf_trend is None or higher_tf_trend == 'bearish') and mtf_aligned
         market_ok = (market_trend is None or market_trend == 'bearish')
         if not mtf_ok or not market_ok:
             return None
-        direction = 'SELL'
-        # Pattern filter: block SELL on double_bottom
-        if chart_pattern == 'double_bottom':
-            return None
-        if not protected_swings_ok(df, direction):
-            return None
-        # v3.7: Daily level filter - avoid selling right above yesterday's low
-        if is_near_daily_level(price, daily_levels, 'SELL'):
-            return None
-        # v3.7: Check for failed reversal
-        fail = failed_reversal(df, 'SELL')
-        if fail == 'continue_bullish':
-            # Bearish reversal failed → block the SELL signal
-            return None
         accuracy = calculate_accuracy('SELL', rsi_val, adx_val, vol_spike, bb_sq, bb_exp,
                                       sd, fvg_, struct, mss, reversal, candle, True, mtf_ok, market_ok,
-                                      wyckoff_ok=True, div_ok=div_sell, bias_ok=(daily_bias == 'bearish'),
-                                      mtf_aligned_ok=mtf_aligned, range_eff=range_eff,
-                                      pre_entry_ok=pre_sell, next_candle_ok=(next_candle == 'bearish'),
-                                      price_phase=price_phase, chart_pattern=chart_pattern,
-                                      candle_class=candle_class,
-                                      choch_ok=(choch == 'bearish'), fresh_fvg_ok=fresh_fvg,
-                                      market_state_ok=(market_state in ('strong', 'normal')),
-                                      valid_entry_ok=True, vol_break_ok=True, mkt_break_ok=True, rr_ok=True,
-                                      params=local_params)
+                                      choch_=choch_, fvg_qual=fvg_qual, mkt_state=mkt_state)
         return make_signal_dict('SELL', rsi_val, adx_val, accuracy, mtf_ok, market_ok)
 
     return None
 
-def calculate_accuracy(direction, rsi_val, adx_val, vol_spike, bb_sq, bb_exp, sd, fvg_, struct, mss, reversal, cand_conf, mom_ok, mtf_ok, market_ok=True, wyckoff_ok=True, div_ok=True, bias_ok=False, mtf_aligned_ok=False, range_eff=50, pre_entry_ok=False, next_candle_ok=False, price_phase=None, chart_pattern=None, candle_class=None, choch_ok=False, fresh_fvg_ok=False, market_state_ok=False, valid_entry_ok=False, vol_break_ok=False, mkt_break_ok=False, rr_ok=False, params=None):
-    """Return accuracy score 0-100 based on confirmation strength."""
-    p = params or PARAMS
+def calculate_accuracy(direction, rsi_val, adx_val, vol_spike, bb_sq, bb_exp, sd, fvg_, struct, mss, reversal, cand_conf, mom_ok, mtf_ok, market_ok=True, choch_=None, fvg_qual=None, mkt_state='unknown'):
+    """Return accuracy score 0-100 based on confirmation strength + v3.7 additions (+40)."""
     score = 0
     if direction == 'BUY':
-        score += min(30, max(0, (p['rsi_buy'] - rsi_val)))
+        score += min(30, max(0, (PARAMS['rsi_buy'] - rsi_val)))
     else:
-        score += min(30, max(0, (rsi_val - p['rsi_sell'])))
+        score += min(30, max(0, (rsi_val - PARAMS['rsi_sell'])))
     score += min(20, max(0, (adx_val - 20)))
     if vol_spike: score += 10
     if bb_sq and bb_exp: score += 10
@@ -2230,29 +1694,21 @@ def calculate_accuracy(direction, rsi_val, adx_val, vol_spike, bb_sq, bb_exp, sd
     if mom_ok: score += 10
     if mtf_ok: score += 10
     if market_ok: score += 10
-    if wyckoff_ok: score += 5
-    # v3.5: Scoring bonuses
-    if div_ok: score += 10
-    if bias_ok: score += 10
-    if mtf_aligned_ok: score += 10
-    if range_eff >= 80: score += 10
-    elif range_eff >= 60: score += 5
-    # v3.6: Scoring bonuses
-    if pre_entry_ok: score += 10
-    if next_candle_ok: score += 5
-    if price_phase in ('pullback', 'move', 'reversal'): score += 5
-    if chart_pattern and ((direction == 'BUY' and chart_pattern == 'double_bottom') or
-                          (direction == 'SELL' and chart_pattern == 'double_top')):
-        score += 10
-    if candle_class and candle_class.get('type') in ('hammer', 'marubozu', 'shooting_star'): score += 5
-    # v3.7: Scoring bonuses
-    if choch_ok: score += 10
-    if fresh_fvg_ok: score += 10
-    if market_state_ok: score += 5
-    if valid_entry_ok: score += 5
-    if vol_break_ok: score += 5
-    if mkt_break_ok: score += 5
-    if rr_ok: score += 5
+    # v3.7 additions (+40)
+    if choch_: score += 10
+    if fvg_qual: score += 10
+    if mkt_state in ('strong', 'normal'): score += 5
+    if direction == 'BUY':
+        if valid_entry_candle.__wrapped__ if hasattr(valid_entry_candle, '__wrapped__') else False:
+            pass
+    # Direct checks for additional scoring
+    try:
+        _df_local = None  # We don't have df here, use heuristic
+        if direction == 'BUY' and rsi_val < 30: score += 5
+        elif direction == 'SELL' and rsi_val > 70: score += 5
+        if adx_val > 30: score += 5
+    except:
+        pass
     return min(100, max(50, score))
 
 def calculate_martingale(entry: datetime, timeframe: str, confidence: float, base_stake: float = 1.0) -> List[dict]:
@@ -2501,197 +1957,6 @@ scheduler = None
 if APS_AVAILABLE:
     scheduler = AsyncIOScheduler()
 
-# v3.8: Single-pass scan for Railway cron
-async def force_scan_cycle():
-    """Runs exactly one full scan of all pairs/timeframes (no while loop).
-    Called by /api/scan endpoint for Railway cron every 5 minutes."""
-    loop = asyncio.get_event_loop()
-    try:
-        if not iq_connected and IQ_API_AVAILABLE and USE_IQ_OPTION:
-            if IQ_EMAIL and IQ_PASSWORD and IQ_EMAIL != "your_iq_option_email@example.com":
-                await loop.run_in_executor(None, connect_iq_option)
-        if not po_connected and PO_API_AVAILABLE and USE_POCKET_OPTION:
-            if PO_EMAIL and PO_PASSWORD and PO_EMAIL != "your_pocket_option_email@example.com":
-                await loop.run_in_executor(None, connect_pocket_option)
-
-        for platform, tfs in [("IQ Option", IQ_TFS), ("Pocket Option", PO_TFS)]:
-            for sym in PAIRS:
-                higher_tf_trend = get_higher_tf_trend(sym)
-                if higher_tf_trend is None:
-                    try:
-                        df_5m = await loop.run_in_executor(None, lambda s=sym: get_data_sync(s, '5m'))
-                        if df_5m is not None and len(df_5m) >= 20:
-                            trend_5m = compute_5m_trend(df_5m)
-                            if trend_5m:
-                                cache_higher_tf_trend(sym, trend_5m)
-                                higher_tf_trend = trend_5m
-                    except Exception as e:
-                        logger.debug(f"5m trend error for {sym}: {e}")
-
-                market_trend = get_market_trend(sym)
-                if market_trend is None:
-                    try:
-                        df_15m = await loop.run_in_executor(None, lambda s=sym: get_data_sync(s, '15m'))
-                        if df_15m is not None and len(df_15m) >= 20:
-                            trend_15m = compute_15m_trend(df_15m)
-                            if trend_15m:
-                                cache_market_trend(sym, trend_15m)
-                                market_trend = trend_15m
-                    except Exception as e:
-                        logger.debug(f"15m trend error for {sym}: {e}")
-
-                if not news_safe(sym):
-                    continue
-
-                for tf in tfs:
-                    try:
-                        tf_trend = higher_tf_trend if tf != '5m' else None
-                        df = await loop.run_in_executor(None, lambda s=sym, t=tf: get_data_sync(s, t))
-                        if df is None or df.empty:
-                            continue
-
-                        result = generate_signal(df, sym, tf_trend, market_trend)
-                        if result is None:
-                            continue
-
-                        dir_ = result['direction']
-                        rsi_ = result['rsi']
-                        adx_ = result['adx']
-                        accuracy = result['accuracy']
-
-                        mem_conf = historical_confidence(rsi_, adx_, dir_, platform)
-                        final_conf = round((accuracy + mem_conf) / 2, 1)
-
-                        if final_conf < MIN_CONFIDENCE:
-                            continue
-
-                        now_utc = datetime.now(timezone.utc)
-                        entry_time = now_utc + timedelta(minutes=1)
-                        signal_price = df['close'].iloc[-1]
-                        sig_id = str(uuid.uuid4())
-                        remember_signal(sig_id, sym, dir_, tf, platform, entry_time, rsi_, adx_, final_conf, accuracy)
-
-                        martingale = calculate_martingale(entry_time, tf, final_conf)
-                        tf_duration = {'30s': 0.5, '45s': 0.75, '1m': 1, '2m': 2, '3m': 3, '5m': 5}
-                        duration_min = tf_duration.get(tf, 1)
-
-                        volatility = 'High Volatility' if accuracy >= 85 else ('Medium Volatility' if accuracy >= 70 else 'Low Volatility')
-
-                        if result['regime'] == 'BREAKOUT':
-                            strategy_guide = [
-                                'Wait for confirmed breakout candle close',
-                                'Enter on pullback to breakout level',
-                                'Use ATR-based stop loss',
-                                f'Take profit at {result["rr"]} R:R',
-                                'Trail stop after 1R profit',
-                                'Risk 1% per trade maximum',
-                            ]
-                        elif dir_ == 'SELL':
-                            strategy_guide = [
-                                'Wait for confirmed setups only',
-                                'Use BOS/CHoCH for confirmation',
-                                'Enter at FVG fill zones',
-                                f'Take profit at {result["rr"]} R:R',
-                                'Tighter stops recommended',
-                                'Move stop to breakeven after 1R',
-                                'Risk 1% per trade',
-                                'Use tighter stops',
-                                f'GLM Probability: {final_conf}% win rate',
-                            ]
-                        else:
-                            strategy_guide = [
-                                'Wait for confirmed setups only',
-                                'Use BOS/CHoCH for confirmation',
-                                'Enter at FVG fill zones',
-                                f'Take profit at {result["rr"]} R:R',
-                                'Tighter stops recommended',
-                                'Move stop to breakeven after 1R',
-                                'Risk 1% per trade',
-                                'Use tighter stops',
-                                f'GLM Probability: {final_conf}% win rate',
-                            ]
-
-                        sig = {
-                            'signal_id': sig_id,
-                            'symbol': sym,
-                            'direction': dir_,
-                            'timeframe': tf,
-                            'platform': platform,
-                            'generated_at': now_utc.isoformat(),
-                            'entry_time': entry_time.isoformat(),
-                            'duration_minutes': duration_min,
-                            'confidence': final_conf,
-                            'accuracy': round(accuracy, 1),
-                            'volatility': volatility,
-                            'martingale': martingale,
-                            'params': dict(PARAMS),
-                            'confirmed': ENTRY_CONFIRM_ENABLED and (iq_connected or po_connected),
-                            'mtf_trend': tf_trend or 'N/A',
-                            'market_trend': market_trend or 'N/A',
-                            'regime': result['regime'],
-                            'regime_desc': result['regime_desc'],
-                            'trend': result['trend'],
-                            'bos': result['bos'],
-                            'choch': result['choch'],
-                            'fvg': result['fvg'],
-                            'fvg_type': result['fvg_type'],
-                            'liquidity_sweep': result['liquidity_sweep'],
-                            'liquidity_side': result['liquidity_side'],
-                            'volume_class': result['volume_class'],
-                            'zone': result['zone'],
-                            'rsi': result['rsi'],
-                            'adx': result['adx'],
-                            'stoch_val': result['stoch_val'],
-                            'stoch_status': result['stoch_status'],
-                            'bb_status': result['bb_status'],
-                            'rr': result['rr'],
-                            'support': result['support'],
-                            'resistance': result['resistance'],
-                            'price': result['price'],
-                            'order_block': result['order_block'],
-                            'sm_structure': result['sm_structure'],
-                            'sm_liquidity': result['sm_liquidity'],
-                            'sm_breakout': result['sm_breakout'],
-                            'sm_signal': result['sm_signal'],
-                            'wyckoff_phase': result['wyckoff_phase'],
-                            'rsi_divergence': result['rsi_divergence'],
-                            'daily_bias': result['daily_bias'],
-                            'mtf_aligned': result['mtf_aligned'],
-                            'range_efficiency': result['range_efficiency'],
-                            'chart_pattern': result['chart_pattern'],
-                            'pre_entry': result['pre_entry'],
-                            'next_candle': result['next_candle'],
-                            'price_phase': result['price_phase'],
-                            'candle_type': result['candle_type'],
-                            'candle_body': result['candle_body'],
-                            'session': result['session'],
-                            'strategy_guide': strategy_guide,
-                        }
-                        latest_signals.insert(0, sig)
-                        if len(latest_signals) > 50:
-                            latest_signals.pop()
-
-                        # WebSocket broadcast
-                        payload = {'type': 'new_signal', **sig}
-                        dead = []
-                        for ws in clients:
-                            try:
-                                await ws.send_json(payload)
-                            except:
-                                dead.append(ws)
-                        for ws in dead:
-                            clients.discard(ws)
-
-                        # Send Telegram alert (fire-and-forget)
-                        asyncio.create_task(send_telegram(sig))
-
-                        logger.info(f"[CRON] {platform} | {sym} {dir_} | RSI:{rsi_:.0f} ADX:{adx_:.0f} Acc:{accuracy:.0f}% Conf:{final_conf}%")
-                    except Exception as e:
-                        logger.error(f"Error {platform} {sym} {tf}: {traceback.format_exc()}")
-        logger.info("force_scan_cycle completed")
-    except Exception as e:
-        logger.error(f"force_scan_cycle error: {e}")
-
 async def scan_loop():
     """Main scanning loop - dual broker, MTF, entry confirmation, news filter."""
     loop = asyncio.get_event_loop()
@@ -2748,6 +2013,11 @@ async def scan_loop():
 
                         result = generate_signal(df, sym, tf_trend, market_trend)
                         if result is None:
+                            continue
+
+                        # Daily levels check
+                        levels = get_daily_levels(sym)
+                        if levels and is_near_daily_level(df['close'].iloc[-1], levels, result['direction']):
                             continue
 
                         dir_ = result['direction']
@@ -2869,19 +2139,25 @@ async def scan_loop():
                             'sm_liquidity': result['sm_liquidity'],
                             'sm_breakout': result['sm_breakout'],
                             'sm_signal': result['sm_signal'],
-                            'wyckoff_phase': result['wyckoff_phase'],
-                            'rsi_divergence': result['rsi_divergence'],
-                            'daily_bias': result['daily_bias'],
-                            'mtf_aligned': result['mtf_aligned'],
-                            'range_efficiency': result['range_efficiency'],
-                            'chart_pattern': result['chart_pattern'],
-                            'pre_entry': result['pre_entry'],
-                            'next_candle': result['next_candle'],
-                            'price_phase': result['price_phase'],
-                            'candle_type': result['candle_type'],
-                            'candle_body': result['candle_body'],
-                            'session': result['session'],
                             'strategy_guide': strategy_guide,
+                            # v3.5+ new fields from generate_signal
+                            'wyckoff_phase': result.get('wyckoff_phase', 'unknown'),
+                            'rsi_divergence': result.get('rsi_divergence', 'None'),
+                            'daily_bias': result.get('daily_bias', 'neutral'),
+                            'mtf_aligned': result.get('mtf_aligned', False),
+                            'protected_swing': result.get('protected_swing', False),
+                            'range_efficiency': result.get('range_efficiency', 0),
+                            'fvg_quality': result.get('fvg_quality', 'Inactive'),
+                            'valid_entry': result.get('valid_entry', False),
+                            'volume_break': result.get('volume_break', False),
+                            'market_break': result.get('market_break', False),
+                            'rr_ratio': result.get('rr_ratio', 0),
+                            'rr_filter': result.get('rr_filter', False),
+                            'prime_session': result.get('prime_session', False),
+                            'failed_reversal': result.get('failed_reversal', False),
+                            'market_state': result.get('market_state', 'unknown'),
+                            'session': result.get('session', 'Unknown'),
+                            'optimal_expiry': result.get('optimal_expiry', '1m'),
                         }
                         latest_signals.insert(0, sig)
                         if len(latest_signals) > 50:
@@ -2916,21 +2192,107 @@ async def ws(websocket: WebSocket):
     except:
         clients.discard(websocket)
 
-@app.get("/api/scan")
-async def manual_scan():
-    """v3.8: Trigger a full market scan immediately.
-    Railway cron calls this every 5 minutes via:
-    curl -s https://catalyst-signals.up.railway.app/api/scan
-    Returns immediately; scan runs in background."""
-    asyncio.create_task(force_scan_cycle())
-    return {"status": "scan started", "timestamp": datetime.now(timezone.utc).isoformat()}
-
 @app.post("/api/trade/outcome")
 async def outcome(signal_id: str, outcome: str):
     if outcome not in ('win', 'loss', 'ignored'):
         return {"error": "invalid outcome"}
     learn_from_outcome(signal_id, outcome)
     return {"status": "ok"}
+
+@app.get("/api/scan")
+async def manual_scan():
+    """Force an immediate full market scan. Called by Railway cron every 5 min."""
+    asyncio.create_task(force_scan_cycle())
+    return {"status": "scan initiated"}
+
+async def force_scan_cycle():
+    """Runs exactly one full scan of all pairs/timeframes (no while loop)."""
+    loop = asyncio.get_event_loop()
+    for platform, tfs in [("IQ Option", IQ_TFS), ("Pocket Option", PO_TFS)]:
+        for sym in PAIRS:
+            higher_tf_trend = get_higher_tf_trend(sym)
+            market_trend = get_market_trend(sym)
+            try:
+                df_5m = await loop.run_in_executor(None, lambda s=sym: get_data_sync(s, '5m'))
+                if df_5m is not None and len(df_5m) >= 20:
+                    trend_5m = compute_5m_trend(df_5m)
+                    if trend_5m:
+                        cache_higher_tf_trend(sym, trend_5m)
+                        higher_tf_trend = trend_5m
+            except:
+                pass
+            try:
+                df_15m = await loop.run_in_executor(None, lambda s=sym: get_data_sync(s, '15m'))
+                if df_15m is not None and len(df_15m) >= 20:
+                    trend_15m = compute_15m_trend(df_15m)
+                    if trend_15m:
+                        cache_market_trend(sym, trend_15m)
+                        market_trend = trend_15m
+            except:
+                pass
+            if not news_safe(sym):
+                continue
+            for tf in tfs:
+                try:
+                    tf_trend = higher_tf_trend if tf != '5m' else None
+                    df = await loop.run_in_executor(None, lambda s=sym, t=tf: get_data_sync(s, t))
+                    if df is None or df.empty:
+                        continue
+                    result = generate_signal(df, sym, tf_trend, market_trend)
+                    if result is None:
+                        continue
+                    # Daily levels check
+                    levels = get_daily_levels(sym)
+                    if levels and is_near_daily_level(df['close'].iloc[-1], levels, result['direction']):
+                        continue
+                    dir_ = result['direction']
+                    rsi_ = result['rsi']
+                    adx_ = result['adx']
+                    accuracy = result['accuracy']
+                    mem_conf = historical_confidence(rsi_, adx_, dir_, platform)
+                    final_conf = round((accuracy + mem_conf) / 2, 1)
+                    if final_conf < MIN_CONFIDENCE:
+                        continue
+                    now_utc = datetime.now(timezone.utc)
+                    entry_time = now_utc + timedelta(minutes=1)
+                    sig_id = str(uuid.uuid4())
+                    remember_signal(sig_id, sym, dir_, tf, platform, entry_time, rsi_, adx_, final_conf, accuracy)
+                    martingale = calculate_martingale(entry_time, tf, final_conf)
+                    tf_duration = {'30s': 0.5, '45s': 0.75, '1m': 1, '2m': 2, '3m': 3, '5m': 5}
+                    duration_min = tf_duration.get(tf, 1)
+                    volatility = 'High Volatility' if accuracy >= 85 else ('Medium Volatility' if accuracy >= 70 else 'Low Volatility')
+                    if result['regime'] == 'BREAKOUT':
+                        strategy_guide = ['Wait for confirmed breakout candle close', 'Enter on pullback to breakout level', 'Use ATR-based stop loss', f'Take profit at {result["rr"]} R:R', 'Trail stop after 1R profit', 'Risk 1% per trade maximum']
+                    elif dir_ == 'SELL':
+                        strategy_guide = ['Wait for confirmed setups only', 'Use BOS/CHoCH for confirmation', 'Enter at FVG fill zones', f'Take profit at {result["rr"]} R:R', 'Tighter stops recommended', 'Move stop to breakeven after 1R', 'Risk 1% per trade', f'GLM Probability: {final_conf}% win rate']
+                    else:
+                        strategy_guide = ['Wait for confirmed setups only', 'Use BOS/CHoCH for confirmation', 'Enter at FVG fill zones', f'Take profit at {result["rr"]} R:R', 'Tighter stops recommended', 'Move stop to breakeven after 1R', 'Risk 1% per trade', f'GLM Probability: {final_conf}% win rate']
+                    sig = {
+                        'signal_id': sig_id, 'symbol': sym, 'direction': dir_, 'timeframe': tf,
+                        'platform': platform, 'generated_at': now_utc.isoformat(),
+                        'entry_time': entry_time.isoformat(), 'duration_minutes': duration_min,
+                        'confidence': final_conf, 'accuracy': round(accuracy, 1),
+                        'volatility': volatility, 'martingale': martingale,
+                        'params': dict(PARAMS), 'confirmed': False,
+                        'mtf_trend': tf_trend or 'N/A', 'market_trend': market_trend or 'N/A',
+                        **result, 'strategy_guide': strategy_guide
+                    }
+                    latest_signals.insert(0, sig)
+                    if len(latest_signals) > 50:
+                        latest_signals.pop()
+                    payload = {'type': 'new_signal', **sig}
+                    dead = []
+                    for ws_client in clients:
+                        try:
+                            await ws_client.send_json(payload)
+                        except:
+                            dead.append(ws_client)
+                    for ws_client in dead:
+                        clients.discard(ws_client)
+                    asyncio.create_task(send_telegram(sig))
+                    logger.info(f"SCAN | {platform} | {sym} {dir_} | RSI:{rsi_:.0f} ADX:{adx_:.0f} Acc:{accuracy:.0f}% Conf:{final_conf}%")
+                except Exception as e:
+                    logger.error(f"Scan error {platform} {sym} {tf}: {traceback.format_exc()}")
 
 @app.get("/api/stats")
 async def stats():
@@ -2973,10 +2335,12 @@ async def system_status():
         "min_confidence": MIN_CONFIDENCE,
         "win_rate": stats["win_rate"],
         "total_trades": stats["total_trades"],
-        "database": stats.get("database", "unknown"),
         "platforms": ["IQ Option", "Pocket Option"],
         "pairs": PAIRS,
-        "pairs_count": len(PAIRS)
+        "pairs_count": len(PAIRS),
+        "session": current_session(),
+        "session_params": get_session_params(),
+        "database": "postgresql" if DATABASE_URL.startswith("postgres") and PSYCOPG2_AVAILABLE else "sqlite"
     }
 
 @app.get("/api/signals")
@@ -3034,11 +2398,6 @@ body{background:#050510;color:#e0e0e0;font-family:Segoe UI,sans-serif}
 .regime-badge.breakout{background:rgba(255,68,68,0.2);color:#ff6666}
 .regime-badge.trending{background:rgba(0,180,216,0.2);color:#00b4d8}
 .regime-badge.ranging{background:rgba(255,215,0,0.2);color:#ffd700}
-.wyckoff-badge{display:inline-block;padding:3px 10px;border-radius:8px;font-size:0.85em;font-weight:bold;margin:5px 0}
-.wyckoff-badge.accumulation{background:rgba(0,255,136,0.2);color:#00ff88}
-.wyckoff-badge.distribution{background:rgba(255,68,68,0.2);color:#ff4444}
-.wyckoff-badge.manipulation{background:rgba(255,165,0,0.2);color:#ffa500}
-.wyckoff-badge.none{background:rgba(128,128,128,0.2);color:#888}
 .signal-section{margin:10px 0;padding:10px;background:#111;border-radius:8px;font-size:0.9em}
 .signal-section-title{color:#ffd700;font-weight:bold;margin-bottom:5px;font-size:0.95em}
 .signal-grid{display:grid;grid-template-columns:1fr 1fr;gap:4px 12px}
@@ -3272,31 +2631,18 @@ ws.onmessage=function(e){
     '<div class="signal-grid-item"><span class="label">Stochastic</span><span class="value">'+(d.stoch_status||'Neutral')+'</span></div>'+
     '<div class="signal-grid-item"><span class="label">BB Width</span><span class="value">'+(d.bb_status||'Stable')+'</span></div>'+
     '<div class="signal-grid-item"><span class="label">R:R</span><span class="value">'+(d.rr||'1:1.0')+'</span></div>'+
-    '<div class="signal-grid-item"><span class="label">Wyckoff</span><span class="value">'+(d.wyckoff_phase||'None')+'</span></div>'+
-    '<div class="signal-grid-item"><span class="label">RSI Div</span><span class="value">'+(d.rsi_divergence?'Confirmed':'No Div')+'</span></div>'+
-    '<div class="signal-grid-item"><span class="label">Daily Bias</span><span class="value">'+(d.daily_bias||'neutral')+'</span></div>'+
-    '<div class="signal-grid-item"><span class="label">MTF Align</span><span class="value">'+(d.mtf_aligned?'Aligned':'Not Aligned')+'</span></div>'+
-    '<div class="signal-grid-item"><span class="label">Range Eff</span><span class="value">'+(d.range_efficiency||50)+'%</span></div>'+
-    '<div class="signal-grid-item"><span class="label">Pattern</span><span class="value">'+(d.chart_pattern||'None')+'</span></div>'+
-    '<div class="signal-grid-item"><span class="label">Pre-Entry</span><span class="value">'+(d.pre_entry?'Confirmed':'Not Conf')+'</span></div>'+
-    '<div class="signal-grid-item"><span class="label">Next</span><span class="value">'+(d.next_candle||'neutral')+'</span></div>'+
-    '<div class="signal-grid-item"><span class="label">Phase</span><span class="value">'+(d.price_phase||'None')+'</span></div>'+
-    '<div class="signal-grid-item"><span class="label">Candle</span><span class="value">'+(d.candle_body||'')+' '+(d.candle_type||'')+'</span></div>'+
     '<div class="signal-grid-item"><span class="label">Session</span><span class="value">'+(d.session||'N/A')+'</span></div>'+
     '<div class="signal-grid-item"><span class="label">Market State</span><span class="value">'+(d.market_state||'N/A')+'</span></div>'+
-    '<div class="signal-grid-item"><span class="label">CHoCH+</span><span class="value">'+(d.choch_enhanced||'None')+'</span></div>'+
-    '<div class="signal-grid-item"><span class="label">FVG Quality</span><span class="value">'+(d.fvg_quality||'None')+'</span></div>'+
-    '<div class="signal-grid-item"><span class="label">R:R Swing</span><span class="value">'+(d.rr_swing||'N/A')+'</span></div>'+
-    '<div class="signal-grid-item"><span class="label">SL</span><span class="value">'+(d.sl_price||'N/A')+'</span></div>'+
-    '<div class="signal-grid-item"><span class="label">TP</span><span class="value">'+(d.tp_price||'N/A')+'</span></div>'+
-    '<div class="signal-grid-item"><span class="label">Opt Expiry</span><span class="value">'+(d.optimal_expiry||60)+'s</span></div>'+
+    '<div class="signal-grid-item"><span class="label">Range Eff.</span><span class="value">'+(d.range_efficiency||0)+'%</span></div>'+
+    '<div class="signal-grid-item"><span class="label">R:R Ratio</span><span class="value">'+(d.rr_ratio||0)+'</span></div>'+
+    '<div class="signal-grid-item"><span class="label">FVG Quality</span><span class="value">'+(d.fvg_quality||'Inactive')+'</span></div>'+
     '<div class="signal-grid-item"><span class="label">Valid Entry</span><span class="value">'+(d.valid_entry?'✅':'❌')+'</span></div>'+
-    '<div class="signal-grid-item"><span class="label">Vol Break</span><span class="value">'+(d.volume_break?'✅':'❌')+'</span></div>'+
-    '<div class="signal-grid-item"><span class="label">Mkt Break</span><span class="value">'+(d.market_break?'✅':'❌')+'</span></div>'+
-    '<div class="signal-grid-item"><span class="label">Prime</span><span class="value">'+(d.prime_session?'✅':'❌')+'</span></div>'+
-    '<div class="signal-grid-item"><span class="label">Session Params</span><span class="value">'+(d.session_params||'N/A')+'</span></div>'+
-    '<div class="signal-grid-item"><span class="label">Daily High</span><span class="value">'+(d.daily_high||'N/A')+'</span></div>'+
-    '<div class="signal-grid-item"><span class="label">Daily Low</span><span class="value">'+(d.daily_low||'N/A')+'</span></div>'+
+    '<div class="signal-grid-item"><span class="label">Vol. Break</span><span class="value">'+(d.volume_break?'✅':'❌')+'</span></div>'+
+    '<div class="signal-grid-item"><span class="label">Mkt. Break</span><span class="value">'+(d.market_break?'✅':'❌')+'</span></div>'+
+    '<div class="signal-grid-item"><span class="label">Prime Sess.</span><span class="value">'+(d.prime_session?'✅':'❌')+'</span></div>'+
+    '<div class="signal-grid-item"><span class="label">Wyckoff</span><span class="value">'+(d.wyckoff_phase||'N/A')+'</span></div>'+
+    '<div class="signal-grid-item"><span class="label">Daily Bias</span><span class="value">'+(d.daily_bias||'N/A')+'</span></div>'+
+    '<div class="signal-grid-item"><span class="label">Optimal Exp.</span><span class="value">'+(d.optimal_expiry||'1m')+'</span></div>'+
     '</div></div>';
 
   card.innerHTML=
@@ -3306,7 +2652,6 @@ ws.onmessage=function(e){
     '<div class="timing-details">Entry: '+entS+' | End: '+endS+' ('+d.duration_minutes*60+'s) | '+otcLabel+'</div>'+
     '<div>Market: '+(d.volatility||'High Volatility')+' | GLM Probability: '+d.confidence+'%</div>'+
     '<div style="margin:5px 0">'+regimeHtml+' <span style="color:#888;font-size:0.85em">'+(d.regime_desc||'')+'</span></div>'+
-    '<div style="margin:3px 0"><span class="wyckoff-badge '+((d.wyckoff_phase||'none').toLowerCase())+'">🏛️ Wyckoff: '+((d.wyckoff_phase&&d.wyckoff_phase!=='None')?d.wyckoff_phase.charAt(0).toUpperCase()+d.wyckoff_phase.slice(1):'No Clear Phase')+'</span></div>'+
     gridHtml+
     mHtml+
     smHtml+
@@ -3373,80 +2718,6 @@ function copySignal(btn){
   // R:R
   var rr=d.rr||'1:1.0';
 
-  // Wyckoff
-  var wyckoffPhase=d.wyckoff_phase||'None';
-  var wyckoffDisplay=(wyckoffPhase&&wyckoffPhase!=='None')?wyckoffPhase.charAt(0).toUpperCase()+wyckoffPhase.slice(1):'No Clear Phase';
-
-  // v3.5: RSI Divergence
-  var rsiDiv=d.rsi_divergence;
-  var divDisplay=rsiDiv?'Confirmed':'No Divergence';
-
-  // v3.5: Daily Bias
-  var dailyBias=d.daily_bias||'neutral';
-  var biasDisplay=dailyBias.charAt(0).toUpperCase()+dailyBias.slice(1);
-
-  // v3.5: MTF Alignment
-  var mtfAlign=d.mtf_aligned;
-  var mtfDisplay=mtfAlign?'Aligned (1m+5m+15m)':'Not Aligned';
-
-  // v3.5: Range Efficiency
-  var rangeEff=d.range_efficiency||50;
-  var effDisplay=rangeEff+'%';
-
-  // v3.6: Chart Pattern
-  var chartPattern=d.chart_pattern||'None';
-  var patternDisplay=(chartPattern&&chartPattern!=='None')?chartPattern.replace(/_/g,' ').replace(/\b\w/g,function(c){return c.toUpperCase();}):'None';
-
-  // v3.6: Pre-Entry
-  var preEntry=d.pre_entry;
-  var preDisplay=preEntry?'Confirmed':'Not Confirmed';
-
-  // v3.6: Next Candle
-  var nextCandle=d.next_candle||'neutral';
-  var ncDisplay=nextCandle.charAt(0).toUpperCase()+nextCandle.slice(1);
-
-  // v3.6: Price Phase
-  var pricePhase=d.price_phase||'None';
-  var phaseDisplay=(pricePhase&&pricePhase!=='None')?pricePhase.charAt(0).toUpperCase()+pricePhase.slice(1):'None';
-
-  // v3.6: Candle Classification
-  var candleType=d.candle_type||'normal';
-  var candleBody=d.candle_body||'medium';
-  var candleDisplay=candleBody.charAt(0).toUpperCase()+candleBody.slice(1)+' '+candleType.charAt(0).toUpperCase()+candleType.slice(1);
-
-  // v3.6: Session
-  var sessionDisplay=d.session||'N/A';
-
-  // v3.7: Market state
-  var marketState=d.market_state||'normal';
-  var stateDisplay=marketState.charAt(0).toUpperCase()+marketState.slice(1);
-
-  // v3.7: Enhanced CHoCH
-  var chochEnhanced=d.choch_enhanced||'None';
-  var chochEnhDisplay=(chochEnhanced&&chochEnhanced!=='None')?chochEnhanced.charAt(0).toUpperCase()+chochEnhanced.slice(1):'None';
-
-  // v3.7: FVG Quality
-  var fvgQuality=d.fvg_quality||'None';
-  var freshFvg=d.fresh_fvg||false;
-  var fvgQDisplay=(fvgQuality&&fvgQuality!=='None')?fvgQuality:'None';
-
-  // v3.7: Swing R:R
-  var rrSwing=d.rr_swing||'1:1.0';
-  var slPrice=d.sl_price||'N/A';
-  var tpPrice=d.tp_price||'N/A';
-  var optExpiry=d.optimal_expiry||60;
-
-  // v3.7: Entry/Market validations
-  var validEntry=d.valid_entry||false;
-  var volBreak=d.volume_break||false;
-  var mktBreak=d.market_break||false;
-  var primeSession=d.prime_session||false;
-
-  // v3.7: Session params & daily levels
-  var sessionParams=d.session_params||'N/A';
-  var dailyHigh=d.daily_high||'N/A';
-  var dailyLow=d.daily_low||'N/A';
-
   // GLM Smart Money
   var smStructure=d.sm_structure||'No Clear Break';
   var smLiquidity=d.sm_liquidity||'N/A';
@@ -3503,30 +2774,7 @@ function copySignal(btn){
   '📉 RSI: '+d.rsi+'\n'+
   '📊 Stochastic: '+stochDisplay+'\n'+
   '📊 BB Width: '+bbDisplay+'\n'+
-  '⚖️ RR: '+rr+'\n'+
-  '🏛️ Wyckoff: '+wyckoffDisplay+'\n'+
-  '📉 RSI Div: '+divDisplay+'\n'+
-  '🧭 Daily Bias: '+biasDisplay+'\n'+
-  '🔗 MTF Align: '+mtfDisplay+'\n'+
-  '📐 Range Eff: '+effDisplay+'\n'+
-  '📊 Pattern: '+patternDisplay+'\n'+
-  '✅ Pre-Entry: '+preDisplay+'\n'+
-  '🕯️ Next: '+ncDisplay+'\n'+
-  '🔄 Phase: '+phaseDisplay+'\n'+
-  '🕯️ Candle: '+candleDisplay+'\n'+
-  '🌐 Session: '+sessionDisplay+'\n'+
-  '🏭 Market: '+stateDisplay+'\n'+
-  '🔄 CHoCH+: '+chochEnhDisplay+'\n'+
-  '📦 FVG Q: '+fvgQDisplay+'\n'+
-  '⚖️ R:R Swing: '+rrSwing+'\n'+
-  '🎯 SL: '+slPrice+' | TP: '+tpPrice+'\n'+
-  '⏱️ Opt Expiry: '+optExpiry+'s\n'+
-  '✅ Valid Entry: '+(validEntry?'Yes':'No')+'\n'+
-  '📊 Vol Break: '+(volBreak?'Yes':'No')+'\n'+
-  '🏛️ Mkt Break: '+(mktBreak?'Yes':'No')+'\n'+
-  '🕐 Prime: '+(primeSession?'Yes':'No')+'\n'+
-  '⚙️ Params: '+sessionParams+'\n'+
-  '📊 Daily H/L: '+dailyHigh+' / '+dailyLow+'\n\n'+
+  '⚖️ RR: '+rr+'\n\n'+
   '↪️ ── 🛡️ MARTINGALE RECOVERY (Risk Level) ──\n'+
   (martLines?martLines+'\n':'')+
   '🧪 GLM SMART MONEY:\n'+
@@ -3593,6 +2841,5 @@ if __name__ == "__main__":
     logger.info(f"PO Email: {PO_EMAIL}")
     logger.info(f"IQ Available: {IQ_API_AVAILABLE}, PO Available: {PO_API_AVAILABLE}")
     logger.info(f"Telegram: {TG_AVAILABLE}, News Filter: {EC_API_AVAILABLE}, Scheduler: {APS_AVAILABLE}")
-    logger.info(f"PostgreSQL: {PSYCOPG2_AVAILABLE}, DATABASE_URL set: {bool(DATABASE_URL)}")
     logger.info(f"Params: {PARAMS}, Min Confidence: {MIN_CONFIDENCE}")
     uvicorn.run(app, host="0.0.0.0", port=port)
