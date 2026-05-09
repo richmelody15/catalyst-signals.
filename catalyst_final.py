@@ -1443,6 +1443,11 @@ async def send_telegram(signal: dict):
         mkt_break = signal.get('market_break', False)
         prime_session = signal.get('prime_session', False)
 
+        # v3.7: Session params & daily levels
+        session_params = signal.get('session_params', 'N/A')
+        daily_high = signal.get('daily_high', 'N/A')
+        daily_low = signal.get('daily_low', 'N/A')
+
         # Signal status
         sig_status = 'HIGH PROBABILITY ONLY' if signal['confidence'] >= 85 else 'MODERATE PROBABILITY'
 
@@ -1490,6 +1495,8 @@ async def send_telegram(signal: dict):
 📊 Vol Break: {'Yes' if vol_break else 'No'}
 🏛️ Mkt Break: {'Yes' if mkt_break else 'No'}
 🕐 Prime: {'Yes' if prime_session else 'No'}
+⚙️ Params: {session_params}
+📊 Daily H/L: {daily_high} / {daily_low}
 
 ↪️ ── 🛡️ MARTINGALE RECOVERY (Risk Level) ──
 {mart_block}
@@ -1528,6 +1535,52 @@ PARAMS = {
     'vol_mult': 1.5,
 }
 MIN_CONFIDENCE = 80.0
+
+# v3.7: Daily levels cache (updated once per day from 15m/1d data)
+DAILY_LEVELS: Dict[str, dict] = {}
+
+# v3.7: Session-specific parameter profiles
+SESSION_PROFILES = {
+    'London':      {'rsi_buy': 30, 'rsi_sell': 70, 'adx_min': 30, 'vol_mult': 1.8},
+    'New York':    {'rsi_buy': 28, 'rsi_sell': 72, 'adx_min': 32, 'vol_mult': 2.0},
+    'Sydney/Tokyo': {'rsi_buy': 35, 'rsi_sell': 65, 'adx_min': 25, 'vol_mult': 1.4},
+    'Low Liquidity': {'rsi_buy': 38, 'rsi_sell': 62, 'adx_min': 35, 'vol_mult': 2.2},
+}
+
+def get_session_params() -> dict:
+    """Return session-specific PARAMS merged with base PARAMS."""
+    sess = current_session()
+    profile = SESSION_PROFILES.get(sess, {})
+    return {**PARAMS, **profile}
+
+def get_daily_levels(symbol: str) -> dict:
+    """Fetch yesterday's high/low. For OTC we approximate from 1d data (24h).
+    Returns dict with 'high' and 'low' keys, or empty dict if not cached."""
+    return DAILY_LEVELS.get(symbol, {})
+
+def update_daily_levels(symbol: str, df: pd.DataFrame):
+    """Update daily levels from the last 24h of data."""
+    if len(df) < 20:
+        return
+    recent = df.iloc[-96:]  # ~24h of 15m data
+    DAILY_LEVELS[symbol] = {
+        'high': float(recent['high'].max()),
+        'low': float(recent['low'].min()),
+    }
+
+def is_near_daily_level(price: float, levels: dict, direction: str, buffer: float = 0.001) -> bool:
+    """Return True if price is too close to a level that opposes the trade."""
+    if not levels:
+        return False
+    if direction == 'BUY':
+        # Avoid buying right under yesterday's high (resistance)
+        if 'high' in levels and price >= levels['high'] * (1 - buffer):
+            return True
+    else:
+        # Avoid selling right above yesterday's low (support)
+        if 'low' in levels and price <= levels['low'] * (1 + buffer):
+            return True
+    return False
 
 def init_memory():
     conn = sqlite3.connect(MEMORY_DB)
@@ -1711,30 +1764,29 @@ async def weekly_optimise():
     try:
         conn = sqlite3.connect(MEMORY_DB)
         cur = conn.cursor()
-        cur.execute("SELECT outcome, direction, rsi, adx, confidence, accuracy FROM trades WHERE outcome IN ('win','loss') ORDER BY entry_time DESC LIMIT 500")
+        cur.execute("SELECT rsi, adx, confidence, outcome FROM trades WHERE outcome IN ('win','loss') ORDER BY entry_time DESC LIMIT 500")
         rows = cur.fetchall()
         conn.close()
 
-        if len(rows) < 50:
-            logger.info("Weekly optimize: not enough data yet")
+        if len(rows) < 200:
+            logger.info(f"Weekly optimize: only {len(rows)} trades, need 200+")
             return
 
         global PARAMS, MIN_CONFIDENCE
-        wins = sum(1 for r in rows if r[0] == 'win')
+        wins = sum(1 for r in rows if r[3] == 'win')
         wr = wins / len(rows)
-        logger.info(f"Weekly optimize: WR={wr:.1%} over {len(rows)} trades")
+        logger.info(f"Weekly optimisation: win rate {wr:.1%}")
 
-        if wr < 0.85:
-            PARAMS['adx_min'] = min(40, PARAMS['adx_min'] + 2)
-            PARAMS['rsi_buy'] = max(18, PARAMS['rsi_buy'] - 2)
-            PARAMS['rsi_sell'] = min(82, PARAMS['rsi_sell'] + 2)
-            MIN_CONFIDENCE = min(93, MIN_CONFIDENCE + 1)
-            logger.warning(f"Weekly TIGHTEN: {PARAMS}, min conf {MIN_CONFIDENCE}")
-        elif wr >= 0.92:
-            PARAMS['adx_min'] = max(20, PARAMS['adx_min'] - 1)
-            if MIN_CONFIDENCE > 78:
-                MIN_CONFIDENCE -= 1
-            logger.info(f"Weekly RELAX: {PARAMS}, min conf {MIN_CONFIDENCE}")
+        if wr < 0.93:
+            PARAMS['rsi_buy'] = max(15, PARAMS['rsi_buy'] - 2)
+            PARAMS['rsi_sell'] = min(85, PARAMS['rsi_sell'] + 2)
+            PARAMS['adx_min'] = min(45, PARAMS['adx_min'] + 3)
+            PARAMS['vol_mult'] = min(3.0, PARAMS['vol_mult'] + 0.2)
+            MIN_CONFIDENCE = min(95, MIN_CONFIDENCE + 2)
+            logger.warning(f"Weekly tightening: {PARAMS}, min conf {MIN_CONFIDENCE}")
+        elif wr > 0.97 and PARAMS['adx_min'] > 25:
+            PARAMS['adx_min'] = max(25, PARAMS['adx_min'] - 1)
+            logger.info(f"Weekly relaxing: ADX back to {PARAMS['adx_min']}")
     except Exception as e:
         logger.error(f"Weekly optimize error: {e}")
 
@@ -1759,6 +1811,16 @@ def generate_signal(df, symbol="", higher_tf_trend=None, market_trend=None):
     if not is_prime_session():
         return None
 
+    # v3.7: Session-based parameters (merged with base PARAMS)
+    local_params = get_session_params()
+
+    # v3.7: Update daily levels from df
+    if symbol:
+        update_daily_levels(symbol, df)
+
+    # v3.7: Daily levels for this symbol
+    daily_levels = get_daily_levels(symbol)
+
     close = df['close']
     high = df['high']
     low = df['low']
@@ -1780,7 +1842,7 @@ def generate_signal(df, symbol="", higher_tf_trend=None, market_trend=None):
     avg_vol = volume.iloc[-20:-1].mean()
     if avg_vol == 0:
         avg_vol = 1
-    vol_spike = volume.iloc[-1] >= avg_vol * PARAMS['vol_mult']
+    vol_spike = volume.iloc[-1] >= avg_vol * local_params['vol_mult']
 
     bb_w = bb_width(close, 20)
     if len(bb_w) < 20:
@@ -1964,10 +2026,14 @@ def generate_signal(df, symbol="", higher_tf_trend=None, market_trend=None):
             'volume_break': True,  # already checked in BUY/SELL condition
             'market_break': True,  # already checked in BUY/SELL condition
             'prime_session': True,  # already checked at top
+            # v3.7: Session params & daily levels
+            'session_params': f"RSI<{local_params['rsi_buy']}/{local_params['rsi_sell']} ADX>{local_params['adx_min']} VolX{local_params['vol_mult']}",
+            'daily_high': round(daily_levels.get('high', 0), 5) if daily_levels else 'N/A',
+            'daily_low': round(daily_levels.get('low', 0), 5) if daily_levels else 'N/A',
         }
 
     # ===== BUY SIGNAL =====
-    if (bull and rsi_val < PARAMS['rsi_buy'] and adx_val > PARAMS['adx_min'] and
+    if (bull and rsi_val < local_params['rsi_buy'] and adx_val > local_params['adx_min'] and
         vol_spike and bb_sq and bb_exp and buy_sr and
         (fresh_fvg and fvg_dir == 'bullish') and
         (struct == 'bullish' or mss == 'bullish' or choch == 'bullish') and
@@ -1991,6 +2057,9 @@ def generate_signal(df, symbol="", higher_tf_trend=None, market_trend=None):
             return None
         if not protected_swings_ok(df, direction):
             return None
+        # v3.7: Daily level filter - avoid buying right under yesterday's high
+        if is_near_daily_level(price, daily_levels, 'BUY'):
+            return None
         # v3.7: Check for failed reversal
         fail = failed_reversal(df, 'BUY')
         if fail == 'continue_bearish':
@@ -2006,11 +2075,12 @@ def generate_signal(df, symbol="", higher_tf_trend=None, market_trend=None):
                                       candle_class=candle_class,
                                       choch_ok=(choch == 'bullish'), fresh_fvg_ok=fresh_fvg,
                                       market_state_ok=(market_state in ('strong', 'normal')),
-                                      valid_entry_ok=True, vol_break_ok=True, mkt_break_ok=True, rr_ok=True)
+                                      valid_entry_ok=True, vol_break_ok=True, mkt_break_ok=True, rr_ok=True,
+                                      params=local_params)
         return make_signal_dict('BUY', rsi_val, adx_val, accuracy, mtf_ok, market_ok)
 
     # ===== SELL SIGNAL =====
-    if (bear and rsi_val > PARAMS['rsi_sell'] and adx_val > PARAMS['adx_min'] and
+    if (bear and rsi_val > local_params['rsi_sell'] and adx_val > local_params['adx_min'] and
         vol_spike and bb_sq and bb_exp and sell_sr and
         (fresh_fvg and fvg_dir == 'bearish') and
         (struct == 'bearish' or mss == 'bearish' or choch == 'bearish') and
@@ -2034,6 +2104,9 @@ def generate_signal(df, symbol="", higher_tf_trend=None, market_trend=None):
             return None
         if not protected_swings_ok(df, direction):
             return None
+        # v3.7: Daily level filter - avoid selling right above yesterday's low
+        if is_near_daily_level(price, daily_levels, 'SELL'):
+            return None
         # v3.7: Check for failed reversal
         fail = failed_reversal(df, 'SELL')
         if fail == 'continue_bullish':
@@ -2048,18 +2121,20 @@ def generate_signal(df, symbol="", higher_tf_trend=None, market_trend=None):
                                       candle_class=candle_class,
                                       choch_ok=(choch == 'bearish'), fresh_fvg_ok=fresh_fvg,
                                       market_state_ok=(market_state in ('strong', 'normal')),
-                                      valid_entry_ok=True, vol_break_ok=True, mkt_break_ok=True, rr_ok=True)
+                                      valid_entry_ok=True, vol_break_ok=True, mkt_break_ok=True, rr_ok=True,
+                                      params=local_params)
         return make_signal_dict('SELL', rsi_val, adx_val, accuracy, mtf_ok, market_ok)
 
     return None
 
-def calculate_accuracy(direction, rsi_val, adx_val, vol_spike, bb_sq, bb_exp, sd, fvg_, struct, mss, reversal, cand_conf, mom_ok, mtf_ok, market_ok=True, wyckoff_ok=True, div_ok=True, bias_ok=False, mtf_aligned_ok=False, range_eff=50, pre_entry_ok=False, next_candle_ok=False, price_phase=None, chart_pattern=None, candle_class=None, choch_ok=False, fresh_fvg_ok=False, market_state_ok=False, valid_entry_ok=False, vol_break_ok=False, mkt_break_ok=False, rr_ok=False):
+def calculate_accuracy(direction, rsi_val, adx_val, vol_spike, bb_sq, bb_exp, sd, fvg_, struct, mss, reversal, cand_conf, mom_ok, mtf_ok, market_ok=True, wyckoff_ok=True, div_ok=True, bias_ok=False, mtf_aligned_ok=False, range_eff=50, pre_entry_ok=False, next_candle_ok=False, price_phase=None, chart_pattern=None, candle_class=None, choch_ok=False, fresh_fvg_ok=False, market_state_ok=False, valid_entry_ok=False, vol_break_ok=False, mkt_break_ok=False, rr_ok=False, params=None):
     """Return accuracy score 0-100 based on confirmation strength."""
+    p = params or PARAMS
     score = 0
     if direction == 'BUY':
-        score += min(30, max(0, (PARAMS['rsi_buy'] - rsi_val)))
+        score += min(30, max(0, (p['rsi_buy'] - rsi_val)))
     else:
-        score += min(30, max(0, (rsi_val - PARAMS['rsi_sell'])))
+        score += min(30, max(0, (rsi_val - p['rsi_sell'])))
     score += min(20, max(0, (adx_val - 20)))
     if vol_spike: score += 10
     if bb_sq and bb_exp: score += 10
@@ -2934,6 +3009,9 @@ ws.onmessage=function(e){
     '<div class="signal-grid-item"><span class="label">Vol Break</span><span class="value">'+(d.volume_break?'✅':'❌')+'</span></div>'+
     '<div class="signal-grid-item"><span class="label">Mkt Break</span><span class="value">'+(d.market_break?'✅':'❌')+'</span></div>'+
     '<div class="signal-grid-item"><span class="label">Prime</span><span class="value">'+(d.prime_session?'✅':'❌')+'</span></div>'+
+    '<div class="signal-grid-item"><span class="label">Session Params</span><span class="value">'+(d.session_params||'N/A')+'</span></div>'+
+    '<div class="signal-grid-item"><span class="label">Daily High</span><span class="value">'+(d.daily_high||'N/A')+'</span></div>'+
+    '<div class="signal-grid-item"><span class="label">Daily Low</span><span class="value">'+(d.daily_low||'N/A')+'</span></div>'+
     '</div></div>';
 
   card.innerHTML=
@@ -3079,6 +3157,11 @@ function copySignal(btn){
   var mktBreak=d.market_break||false;
   var primeSession=d.prime_session||false;
 
+  // v3.7: Session params & daily levels
+  var sessionParams=d.session_params||'N/A';
+  var dailyHigh=d.daily_high||'N/A';
+  var dailyLow=d.daily_low||'N/A';
+
   // GLM Smart Money
   var smStructure=d.sm_structure||'No Clear Break';
   var smLiquidity=d.sm_liquidity||'N/A';
@@ -3156,7 +3239,9 @@ function copySignal(btn){
   '✅ Valid Entry: '+(validEntry?'Yes':'No')+'\n'+
   '📊 Vol Break: '+(volBreak?'Yes':'No')+'\n'+
   '🏛️ Mkt Break: '+(mktBreak?'Yes':'No')+'\n'+
-  '🕐 Prime: '+(primeSession?'Yes':'No')+'\n\n'+
+  '🕐 Prime: '+(primeSession?'Yes':'No')+'\n'+
+  '⚙️ Params: '+sessionParams+'\n'+
+  '📊 Daily H/L: '+dailyHigh+' / '+dailyLow+'\n\n'+
   '↪️ ── 🛡️ MARTINGALE RECOVERY (Risk Level) ──\n'+
   (martLines?martLines+'\n':'')+
   '🧪 GLM SMART MONEY:\n'+
