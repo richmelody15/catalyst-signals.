@@ -5,7 +5,7 @@ numpy>=1.24.0
 pytz>=2023.3
 python-dotenv>=1.0.0
 websockets>=12.0
-iqoptionapi
+iqoptionapi>=6.8.0
 # Pocket Option API - install from GitHub (not on PyPI):
 #   pip install git+https://github.com/A11ksa/API-Pocket-Option.git
 pocket-option

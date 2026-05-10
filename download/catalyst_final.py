@@ -2219,29 +2219,49 @@ PO_SYMBOL_MAP = {
 }
 
 def connect_iq_option():
+    """Connect to IQ Option with robust error handling and reconnection."""
     global iq_api, iq_connected
     if not USE_IQ_OPTION or not IQ_API_AVAILABLE:
+        logger.warning("IQ Option disabled or library not installed")
         return False
     if not IQ_EMAIL:
-        # No email configured
+        logger.warning("IQ_EMAIL not set - cannot connect")
         return False
     try:
         iq_api = IQ_Option(IQ_EMAIL, IQ_PASSWORD)
         check, reason = iq_api.connect()
         if check:
+            # Double-connect for session stability
             iq_api.connect()
             iq_connected = True
-            if iq_practice_mode:
-                iq_api.change_balance("PRACTICE")
-            logger.info(f"IQ Option connected ({'PRACTICE' if iq_practice_mode else 'REAL'})")
+            try:
+                if iq_practice_mode:
+                    iq_api.change_balance("PRACTICE")
+                    logger.info("IQ Option: PRACTICE mode active")
+                else:
+                    iq_api.change_balance("REAL")
+                    logger.info("IQ Option: REAL mode active")
+            except Exception as e:
+                logger.warning(f"IQ Option balance mode error: {e}")
+            # Verify connection by trying to get candles
+            try:
+                test = iq_api.get_candles("EURUSD-OTC", 60, 5, time.time())
+                if test and len(test) > 0:
+                    logger.info(f"IQ Option connected + verified - real candle data available ({len(test)} candles)")
+                else:
+                    logger.warning("IQ Option connected but candle test returned empty - OTC may not be available")
+            except Exception as e:
+                logger.warning(f"IQ Option connected but candle test failed: {e}")
             return True
         else:
             logger.error(f"IQ Option connection failed: {reason}")
             iq_api = None
+            iq_connected = False
             return False
     except Exception as e:
         logger.error(f"IQ Option API error: {e}")
         iq_api = None
+        iq_connected = False
         return False
 
 def connect_pocket_option():
@@ -2276,16 +2296,24 @@ def connect_brokers():
     return iq_ok or po_ok
 
 def fetch_iq_candles(symbol: str, tf: str, count: int = 120) -> Optional[pd.DataFrame]:
+    """Fetch real candle data from IQ Option API. Returns DataFrame or None."""
     global iq_connected
     if not iq_connected or iq_api is None:
         return None
     iq_symbol = IQ_SYMBOL_MAP.get(symbol, symbol)
     tf_sec = TF_SECONDS.get(tf, 60)
     try:
+        # Try reconnecting if needed
+        try:
+            iq_api.connect()
+        except:
+            pass
         candles = iq_api.get_candles(iq_symbol, tf_sec, count, time.time())
-        if not candles or len(candles) < 30:
+        if not candles or len(candles) < 10:
+            logger.debug(f"IQ: insufficient candles for {iq_symbol} {tf} (got {len(candles) if candles else 0})")
             return None
         df = pd.DataFrame(candles)
+        # IQ Option API returns 'max'/'min' instead of 'high'/'low'
         rename_map = {}
         if 'max' in df.columns and 'high' not in df.columns:
             rename_map['max'] = 'high'
@@ -2295,20 +2323,34 @@ def fetch_iq_candles(symbol: str, tf: str, count: int = 120) -> Optional[pd.Data
             df = df.rename(columns=rename_map)
         for required in ['open', 'close']:
             if required not in df.columns:
+                logger.warning(f"IQ: missing required column '{required}' in candle data")
                 return None
         if 'high' not in df.columns:
             df['high'] = df[['open', 'close']].max(axis=1)
         if 'low' not in df.columns:
             df['low'] = df[['open', 'close']].min(axis=1)
+        # IQ Option OTC candles may not have volume - generate synthetic
         if 'volume' not in df.columns or df['volume'].sum() == 0:
-            df['volume'] = np.random.randint(50, 250, size=len(df))
-            spike_idx = np.random.choice(len(df), size=max(1, len(df)//20), replace=False)
-            df.iloc[spike_idx, df.columns.get_loc('volume')] = np.random.randint(300, 700, size=len(spike_idx))
+            # Use tick-based volume estimation from candle body size
+            body_sizes = (df['high'] - df['low']).abs()
+            base_vol = 100
+            df['volume'] = (body_sizes / body_sizes.mean() * base_vol).clip(lower=20).astype(int)
+            # Add volume spikes for large candles
+            avg_body = body_sizes.mean()
+            if avg_body > 0:
+                spike_mask = body_sizes > avg_body * 2
+                df.loc[spike_mask, 'volume'] = (df.loc[spike_mask, 'volume'] * 2.5).astype(int)
         if 'from' in df.columns:
             df.index = pd.to_datetime(df['from'], unit='s')
+        elif 'time' in df.columns:
+            df.index = pd.to_datetime(df['time'], unit='s')
         df = df[['open', 'high', 'low', 'close', 'volume']].copy()
-        logger.info(f"IQ: {len(df)} candles for {iq_symbol} {tf}")
-        return safe_df(df)
+        df = safe_df(df)
+        if len(df) < 30:
+            logger.debug(f"IQ: only {len(df)} valid candles for {iq_symbol} {tf}")
+            return None
+        logger.info(f"IQ: REAL DATA - {len(df)} candles for {iq_symbol} {tf}")
+        return df
     except Exception as e:
         logger.error(f"IQ fetch error {iq_symbol}: {e}")
         iq_connected = False
@@ -2356,14 +2398,8 @@ def fetch_po_candles(symbol: str, tf: str, count: int = 120) -> Optional[pd.Data
         return None
 
 def get_data_sync(symbol, tf):
-    """Synchronous data fetch - tries PO first, then IQ, then demo."""
-    if po_connected and po_api is not None and USE_POCKET_OPTION:
-        try:
-            df = fetch_po_candles(symbol, tf)
-            if df is not None and len(df) >= 30:
-                return df
-        except:
-            pass
+    """Synchronous data fetch - tries IQ first (real OTC data), then PO, then demo fallback."""
+    # Priority 1: IQ Option (best OTC data source)
     if iq_connected and iq_api is not None and USE_IQ_OPTION:
         try:
             df = fetch_iq_candles(symbol, tf)
@@ -2371,6 +2407,16 @@ def get_data_sync(symbol, tf):
                 return df
         except:
             pass
+    # Priority 2: Pocket Option
+    if po_connected and po_api is not None and USE_POCKET_OPTION:
+        try:
+            df = fetch_po_candles(symbol, tf)
+            if df is not None and len(df) >= 30:
+                return df
+        except:
+            pass
+    # Priority 3: Demo data fallback
+    logger.debug(f"No broker data for {symbol} {tf} - using demo")
     return _demo_data(symbol, tf)
 
 def _demo_data(symbol, tf):
@@ -2695,6 +2741,62 @@ async def system_status():
 async def signals_list():
     return {"signals": latest_signals[:20]}
 
+@app.get("/api/tune-progress")
+async def tune_progress():
+    """Return auto-tune progress: how many graded trades toward the 50-trade threshold."""
+    try:
+        conn = sqlite3.connect(MEMORY_DB)
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM trades WHERE outcome IN ('win','loss')")
+        graded = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM trades WHERE outcome='pending'")
+        pending = cur.fetchone()[0]
+        cur.execute("SELECT outcome FROM trades WHERE outcome IN ('win','loss') ORDER BY entry_time DESC LIMIT 50")
+        rows = cur.fetchall()
+        wins = sum(1 for r in rows if r[0] == 'win')
+        total = len(rows)
+        wr = round(wins / total * 100, 1) if total > 0 else 0
+        conn.close()
+        return {
+            "graded_trades": graded,
+            "pending_trades": pending,
+            "threshold": 50,
+            "progress_pct": min(100, round(graded / 50 * 100, 1)),
+            "current_wr": wr,
+            "auto_tune_active": graded >= 50,
+            "params": dict(PARAMS),
+            "min_confidence": MIN_CONFIDENCE,
+            "can_tune": graded >= 50,
+            "trades_needed": max(0, 50 - graded)
+        }
+    except Exception as e:
+        return {"graded_trades": 0, "threshold": 50, "progress_pct": 0, "error": str(e)}
+
+@app.get("/api/trades/recent")
+async def recent_trades(limit: int = 30):
+    """Return recent trades with outcomes for the dashboard tracker."""
+    try:
+        conn = sqlite3.connect(MEMORY_DB)
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT signal_id, symbol, direction, timeframe, platform,
+                   entry_time, outcome, rsi, adx, confidence, accuracy
+            FROM trades ORDER BY entry_time DESC LIMIT ?
+        """, (limit,))
+        rows = cur.fetchall()
+        conn.close()
+        trades = []
+        for r in rows:
+            trades.append({
+                "signal_id": r[0], "symbol": r[1], "direction": r[2],
+                "timeframe": r[3], "platform": r[4], "entry_time": r[5],
+                "outcome": r[6] or "pending", "rsi": r[7], "adx": r[8],
+                "confidence": r[9], "accuracy": r[10]
+            })
+        return {"trades": trades, "count": len(trades)}
+    except Exception as e:
+        return {"trades": [], "error": str(e)}
+
 @app.get("/")
 async def dashboard():
     return HTMLResponse(content=DASHBOARD_HTML)
@@ -2712,7 +2814,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{background:#050510;color:#e0e0e0;font-family:Segoe UI,sans-serif}
-.app{max-width:1200px;margin:0 auto;padding:20px}
+.app{max-width:1400px;margin:0 auto;padding:20px}
 .header{background:linear-gradient(135deg,#0a0a2e,#1a1a4e);border-radius:16px;padding:20px;display:flex;justify-content:space-between;align-items:center;border:1px solid #2a2a5a;margin-bottom:20px;flex-wrap:wrap;gap:10px}
 .logo{font-size:2em;font-weight:bold}.logo span{color:#00ff88}
 .status{color:#00ff88;background:rgba(0,255,136,0.1);padding:5px 15px;border-radius:20px;font-size:0.9em}
@@ -2720,6 +2822,55 @@ body{background:#050510;color:#e0e0e0;font-family:Segoe UI,sans-serif}
 .session-badge{display:inline-block;padding:3px 12px;border-radius:15px;font-size:0.9em}
 .session-active{background:rgba(0,255,136,0.1);color:#00ff88}
 .stats-bar{background:#0a0a1e;border-radius:12px;padding:10px 15px;border:1px solid #2a2a5a;font-size:0.9em;color:#aaa;flex:1;min-width:200px}
+
+/* Two-column layout */
+.main-grid{display:grid;grid-template-columns:1fr 380px;gap:20px;align-items:start}
+@media(max-width:900px){.main-grid{grid-template-columns:1fr}}
+
+/* Left column: chart + signals */
+.left-col{}
+
+/* Right column: tracker panel */
+.right-col{position:sticky;top:20px}
+.tracker-panel{background:#0a0a1e;border-radius:16px;padding:20px;border:1px solid #2a2a5a;margin-bottom:20px}
+.tracker-title{font-size:1.2em;font-weight:bold;color:#ffd700;margin-bottom:12px;display:flex;align-items:center;gap:8px}
+.pnl-row{display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid #1a1a3e;font-size:0.95em}
+.pnl-label{color:#888}
+.pnl-value{font-weight:bold;font-size:1.1em}
+.pnl-value.wins{color:#00ff88}
+.pnl-value.losses{color:#ff4444}
+.pnl-value.total{color:#ffd700}
+
+/* Auto-tune progress */
+.tune-section{margin-top:15px;padding:12px;background:#111;border-radius:10px;border:1px solid #1a1a3e}
+.tune-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+.tune-label{color:#aaa;font-size:0.9em}
+.tune-value{color:#00ff88;font-weight:bold;font-size:0.9em}
+.progress-bar{background:#1a1a3e;border-radius:8px;height:12px;overflow:hidden;margin-bottom:8px}
+.progress-fill{height:100%;border-radius:8px;transition:width .5s ease;background:linear-gradient(90deg,#ff4444,#ffd700,#00ff88)}
+.tune-status{font-size:0.85em;padding:6px 10px;border-radius:6px;text-align:center;margin-top:6px}
+.tune-active{background:rgba(0,255,136,0.15);color:#00ff88}
+.tune-pending{background:rgba(255,215,0,0.15);color:#ffd700}
+.tune-params{font-size:0.8em;color:#888;margin-top:8px;line-height:1.6}
+.tune-params b{color:#e0e0e0}
+
+/* Trade history list */
+.trade-history{margin-top:15px;max-height:400px;overflow-y:auto}
+.trade-item{display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:8px;margin-bottom:4px;font-size:0.85em;background:#111;border:1px solid #1a1a3e}
+.trade-item.win{border-left:3px solid #00ff88}
+.trade-item.loss{border-left:3px solid #ff4444}
+.trade-item.ignored{border-left:3px solid #666}
+.trade-item.pending{border-left:3px solid #ffd700}
+.trade-dir{font-weight:bold;min-width:36px}
+.trade-dir.buy{color:#00ff88}
+.trade-dir.sell{color:#ff4444}
+.trade-pair{flex:1;color:#e0e0e0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.trade-outcome{font-size:0.8em;padding:2px 8px;border-radius:10px;font-weight:bold}
+.trade-outcome.win{background:rgba(0,255,136,0.2);color:#00ff88}
+.trade-outcome.loss{background:rgba(255,68,68,0.2);color:#ff4444}
+.trade-outcome.ignored{background:rgba(102,102,102,0.2);color:#999}
+.trade-outcome.pending{background:rgba(255,215,0,0.2);color:#ffd700}
+
 .chart-container{background:#0a0a1e;border-radius:16px;padding:20px;border:1px solid #2a2a5a;margin-bottom:20px;height:300px}
 .platform-selector{display:flex;gap:10px;margin-bottom:20px;flex-wrap:wrap}
 .platform-btn{padding:10px 25px;border-radius:25px;border:1px solid #2a2a5a;background:#0a0a2e;color:#e0e0e0;cursor:pointer;font-weight:600;transition:all .2s}
@@ -2761,22 +2912,40 @@ body{background:#050510;color:#e0e0e0;font-family:Segoe UI,sans-serif}
 .signal-status{font-weight:bold;text-align:center;padding:8px;border-radius:8px;margin-top:8px}
 .signal-status.high{background:rgba(0,255,136,0.15);color:#00ff88}
 .signal-status.moderate{background:rgba(255,215,0,0.15);color:#ffd700}
-.btn-group{margin-top:10px;display:flex;gap:5px;flex-wrap:wrap}
-.btn{padding:6px 15px;border:none;border-radius:5px;cursor:pointer;font-weight:bold;transition:opacity .2s}
-.btn:hover{opacity:0.85}
-.btn:disabled{opacity:0.4;cursor:not-allowed}
-.copy-btn{background:#00b4d8;color:#fff}
-.win-btn{background:#00ff88;color:#000}
-.loss-btn{background:#ff4444;color:#fff}
-.ignore-btn{background:#666;color:#fff}
+
+/* ENHANCED OUTCOME BUTTONS */
+.outcome-section{margin-top:12px;padding:12px;background:#0d0d20;border-radius:10px;border:1px solid #2a2a5a}
+.outcome-title{color:#ffd700;font-weight:bold;font-size:0.9em;margin-bottom:8px;text-align:center}
+.outcome-btns{display:flex;gap:8px;justify-content:center}
+.outcome-btn{flex:1;padding:12px 8px;border:none;border-radius:10px;cursor:pointer;font-weight:bold;font-size:1em;transition:all .15s;display:flex;flex-direction:column;align-items:center;gap:3px}
+.outcome-btn:hover{transform:scale(1.05)}
+.outcome-btn:active{transform:scale(0.95)}
+.outcome-btn:disabled{opacity:0.3;cursor:not-allowed;transform:none}
+.outcome-btn .icon{font-size:1.5em}
+.outcome-btn .label{font-size:0.8em}
+.win-btn{background:linear-gradient(135deg,#00cc6a,#00ff88);color:#000;box-shadow:0 2px 12px rgba(0,255,136,0.3)}
+.loss-btn{background:linear-gradient(135deg,#cc2222,#ff4444);color:#fff;box-shadow:0 2px 12px rgba(255,68,68,0.3)}
+.ignore-btn{background:linear-gradient(135deg,#555,#777);color:#fff;box-shadow:0 2px 12px rgba(102,102,102,0.3)}
+.outcome-result{text-align:center;padding:10px;border-radius:8px;margin-top:8px;font-weight:bold;font-size:1em;animation:slide .3s}
+
+.copy-btn{background:#00b4d8;color:#fff;padding:8px 16px;border:none;border-radius:8px;cursor:pointer;font-weight:bold;font-size:0.9em;transition:all .15s}
+.copy-btn:hover{background:#0099cc}
+
 .countdown{font-size:1.5em;font-weight:bold;color:#ffd700;margin:10px 0}
 .timing-details{font-size:0.9em;color:#aaa;margin-bottom:10px}
 .martingale{margin-top:10px;background:#111;padding:10px;border-radius:8px}
 .martingale-title{color:#ffd700;font-weight:bold;margin-bottom:5px}
 .martingale-row{display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px solid #222;font-size:0.9em}
-.outcome-text{font-weight:bold;margin-top:5px}
+
+/* Data source badge */
+.data-source{font-size:0.8em;padding:3px 10px;border-radius:10px;margin:5px 0;display:inline-block}
+.data-source.real{background:rgba(0,255,136,0.15);color:#00ff88}
+.data-source.demo{background:rgba(255,68,68,0.15);color:#ff6666}
+
 @keyframes slide{from{opacity:0;transform:translateY(-10px)}to{opacity:1;transform:translateY(0)}}
-@media(max-width:600px){.header{flex-direction:column;text-align:center}.platform-selector{justify-content:center}}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.5}}
+.pulse{animation:pulse 2s infinite}
+@media(max-width:600px){.header{flex-direction:column;text-align:center}.platform-selector{justify-content:center}.outcome-btns{flex-direction:row}.outcome-btn{padding:10px 6px}}
 </style>
 </head>
 <body>
@@ -2786,26 +2955,66 @@ body{background:#050510;color:#e0e0e0;font-family:Segoe UI,sans-serif}
   <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
     <span class="session-badge session-active" id="session-badge">...</span>
     <span class="status" id="sys-status">LIVE</span>
+    <span class="data-source" id="data-source">DEMO DATA</span>
   </div>
 </div>
 <div class="info-bar">
   <div id="session-timer" style="color:#888;min-width:200px"></div>
   <div class="stats-bar" id="stats">Loading stats...</div>
 </div>
-<div class="chart-container">
-  <canvas id="wrChart"></canvas>
-</div>
-<div class="platform-selector">
-  <button class="platform-btn active" onclick="filterPlatform('all',this)">All Platforms</button>
-  <button class="platform-btn" onclick="filterPlatform('IQ Option',this)">IQ Option</button>
-  <button class="platform-btn" onclick="filterPlatform('Pocket Option',this)">Pocket Option</button>
-</div>
-<div class="signals" id="signals">
-  <div class="waiting" id="waiting">
-    <div style="font-size:3em">&#9203;</div>
-    <h3>Waiting for signal setups</h3>
-    <p>Scanning 8 OTC pairs on IQ Option & Pocket Option timeframes</p>
+
+<!-- Two-column layout -->
+<div class="main-grid">
+<div class="left-col">
+  <div class="chart-container">
+    <canvas id="wrChart"></canvas>
   </div>
+  <div class="platform-selector">
+    <button class="platform-btn active" onclick="filterPlatform('all',this)">All Platforms</button>
+    <button class="platform-btn" onclick="filterPlatform('IQ Option',this)">IQ Option</button>
+    <button class="platform-btn" onclick="filterPlatform('Pocket Option',this)">Pocket Option</button>
+  </div>
+  <div class="signals" id="signals">
+    <div class="waiting" id="waiting">
+      <div style="font-size:3em">&#9203;</div>
+      <h3>Waiting for signal setups</h3>
+      <p>Scanning 8 OTC pairs on IQ Option & Pocket Option timeframes</p>
+      <p style="margin-top:10px;font-size:0.9em;color:#ff6666">Click WIN / LOSS / IGNORED after each trade to feed self-learning memory</p>
+    </div>
+  </div>
+</div>
+
+<div class="right-col">
+  <!-- P&L Tracker Panel -->
+  <div class="tracker-panel">
+    <div class="tracker-title">&#128200; Trade Tracker</div>
+    <div class="pnl-row"><span class="pnl-label">Total Trades</span><span class="pnl-value total" id="pnl-total">0</span></div>
+    <div class="pnl-row"><span class="pnl-label">Wins</span><span class="pnl-value wins" id="pnl-wins">0</span></div>
+    <div class="pnl-row"><span class="pnl-label">Losses</span><span class="pnl-value losses" id="pnl-losses">0</span></div>
+    <div class="pnl-row"><span class="pnl-label">Win Rate</span><span class="pnl-value total" id="pnl-wr">0%</span></div>
+
+    <!-- Auto-Tune Progress -->
+    <div class="tune-section">
+      <div class="tune-header">
+        <span class="tune-label">&#9881; Auto-Tune Progress</span>
+        <span class="tune-value" id="tune-pct">0%</span>
+      </div>
+      <div class="progress-bar"><div class="progress-fill" id="tune-fill" style="width:0%"></div></div>
+      <div id="tune-status" class="tune-status tune-pending">0 / 50 graded trades needed</div>
+      <div class="tune-params" id="tune-params">
+        RSI Buy: <b>-</b> | RSI Sell: <b>-</b><br>
+        ADX Min: <b>-</b> | Vol Mult: <b>-</b><br>
+        Min Confidence: <b>-</b>%
+      </div>
+    </div>
+
+    <!-- Recent Trade History -->
+    <div class="tracker-title" style="margin-top:15px">&#128203; Recent Trades</div>
+    <div class="trade-history" id="trade-history">
+      <div style="text-align:center;color:#666;padding:20px">No trades yet</div>
+    </div>
+  </div>
+</div>
 </div>
 </div>
 <script>
@@ -2869,14 +3078,89 @@ function updateStatus(){
   fetch('/api/status').then(r=>r.json()).then(d=>{
     var s=document.getElementById('sys-status');
     var parts=['LIVE'];
-    if(d.iq_connected)parts.push('IQ');
-    if(d.po_connected)parts.push('PO');
+    if(d.iq_connected)parts.push('IQ \u2705');
+    if(d.po_connected)parts.push('PO \u2705');
     if(d.telegram)parts.push('TG');
     if(d.news_filter)parts.push('NF');
     s.textContent=parts.join(' | ');
+    var ds=document.getElementById('data-source');
+    if(d.iq_connected||d.po_connected){
+      ds.textContent='REAL DATA';
+      ds.className='data-source real';
+    } else {
+      ds.textContent='DEMO DATA';
+      ds.className='data-source demo';
+    }
   }).catch(()=>{});
 }
 setInterval(updateStatus,15000);updateStatus();
+
+/* P&L Tracker */
+function updatePnl(){
+  fetch('/api/pnl').then(r=>r.json()).then(d=>{
+    document.getElementById('pnl-total').textContent=d.total||0;
+    document.getElementById('pnl-wins').textContent=d.wins||0;
+    document.getElementById('pnl-losses').textContent=d.losses||0;
+    var total=(d.wins||0)+(d.losses||0);
+    var wr=total>0?Math.round((d.wins||0)/total*100):0;
+    document.getElementById('pnl-wr').textContent=wr+'%';
+    document.getElementById('pnl-wr').style.color=wr>=80?'#00ff88':wr>=60?'#ffd700':'#ff4444';
+  }).catch(()=>{});
+}
+setInterval(updatePnl,10000);updatePnl();
+
+/* Auto-Tune Progress */
+function updateTuneProgress(){
+  fetch('/api/tune-progress').then(r=>r.json()).then(d=>{
+    var pct=d.progress_pct||0;
+    document.getElementById('tune-pct').textContent=pct+'%';
+    document.getElementById('tune-fill').style.width=pct+'%';
+    var statusEl=document.getElementById('tune-status');
+    if(d.auto_tune_active){
+      statusEl.className='tune-status tune-active';
+      statusEl.textContent='\u2705 AUTO-TUNE ACTIVE | WR: '+d.current_wr+'%';
+    } else {
+      statusEl.className='tune-status tune-pending';
+      statusEl.textContent=d.graded_trades+' / 50 graded trades ('+d.trades_needed+' more needed)';
+    }
+    var params=d.params||{};
+    document.getElementById('tune-params').innerHTML=
+      'RSI Buy: <b>'+(params.rsi_buy||'-')+'</b> | RSI Sell: <b>'+(params.rsi_sell||'-')+'</b><br>'+
+      'ADX Min: <b>'+(params.adx_min||'-')+'</b> | Vol Mult: <b>'+(params.vol_mult||'-')+'x</b><br>'+
+      'Min Confidence: <b>'+(d.min_confidence||'-')+'</b>%';
+  }).catch(()=>{});
+}
+setInterval(updateTuneProgress,15000);updateTuneProgress();
+
+/* Trade History */
+function updateTradeHistory(){
+  fetch('/api/trades/recent?limit=20').then(r=>r.json()).then(d=>{
+    var cont=document.getElementById('trade-history');
+    if(!d.trades||!d.trades.length){
+      cont.innerHTML='<div style="text-align:center;color:#666;padding:20px">No trades yet</div>';
+      return;
+    }
+    var html='';
+    d.trades.forEach(function(t){
+      var sym=t.symbol.replace('-OTC','').replace('_OTC','').replace(' (OTC)','');
+      var outcome=t.outcome||'pending';
+      var dirClass=t.direction==='BUY'?'buy':'sell';
+      var outcomeClass=outcome;
+      var outcomeLabel=outcome.charAt(0).toUpperCase()+outcome.slice(1);
+      if(outcome==='win')outcomeLabel='\u2705 Win';
+      else if(outcome==='loss')outcomeLabel='\u274C Loss';
+      else if(outcome==='ignored')outcomeLabel='\uD83D\uDEAB Ignored';
+      else outcomeLabel='\u23F3 Pending';
+      html+='<div class="trade-item '+outcomeClass+'">'+
+        '<span class="trade-dir '+dirClass+'">'+t.direction+'</span>'+
+        '<span class="trade-pair">'+sym+' '+t.timeframe+'</span>'+
+        '<span class="trade-outcome '+outcomeClass+'">'+outcomeLabel+'</span>'+
+        '</div>';
+    });
+    cont.innerHTML=html;
+  }).catch(()=>{});
+}
+setInterval(updateTradeHistory,15000);updateTradeHistory();
 
 function fmtTime(sec){
   if(sec<=0)return"Entry passed";
@@ -2909,25 +3193,19 @@ ws.onmessage=function(e){
   var genD=new Date(d.generated_at),entD=new Date(d.entry_time);
   var endD=new Date(entD.getTime()+d.duration_minutes*60000);
   var tz={hour:'2-digit',minute:'2-digit',second:'2-digit',timeZone:'Africa/Lagos'};
-  var genS=genD.toLocaleTimeString('en-GB',tz)+' WAT';
   var entS=entD.toLocaleTimeString('en-GB',tz)+' WAT';
   var endS=endD.toLocaleTimeString('en-GB',tz)+' WAT';
 
   var badge=d.platform==='IQ Option'?'<span class="platform-badge iq">IQ Option</span>':'<span class="platform-badge po">Pocket Option</span>';
   var confBadge=d.confirmed?'<span class="confirmed-badge">CONFIRMED</span>':'';
-
-  // Clean symbol display
   var symClean=d.symbol.replace('-OTC','').replace('_OTC','').replace(' (OTC)','');
   var otcLabel=(d.symbol.indexOf('OTC')>=0)?'OTC':'';
-
-  // Regime badge
   var regimeClass=(d.regime||'RANGING').toLowerCase();
   var regimeHtml='<span class="regime-badge '+regimeClass+'">'+(d.regime||'RANGING')+'</span>';
 
-  // Martingale HTML
   var mHtml='';
   if(d.martingale&&d.martingale.length){
-    mHtml='<div class="signal-section"><div class="signal-section-title">MARTINGALE RECOVERY (Risk Level)</div>';
+    mHtml='<div class="signal-section"><div class="signal-section-title">MARTINGALE RECOVERY</div>';
     d.martingale.forEach(function(m){
       var mD=new Date(m.entry_time);
       var mT=mD.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',timeZone:'Africa/Lagos'})+' WAT';
@@ -2936,36 +3214,29 @@ ws.onmessage=function(e){
     mHtml+='</div>';
   }
 
-  // GLM Smart Money section
   var smHtml='<div class="smart-money-section"><div class="signal-section-title">GLM SMART MONEY</div>'+
     '<div class="smart-money-item">Structure: '+(d.sm_structure||'N/A')+'</div>'+
     '<div class="smart-money-item">Liquidity: '+(d.sm_liquidity||'N/A')+'</div>'+
     '<div class="smart-money-item">Breakout: '+(d.sm_breakout||'N/A')+'</div>'+
     '<div class="smart-money-item">Signal: '+(d.sm_signal||'N/A')+'</div></div>';
 
-  // Strategy Guide section
   var stratHtml='';
   if(d.strategy_guide&&d.strategy_guide.length){
     stratHtml='<div class="strategy-section"><div class="signal-section-title">STRATEGY GUIDE</div>';
     d.strategy_guide.forEach(function(s){
-      var icon=s.indexOf('confirm')>=0||s.indexOf('Wait')>=0||s.indexOf('BOS')>=0||s.indexOf('FVG')>=0?'✅':
-               s.indexOf('profit')>=0||s.indexOf('stop')>=0||s.indexOf('Take')>=0?'🚪':'🛡️';
-      stratHtml+='<div class="strategy-item">'+icon+' '+s+'</div>';
+      stratHtml+='<div class="strategy-item">'+s+'</div>';
     });
     stratHtml+='</div>';
   }
 
-  // Support/Resistance section
   var srHtml='<div class="sr-section"><div class="signal-section-title">SUPPORT / RESISTANCE</div>'+
     '<div class="signal-grid-item"><span class="label">Support</span><span class="value">'+(d.support||'N/A')+'</span></div>'+
     '<div class="signal-grid-item"><span class="label">Resistance</span><span class="value">'+(d.resistance||'N/A')+'</span></div></div>';
 
-  // Signal status
   var sigStatus=d.confidence>=85?'HIGH PROBABILITY ONLY':'MODERATE PROBABILITY';
   var sigStatusClass=d.confidence>=85?'high':'moderate';
 
-  // Main indicators grid
-  var liqDisplay=d.liquidity_sweep?'Sweep Detected ('+d.liquidity_side+')':'No Sweep';
+  var liqDisplay=d.liquidity_sweep?'Sweep ('+d.liquidity_side+')':'No Sweep';
   var gridHtml='<div class="signal-section"><div class="signal-section-title">MARKET ANALYSIS</div>'+
     '<div class="signal-grid">'+
     '<div class="signal-grid-item"><span class="label">Trend</span><span class="value">'+(d.trend||'N/A')+'</span></div>'+
@@ -2981,6 +3252,19 @@ ws.onmessage=function(e){
     '<div class="signal-grid-item"><span class="label">R:R</span><span class="value">'+(d.rr||'1:1.0')+'</span></div>'+
     '</div></div>';
 
+  var outcomeHtml='<div class="outcome-section">'+
+    '<div class="outcome-title">REPORT TRADE OUTCOME</div>'+
+    '<div class="outcome-btns">'+
+    '<button class="outcome-btn win-btn" onclick="report(\''+d.signal_id+'\',\'win\',this)">'+
+    '<span class="icon">\u2705</span><span class="label">WIN</span></button>'+
+    '<button class="outcome-btn loss-btn" onclick="report(\''+d.signal_id+'\',\'loss\',this)">'+
+    '<span class="icon">\u274C</span><span class="label">LOSS</span></button>'+
+    '<button class="outcome-btn ignore-btn" onclick="report(\''+d.signal_id+'\',\'ignored\',this)">'+
+    '<span class="icon">\uD83D\uDEAB</span><span class="label">IGNORED</span></button>'+
+    '</div>'+
+    '<div class="outcome-result" id="outcome-'+d.signal_id+'" style="display:none"></div>'+
+    '</div>';
+
   card.innerHTML=
     '<div class="card-header"><div class="pair">'+symClean+' '+badge+'</div><div><div class="conf">'+d.confidence+'%'+confBadge+'</div><span class="accuracy">Acc: '+d.accuracy+'%</span></div></div>'+
     '<div class="direction '+d.direction.toLowerCase()+'">'+d.direction+'</div>'+
@@ -2988,21 +3272,13 @@ ws.onmessage=function(e){
     '<div class="timing-details">Entry: '+entS+' | End: '+endS+' ('+d.duration_minutes*60+'s) | '+otcLabel+'</div>'+
     '<div>Market: '+(d.volatility||'High Volatility')+' | GLM Probability: '+d.confidence+'%</div>'+
     '<div style="margin:5px 0">'+regimeHtml+' <span style="color:#888;font-size:0.85em">'+(d.regime_desc||'')+'</span></div>'+
-    gridHtml+
-    mHtml+
-    smHtml+
-    stratHtml+
-    srHtml+
-    '<div class="disclaimer">Note: Trade 1% - 3% of your capability and capital. Please trade responsibly. AI analyzes data in real time, outcomes may vary.</div>'+
-    '<div class="signal-status '+sigStatusClass+'">🎯 SIGNAL STATUS: '+sigStatus+'</div>'+
-    '<div class="signal-status '+sigStatusClass+'">🎯 GLM PROBABILITY: '+d.confidence+'% WIN RATE | '+sigStatus+'</div>'+
-    '<div class="btn-group" style="flex-wrap:wrap;gap:5px">'+
-    '<button class="btn copy-btn" onclick="copySignal(this)">📋 Copy Signal</button>'+
-    '<button class="btn win-btn" onclick="report(\''+d.signal_id+'\',\'win\',this)">✅ WIN</button>'+
-    '<button class="btn loss-btn" onclick="report(\''+d.signal_id+'\',\'loss\',this)">❌ LOSS</button>'+
-    '<button class="btn ignore-btn" onclick="report(\''+d.signal_id+'\',\'ignored\',this)">🚫 IGNORED</button>'+
+    gridHtml+mHtml+smHtml+stratHtml+srHtml+
+    '<div class="disclaimer">Note: Trade 1-3% of capital. AI analyzes data in real time, outcomes may vary.</div>'+
+    '<div class="signal-status '+sigStatusClass+'">SIGNAL STATUS: '+sigStatus+'</div>'+
+    '<div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">'+
+    '<button class="copy-btn" onclick="copySignal(this)">Copy Signal</button>'+
     '</div>'+
-    '<div class="outcome-text" style="display:none"></div>';
+    outcomeHtml;
 
   var cont=document.getElementById('signals');
   var wait=document.getElementById('waiting');
@@ -3015,138 +3291,81 @@ function copySignal(btn){
   var card=btn.closest('.signal-card');
   var d=JSON.parse(card.getAttribute('data-signal-json')||'{}');
   if(!d.signal_id){btn.textContent='No data';return;}
-  var emoji=d.direction==='SELL'?'🔴':'🟢';
+  var emoji=d.direction==='SELL'?'\uD83D\uDD34':'\uD83D\uDFE2';
   var sym=d.symbol.replace('-OTC','').replace('_OTC','').replace(' (OTC)','');
   var entryD=new Date(d.entry_time);
   var entryStr=entryD.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',timeZone:'Africa/Lagos'})+' WAT';
-
-  // Market regime
-  var regime=d.regime||'RANGING';
-  var regimeDesc=d.regime_desc||'';
-
-  // BOS/CHoCH
-  var bosStatus=d.bos||'Not Confirmed';
-  var chochStatus=d.choch||'Not Confirmed';
-
-  // FVG
-  var fvgStatus=d.fvg||'Inactive';
-
-  // Liquidity
-  var liqDisplay=d.liquidity_sweep?d.liquidity_side:'None';
-
-  // Volume & Zone
-  var volClass=d.volume_class||'Normal';
-  var zone=d.zone||'None Detected';
-
-  // Stochastic
-  var stochVal=d.stoch_val||50;
-  var stochDisplay;
-  if(stochVal>80)stochDisplay='Overbought';
-  else if(stochVal<20)stochDisplay='Oversold';
+  var regime=d.regime||'RANGING';var regimeDesc=d.regime_desc||'';
+  var bosStatus=d.bos||'Not Confirmed';var chochStatus=d.choch||'Not Confirmed';
+  var fvgStatus=d.fvg||'Inactive';var liqDisplay=d.liquidity_sweep?d.liquidity_side:'None';
+  var volClass=d.volume_class||'Normal';var zone=d.zone||'None Detected';
+  var stochVal=d.stoch_val||50;var stochDisplay;
+  if(stochVal>80)stochDisplay='Overbought';else if(stochVal<20)stochDisplay='Oversold';
   else if(d.direction==='BUY'&&stochVal<50)stochDisplay='Bullish Crossover';
   else if(d.direction==='SELL'&&stochVal>50)stochDisplay='Bearish Crossover';
   else stochDisplay=d.stoch_status||'Neutral';
-
-  // BB Width
-  var bbStatus=d.bb_status||'Stable';
-  var bbDisplay=bbStatus==='Expanding'?'Expanding':(bbStatus==='Contracting'?'Contracting':'Squeezing');
-
-  // R:R
-  var rr=d.rr||'1:1.0';
-
-  // GLM Smart Money
-  var smStructure=d.sm_structure||'No Clear Break';
-  var smLiquidity=d.sm_liquidity||'N/A';
-  var smBreakout=d.sm_breakout||'No Breakout';
-  var smSignal=d.sm_signal||'N/A';
-  if(smStructure.indexOf('Up')>=0)smStructure=smStructure.replace('Up','↑');
-  if(smStructure.indexOf('Down')>=0)smStructure=smStructure.replace('Down','↓');
-
-  // Martingale lines
-  var martLines='';
-  if(d.martingale&&d.martingale.length){
-    d.martingale.forEach(function(m,i){
-      var mD=new Date(m.entry_time);
-      var mT=mD.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',timeZone:'Africa/Lagos'})+' WAT';
-      martLines+='  M'+(i+1)+' │ '+m.multiplier+'x │ $'+m.amount+' │ Entry: '+mT+'\n';
-    });
-  }
-
-  // Strategy Guide
-  var stratLines='';
-  if(d.strategy_guide&&d.strategy_guide.length){
-    d.strategy_guide.forEach(function(s){
-      var icon='🛡️';
-      if(s.match(/confirm|wait|bos|fvg|pullback|enter/i))icon='✅';
-      else if(s.match(/profit|stop|take|trail|exit/i))icon='🚪';
-      stratLines+='  '+icon+' '+s+'\n';
-    });
-  }
-
-  // Support/Resistance
-  var srLines='';
-  if(d.support)srLines+='  Support: '+d.support+'\n';
-  if(d.resistance)srLines+='  Resistance: '+d.resistance+'\n';
-
-  // Signal status
+  var bbStatus=d.bb_status||'Stable';var bbDisplay=bbStatus==='Expanding'?'Expanding':(bbStatus==='Contracting'?'Contracting':'Squeezing');
+  var rr=d.rr||'1:1.0';var smStructure=d.sm_structure||'No Clear Break';var smLiquidity=d.sm_liquidity||'N/A';
+  var smBreakout=d.sm_breakout||'No Breakout';var smSignal=d.sm_signal||'N/A';
   var sigStatus=d.confidence>=85?'HIGH PROBABILITY ONLY':'MODERATE PROBABILITY';
-
-  var msg='🔔 CATALYST AI SIGNAL!\n\n'+
-  '🎫 Trade: '+sym+'\n'+
-  '⏳ Timer: '+d.timeframe+' (OTC)\n'+
-  '➡️ Entry: '+entryStr+'\n'+
-  '📈 Direction: '+d.direction+' '+emoji+'\n'+
-  '🎯 GLM Probability: '+d.confidence+'% WIN RATE\n'+
-  '📊 Market: '+(d.volatility||'High Volatility')+'\n\n'+
-  '🔮 Market Regime: '+regime+'\n'+
-  '   '+regimeDesc+'\n\n'+
-  '🧠 Trend: '+(d.trend||'Analyzing...')+'\n'+
-  '📉 BOS: '+bosStatus+'\n'+
-  '🔄 CHoCH: '+chochStatus+'\n'+
-  '📦 FVG: '+fvgStatus+'\n'+
-  '💧 Liquidity: '+liqDisplay+'\n'+
-  '📦 Volume: '+volClass+'\n'+
-  '🏗️ Zone: '+zone+'\n'+
-  '📉 RSI: '+d.rsi+'\n'+
-  '📊 Stochastic: '+stochDisplay+'\n'+
-  '📊 BB Width: '+bbDisplay+'\n'+
-  '⚖️ RR: '+rr+'\n\n'+
-  '↪️ ── 🛡️ MARTINGALE RECOVERY (Risk Level) ──\n'+
-  (martLines?martLines+'\n':'')+
-  '🧪 GLM SMART MONEY:\n'+
+  var msg='CATALYST AI SIGNAL!\n\n'+
+  'Trade: '+sym+'\n'+
+  'Timer: '+d.timeframe+' (OTC)\n'+
+  'Entry: '+entryStr+'\n'+
+  'Direction: '+d.direction+' '+emoji+'\n'+
+  'GLM Probability: '+d.confidence+'% WIN RATE\n'+
+  'Market: '+(d.volatility||'High Volatility')+'\n\n'+
+  'Regime: '+regime+' - '+regimeDesc+'\n'+
+  'Trend: '+(d.trend||'N/A')+'\n'+
+  'BOS: '+bosStatus+'\n'+
+  'CHoCH: '+chochStatus+'\n'+
+  'FVG: '+fvgStatus+'\n'+
+  'Liquidity: '+liqDisplay+'\n'+
+  'Volume: '+volClass+'\n'+
+  'Zone: '+zone+'\n'+
+  'RSI: '+d.rsi+'\n'+
+  'Stochastic: '+stochDisplay+'\n'+
+  'BB Width: '+bbDisplay+'\n'+
+  'RR: '+rr+'\n\n'+
+  'SMART MONEY:\n'+
   '  Structure: '+smStructure+'\n'+
   '  Liquidity: '+smLiquidity+'\n'+
   '  Breakout: '+smBreakout+'\n'+
   '  Signal: '+smSignal+'\n\n'+
-  '📋 STRATEGY GUIDE:\n'+
-  (stratLines?stratLines+'\n':'')+
-  '📐 SUPPORT/RESISTANCE:\n'+
-  (srLines?srLines+'\n':'')+
-  'Note: Trade 1% - 3% of your capability and capital\n'+
-  '🎯 SIGNAL STATUS: '+sigStatus+'\n\n'+
-  '🎯 GLM PROBABILITY: '+d.confidence+'% WIN RATE\n'+
-  '   '+sigStatus;
-
+  'Note: Trade 1-3% of capital\n'+
+  'SIGNAL STATUS: '+sigStatus+'\n'+
+  'GLM PROBABILITY: '+d.confidence+'% WIN RATE';
   navigator.clipboard.writeText(msg).then(function(){
-    btn.textContent='✅ Copied!';
-    btn.style.background='#00ff88';
-    setTimeout(function(){btn.textContent='📋 Copy Signal';btn.style.background='#00b4d8';},2000);
+    btn.textContent='Copied!';btn.style.background='#00ff88';
+    setTimeout(function(){btn.textContent='Copy Signal';btn.style.background='#00b4d8';},2000);
   }).catch(function(err){alert('Copy failed: '+err);});
 }
 
 function report(sid,outcome,btn){
   var card=btn.closest('.signal-card');
-  card.querySelectorAll('.btn').forEach(b=>b.disabled=true);
+  var section=card.querySelector('.outcome-section');
+  section.querySelectorAll('.outcome-btn').forEach(b=>b.disabled=true);
   fetch('/api/trade/outcome?signal_id='+sid+'&outcome='+outcome,{method:'POST'})
   .then(r=>r.json()).then(data=>{
-    var txt=card.querySelector('.outcome-text');
-    txt.style.display='block';
-    if(outcome==='win'){card.style.borderLeft='4px solid #00ff88';txt.style.color='#00ff88';txt.textContent='\u2705 Trade Won';}
-    else if(outcome==='loss'){card.style.borderLeft='4px solid #ff4444';txt.style.color='#ff4444';txt.textContent='\u274C Trade Lost';}
-    else{card.style.borderLeft='4px solid #888';txt.style.color='#888';txt.textContent='\uD83D\uDEAB Ignored';}
-    card.querySelector('.btn-group').style.display='none';
-    updateStats();
-  }).catch(e=>{card.querySelectorAll('.btn').forEach(b=>b.disabled=false);});
+    var result=section.querySelector('.outcome-result');
+    result.style.display='block';
+    if(outcome==='win'){
+      card.style.borderLeft='4px solid #00ff88';result.style.color='#00ff88';
+      result.style.background='rgba(0,255,136,0.1)';
+      result.textContent='Trade Won! Self-learning memory updated.';
+    } else if(outcome==='loss'){
+      card.style.borderLeft='4px solid #ff4444';result.style.color='#ff4444';
+      result.style.background='rgba(255,68,68,0.1)';
+      result.textContent='Trade Lost. Parameters will adjust if WR drops.';
+    } else {
+      card.style.borderLeft='4px solid #888';result.style.color='#888';
+      result.style.background='rgba(102,102,102,0.1)';
+      result.textContent='Ignored. Excluded from win rate calc.';
+    }
+    section.querySelector('.outcome-btns').style.display='none';
+    section.querySelector('.outcome-title').style.display='none';
+    updateStats();updatePnl();updateTuneProgress();updateTradeHistory();
+  }).catch(e=>{section.querySelectorAll('.outcome-btn').forEach(b=>b.disabled=false);});
 }
 
 setInterval(function(){
@@ -3162,6 +3381,7 @@ initChart();updateChart();
 </body>
 </html>"""
 
+
 from contextlib import asynccontextmanager
 
 @asynccontextmanager
@@ -3173,9 +3393,11 @@ app.router.lifespan_context = lifespan
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
-    logger.info(f"Starting CATALYST FINAL v3.3 on port {port}")
-    logger.info(f"PO Email: {PO_EMAIL}")
+    logger.info(f"Starting CATALYST FINAL v3.9 on port {port}")
+    logger.info(f"IQ Email: {IQ_EMAIL}, PO Email: {PO_EMAIL}")
     logger.info(f"IQ Available: {IQ_API_AVAILABLE}, PO Available: {PO_API_AVAILABLE}")
     logger.info(f"Telegram: {TG_AVAILABLE}, News Filter: {EC_API_AVAILABLE}, Scheduler: {APS_AVAILABLE}")
     logger.info(f"Params: {PARAMS}, Min Confidence: {MIN_CONFIDENCE}")
+    logger.info(f"Dashboard: http://0.0.0.0:{port}/ - Click WIN/LOSS/IGNORED after each trade!")
+    logger.info(f"Self-learning activates after 50 graded trades - parameters will auto-tune")
     uvicorn.run(app, host="0.0.0.0", port=port)
