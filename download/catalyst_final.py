@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-CATALYST FINAL v3.3 - Self-Improving OTC Signal Engine
+CATALYST v3.9 - Self-Improving OTC Signal Engine
 10 Confluences + Accuracy Level (0-100%) | 80-95% Win Rate Target | 24/7
 IQ Option & Pocket Option | Memory-Based Confidence | Auto-Tuning | Telegram Alerts
 
@@ -60,17 +60,17 @@ import uvicorn
 # ============================================================
 # 0. BROKER CREDENTIALS & CONFIG (read from env vars)
 # ============================================================
-IQ_EMAIL        = os.environ.get("IQ_EMAIL", "your_iq_option_email@example.com")
-IQ_PASSWORD     = os.environ.get("IQ_PASSWORD", "your_iq_option_password")
+IQ_EMAIL        = os.environ.get("IQ_EMAIL", "clarityvisuals4@gmail.com")
+IQ_PASSWORD     = os.environ.get("IQ_PASSWORD", "Calarity2819")
 PO_EMAIL        = os.environ.get("PO_EMAIL", "richmelody15@gmail.com")
-PO_PASSWORD     = os.environ.get("PO_PASSWORD", "Clarity2819")
+PO_PASSWORD     = os.environ.get("PO_PASSWORD", "Calarity2819")
 
 USE_IQ_OPTION     = os.environ.get("USE_IQ_OPTION", "True").strip().lower() in ("true", "1", "yes")
 USE_POCKET_OPTION = os.environ.get("USE_POCKET_OPTION", "True").strip().lower() in ("true", "1", "yes")
 
 # Telegram
-TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN", "")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
+TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN", "272156752:AAGHUYuyynp276o1nL66UtpqaT2T-8glt9A")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "5844295006")
 
 # Entry confirmation: wait for entry time and verify price moved
 ENTRY_CONFIRM_ENABLED = os.environ.get("ENTRY_CONFIRM_ENABLED", "True").strip().lower() in ("true", "1", "yes")
@@ -495,6 +495,852 @@ def candlestick_confirmation(df: pd.DataFrame) -> Optional[str]:
     if bullish and bearish:
         return 'bullish' if c[-1] > o[-1] else 'bearish'
     return None
+
+# ============================================================
+# 2b. SESSION HELPER
+# ============================================================
+def current_session():
+    """Return current trading session name."""
+    now = datetime.now(timezone.utc)
+    hour = now.hour + now.minute / 60.0
+    if 22.0 <= hour or hour < 7.0:
+        return 'Sydney/Tokyo'
+    elif 7.0 <= hour < 12.0:
+        return 'London'
+    elif 12.0 <= hour < 16.0:
+        return 'New York'
+    else:
+        return 'Off-peak'
+
+# ============================================================
+# 2c. SWING IDENTIFICATION
+# ============================================================
+def identify_swings(df, order=3):
+    """Identify swing highs and lows. Returns list of dicts with 'type','price','index'."""
+    if len(df) < order * 2 + 1:
+        return []
+    highs = df['high'].values
+    lows = df['low'].values
+    swings = []
+    for i in range(order, len(highs) - order):
+        if all(highs[i] >= highs[i - j] for j in range(1, order + 1)) and \
+           all(highs[i] >= highs[i + j] for j in range(1, order + 1)):
+            swings.append({'type': 'high', 'price': highs[i], 'index': i})
+        if all(lows[i] <= lows[i - j] for j in range(1, order + 1)) and \
+           all(lows[i] <= lows[i + j] for j in range(1, order + 1)):
+            swings.append({'type': 'low', 'price': lows[i], 'index': i})
+    return swings
+
+# ============================================================
+# 2d. FVG QUALITY (returns tuple)
+# ============================================================
+def fvg_quality(df):
+    """Return ('bullish', size, age) or ('bearish', size, age) or None."""
+    if len(df) < 5:
+        return None
+    try:
+        tr = pd.concat([
+            df['high'] - df['low'],
+            (df['high'] - df['close'].shift()).abs(),
+            (df['low'] - df['close'].shift()).abs()
+        ], axis=1).max(axis=1)
+        atr_val = tr.rolling(14).mean().iloc[-1]
+        if pd.isna(atr_val) or atr_val == 0:
+            return None
+    except Exception:
+        return None
+    for i in range(len(df) - 1, max(len(df) - 6, 2), -1):
+        prev2 = df.iloc[i - 2]
+        curr = df.iloc[i]
+        age = len(df) - 1 - i
+        if curr['low'] > prev2['high']:
+            size = (curr['low'] - prev2['high']) / atr_val
+            if size >= 0.3 and age <= 3:
+                return ('bullish', round(size, 3), age)
+        if curr['high'] < prev2['low']:
+            size = (prev2['low'] - curr['high']) / atr_val
+            if size >= 0.3 and age <= 3:
+                return ('bearish', round(size, 3), age)
+    return None
+
+# ============================================================
+# 2e. WYCKOFF PHASE DETECTION
+# ============================================================
+def detect_wyckoff_phase(df):
+    """Detect Wyckoff phase: accumulation, markup, distribution, markdown, or None."""
+    if len(df) < 30:
+        return None
+    close = df['close']
+    volume = df['volume']
+    ema20 = ema(close, 20).iloc[-1]
+    ema50 = ema(close, 50).iloc[-1] if len(close) >= 50 else ema20
+    price = close.iloc[-1]
+    avg_vol = volume.iloc[-20:].mean()
+    recent_vol = volume.iloc[-5:].mean()
+    price_range = df['high'].iloc[-20:].max() - df['low'].iloc[-20:].min()
+    price_avg = close.iloc[-20:].mean()
+    if price_avg == 0:
+        return None
+    range_pct = price_range / price_avg * 100
+    if range_pct < 0.3 and recent_vol < avg_vol * 0.8:
+        if price < ema20:
+            return 'accumulation'
+        else:
+            return 'distribution'
+    if price > ema20 and ema20 > ema50 and recent_vol > avg_vol:
+        return 'markup'
+    if price < ema20 and ema20 < ema50 and recent_vol > avg_vol:
+        return 'markdown'
+    return None
+
+# ============================================================
+# 2f. RSI DIVERGENCE
+# ============================================================
+def detect_rsi_divergence(df):
+    """Detect RSI divergence. Returns 'bullish', 'bearish', or None."""
+    if len(df) < 20:
+        return None
+    close = df['close'].values
+    rsi_vals = rsi(df['close'], 14).values
+    lows_idx = []
+    for i in range(3, len(close) - 3):
+        if all(close[i] <= close[i - j] for j in range(1, 4)) and \
+           all(close[i] <= close[i + j] for j in range(1, 4)):
+            lows_idx.append(i)
+    if len(lows_idx) >= 2:
+        l1, l2 = lows_idx[-2], lows_idx[-1]
+        if close[l2] < close[l1] and rsi_vals[l2] > rsi_vals[l1]:
+            return 'bullish'
+    highs_idx = []
+    for i in range(3, len(close) - 3):
+        if all(close[i] >= close[i - j] for j in range(1, 4)) and \
+           all(close[i] >= close[i + j] for j in range(1, 4)):
+            highs_idx.append(i)
+    if len(highs_idx) >= 2:
+        h1, h2 = highs_idx[-2], highs_idx[-1]
+        if close[h2] > close[h1] and rsi_vals[h2] < rsi_vals[h1]:
+            return 'bearish'
+    return None
+
+# ============================================================
+# 2g. DAILY BIAS & MTF ALIGNMENT
+# ============================================================
+def get_daily_bias(df):
+    """Return 'bullish', 'bearish', or 'neutral' based on price position."""
+    if len(df) < 50:
+        return 'neutral'
+    ema20 = ema(df['close'], 20).iloc[-1]
+    ema50 = ema(df['close'], 50).iloc[-1] if len(df) >= 50 else ema20
+    price = df['close'].iloc[-1]
+    if price > ema20 > ema50:
+        return 'bullish'
+    if price < ema20 < ema50:
+        return 'bearish'
+    return 'neutral'
+
+def mtf_full_alignment(higher_tf_trend, market_trend, current_trend):
+    """Check if all timeframes align. Returns True if aligned."""
+    trends = [t for t in [higher_tf_trend, market_trend, current_trend] if t is not None]
+    if not trends:
+        return True
+    return all(t == trends[0] for t in trends)
+
+# ============================================================
+# 2h. CHoCH CONFIRMED
+# ============================================================
+def choch_confirmed(df):
+    """Detect CHoCH confirmation. Returns 'bullish', 'bearish', or None."""
+    return detect_mss(df)
+
+# ============================================================
+# 2i. BATCH 0: GUARDS & LEVERAGE
+# ============================================================
+def detect_leverage_zone(df, direction):
+    """Detect if price is in a high-probability leverage zone near FVG + OB."""
+    if len(df) < 20:
+        return False
+    fvg_data = fvg_quality(df)
+    ob = order_block(df)
+    if fvg_data is None:
+        return False
+    fvg_dir = fvg_data[0]
+    if direction == 'BUY' and fvg_dir == 'bullish' and ob == 'demand':
+        return True
+    if direction == 'SELL' and fvg_dir == 'bearish' and ob == 'supply':
+        return True
+    return False
+
+def is_kill_zone():
+    """Return True during London 07-09 UTC or NY 13-15 UTC kill zones."""
+    now = datetime.now(timezone.utc)
+    hour = now.hour
+    if 7 <= hour < 9:
+        return True
+    if 13 <= hour < 15:
+        return True
+    return False
+
+def is_near_daily_level(df, direction):
+    """Block signals when price is too close to daily high/low."""
+    if len(df) < 50:
+        return False
+    daily_high = df['high'].iloc[-50:].max()
+    daily_low = df['low'].iloc[-50:].min()
+    price = df['close'].iloc[-1]
+    range_ = daily_high - daily_low
+    if range_ == 0:
+        return False
+    if direction == 'BUY' and (daily_high - price) / range_ < 0.05:
+        return True
+    if direction == 'SELL' and (price - daily_low) / range_ < 0.05:
+        return True
+    return False
+
+def valid_entry_candle(df, direction):
+    """Check if last candle is a valid entry candle for the given direction."""
+    if len(df) < 2:
+        return False
+    c = df.iloc[-1]
+    body = abs(c['close'] - c['open'])
+    full_range = c['high'] - c['low']
+    if full_range == 0:
+        return False
+    body_pct = body / full_range
+    if body_pct >= 0.40:
+        if direction == 'BUY' and c['close'] > c['open']:
+            return True
+        if direction == 'SELL' and c['close'] < c['open']:
+            return True
+    lower_wick = min(c['open'], c['close']) - c['low']
+    upper_wick = c['high'] - max(c['open'], c['close'])
+    if direction == 'BUY' and lower_wick > 2 * body and upper_wick < body * 0.5:
+        return True
+    if direction == 'SELL' and upper_wick > 2 * body and lower_wick < body * 0.5:
+        return True
+    return False
+
+def detect_liquidity_trap(df):
+    """Detect liquidity trap: price sweeps key level then reverses."""
+    if len(df) < 15:
+        return None
+    high = df['high'].values
+    low = df['low'].values
+    close = df['close'].values
+    recent_high = max(high[-10:-2])
+    recent_low = min(low[-10:-2])
+    if low[-1] < recent_low and close[-1] > recent_low:
+        return 'bullish'
+    if high[-1] > recent_high and close[-1] < recent_high:
+        return 'bearish'
+    return None
+
+# ============================================================
+# 2j. BATCH 1: SMC ADVANCED (11 functions)
+# ============================================================
+def ifvg_detection(df):
+    """Inverse FVG detection. Returns 'bullish', 'bearish', or None."""
+    if len(df) < 10:
+        return None
+    fvg_data = fvg_quality(df)
+    if fvg_data is None:
+        return None
+    fvg_dir = fvg_data[0]
+    for i in range(len(df) - 1, max(len(df) - 6, 2), -1):
+        prev2 = df.iloc[i - 2]
+        curr = df.iloc[i]
+        if fvg_dir == 'bullish' and curr['low'] <= prev2['high']:
+            return 'bearish'
+        if fvg_dir == 'bearish' and curr['high'] >= prev2['low']:
+            return 'bullish'
+    return None
+
+def market_holding_creating(df, direction):
+    """Check if market is holding/creating structure for direction."""
+    if len(df) < 20:
+        return False
+    struct = market_structure(df)
+    if direction == 'BUY' and struct == 'bullish':
+        return True
+    if direction == 'SELL' and struct == 'bearish':
+        return True
+    return False
+
+def market_respecting(df, direction):
+    """Check if price is respecting key levels for direction."""
+    if len(df) < 15:
+        return False
+    swings = identify_swings(df, order=3)
+    if not swings:
+        return False
+    price = df['close'].iloc[-1]
+    if direction == 'BUY':
+        lows = [s['price'] for s in swings if s['type'] == 'low']
+        if lows and price >= min(lows[-3:]) * 0.999:
+            return True
+    if direction == 'SELL':
+        highs = [s['price'] for s in swings if s['type'] == 'high']
+        if highs and price <= max(highs[-3:]) * 1.001:
+            return True
+    return False
+
+def price_momentum(df, direction):
+    """Check price momentum alignment with direction."""
+    if len(df) < 5:
+        return False
+    mom = (df['close'].iloc[-1] - df['close'].iloc[-5]) / df['close'].iloc[-5] * 100
+    if direction == 'BUY' and mom > 0:
+        return True
+    if direction == 'SELL' and mom < 0:
+        return True
+    return False
+
+def direction_flow(df, direction):
+    """Check if order flow aligns with direction."""
+    if len(df) < 10:
+        return False
+    bullish_vol = df[df['close'] > df['open']]['volume'].iloc[-10:].sum()
+    bearish_vol = df[df['close'] < df['open']]['volume'].iloc[-10:].sum()
+    if direction == 'BUY' and bullish_vol > bearish_vol * 1.2:
+        return True
+    if direction == 'SELL' and bearish_vol > bullish_vol * 1.2:
+        return True
+    return False
+
+def detect_mm_model(df):
+    """Detect market maker model (manipulation -> liquidity -> continuation)."""
+    if len(df) < 20:
+        return None
+    trap = detect_liquidity_trap(df)
+    if trap is None:
+        return None
+    struct = market_structure(df)
+    if trap == 'bullish' and struct == 'bullish':
+        return 'buy_model'
+    if trap == 'bearish' and struct == 'bearish':
+        return 'sell_model'
+    return None
+
+BUY_MODELS = {'buy_model'}
+
+def cicd_reversal_confirmed(df, direction):
+    """CICD (Change in Character of Demand) reversal confirmation."""
+    if len(df) < 20:
+        return False
+    choch = choch_confirmed(df)
+    fvg_data = fvg_quality(df)
+    if choch is None:
+        return False
+    if direction == 'BUY' and choch == 'bullish':
+        if fvg_data and fvg_data[0] == 'bullish':
+            return True
+    if direction == 'SELL' and choch == 'bearish':
+        if fvg_data and fvg_data[0] == 'bearish':
+            return True
+    return False
+
+def detect_market_pattern(df):
+    """Detect market pattern with direction. Returns (pattern_name, direction) or (None, None)."""
+    if len(df) < 20:
+        return None, None
+    recent_range = df['high'].iloc[-5:].max() - df['low'].iloc[-5:].min()
+    prev_range = df['high'].iloc[-10:-5].max() - df['low'].iloc[-10:-5].min()
+    if prev_range == 0:
+        return None, None
+    if recent_range > prev_range * 1.5:
+        return 'expansion', 'bullish' if df['close'].iloc[-1] > df['close'].iloc[-5] else 'bearish'
+    if recent_range < prev_range * 0.5:
+        return 'contraction', None
+    return None, None
+
+def price_aims(df, direction):
+    """Check if price aims (directional intent) aligns."""
+    if len(df) < 5:
+        return False
+    closes = df['close'].values
+    if direction == 'BUY' and closes[-1] > closes[-2] > closes[-3]:
+        return True
+    if direction == 'SELL' and closes[-1] < closes[-2] < closes[-3]:
+        return True
+    return False
+
+def optimal_expiry_seconds(df, tf):
+    """Calculate optimal expiry based on candle duration and momentum."""
+    tf_seconds = {'30s': 30, '45s': 45, '1m': 60, '2m': 120, '3m': 180, '5m': 300}
+    base = tf_seconds.get(tf, 60)
+    if len(df) < 5:
+        return base
+    mom = abs(df['close'].iloc[-1] - df['close'].iloc[-5]) / df['close'].iloc[-5] * 100
+    if mom > 0.1:
+        return int(base * 0.8)
+    return base
+
+# ============================================================
+# 2k. BATCH 2: CONFIRMATION LAYER (7 functions)
+# ============================================================
+def breakout_retest(df, direction):
+    """Check if price broke out and retested a level."""
+    if len(df) < 20:
+        return False
+    swings = identify_swings(df, order=3)
+    if len(swings) < 2:
+        return False
+    price = df['close'].iloc[-1]
+    if direction == 'BUY':
+        highs = [s['price'] for s in swings if s['type'] == 'high']
+        if len(highs) >= 2:
+            level = highs[-2]
+            if df['close'].iloc[-3] > level and price >= level * 0.998:
+                return True
+    if direction == 'SELL':
+        lows = [s['price'] for s in swings if s['type'] == 'low']
+        if len(lows) >= 2:
+            level = lows[-2]
+            if df['close'].iloc[-3] < level and price <= level * 1.002:
+                return True
+    return False
+
+def strong_candle(df, direction):
+    """Check if last candle is strong directional."""
+    if len(df) < 2:
+        return False
+    c = df.iloc[-1]
+    body = abs(c['close'] - c['open'])
+    full_range = c['high'] - c['low']
+    if full_range == 0:
+        return False
+    if body / full_range < 0.6:
+        return False
+    if direction == 'BUY' and c['close'] > c['open']:
+        return True
+    if direction == 'SELL' and c['close'] < c['open']:
+        return True
+    return False
+
+def consecutive_volume_spikes(df):
+    """Check for 2+ consecutive volume spikes."""
+    if len(df) < 5:
+        return False
+    avg_vol = df['volume'].iloc[-20:-1].mean() if len(df) >= 20 else df['volume'].mean()
+    if avg_vol == 0:
+        return False
+    spikes = 0
+    for i in range(-3, 0):
+        if df['volume'].iloc[i] > avg_vol * 1.5:
+            spikes += 1
+    return spikes >= 2
+
+def sr_flip(df, direction):
+    """S/R flip: old resistance becomes support (or vice versa)."""
+    if len(df) < 30:
+        return False
+    price = df['close'].iloc[-1]
+    swings = identify_swings(df, order=3)
+    if len(swings) < 3:
+        return False
+    if direction == 'BUY':
+        old_resist = [s['price'] for s in swings if s['type'] == 'high']
+        if len(old_resist) >= 2:
+            level = old_resist[-2]
+            if price > level and price < level * 1.005:
+                return True
+    if direction == 'SELL':
+        old_support = [s['price'] for s in swings if s['type'] == 'low']
+        if len(old_support) >= 2:
+            level = old_support[-2]
+            if price < level and price > level * 0.995:
+                return True
+    return False
+
+def high_volatility(df):
+    """Check if current volatility is high."""
+    if len(df) < 20:
+        return False
+    tr = pd.concat([
+        df['high'] - df['low'],
+        (df['high'] - df['close'].shift()).abs(),
+        (df['low'] - df['close'].shift()).abs()
+    ], axis=1).max(axis=1)
+    current_atr = tr.rolling(14).mean().iloc[-1]
+    avg_atr = tr.rolling(50).mean().iloc[-1] if len(df) >= 50 else current_atr
+    if pd.isna(avg_atr) or avg_atr == 0:
+        return False
+    return current_atr > avg_atr * 1.5
+
+def order_flow_direction(df):
+    """Detect order flow direction. Returns 'bullish', 'bearish', or 'neutral'."""
+    if len(df) < 10:
+        return 'neutral'
+    bullish_vol = df[df['close'] > df['open']]['volume'].iloc[-10:].sum()
+    bearish_vol = df[df['close'] < df['open']]['volume'].iloc[-10:].sum()
+    total = bullish_vol + bearish_vol
+    if total == 0:
+        return 'neutral'
+    if bullish_vol / total > 0.6:
+        return 'bullish'
+    if bearish_vol / total > 0.6:
+        return 'bearish'
+    return 'neutral'
+
+def wyckoff_phase_continuity(df, phase):
+    """Check if Wyckoff phase supports the signal direction."""
+    if len(df) < 30:
+        return False
+    current_phase = detect_wyckoff_phase(df)
+    if phase == 'accumulation' and current_phase in ('accumulation', 'markup'):
+        return True
+    if phase == 'distribution' and current_phase in ('distribution', 'markdown'):
+        return True
+    return False
+
+# ============================================================
+# 2l. BATCH 3: CHART PATTERNS (bonus scoring only)
+# ============================================================
+def detect_bullish_flag(df):
+    """Detect bullish flag pattern."""
+    if len(df) < 25:
+        return False
+    prev = df.iloc[-20:-10]
+    recent = df.iloc[-10:]
+    if len(prev) < 10:
+        return False
+    prev_move = prev['close'].iloc[-1] - prev['close'].iloc[0]
+    if prev_move <= 0:
+        return False
+    recent_range = recent['high'].max() - recent['low'].min()
+    if abs(prev_move) > 2 * recent_range:
+        return True
+    return False
+
+def detect_descending_scallop(df):
+    """Detect descending scallop pattern."""
+    if len(df) < 20:
+        return False
+    closes = df['close'].values[-20:]
+    mid = len(closes) // 2
+    if closes[-1] > closes[mid] < closes[0]:
+        return True
+    return False
+
+def detect_rising_wedge(df):
+    """Detect rising wedge (bearish)."""
+    if len(df) < 25:
+        return False
+    swings = identify_swings(df, order=3)
+    if len(swings) < 4:
+        return False
+    highs = [s['price'] for s in swings if s['type'] == 'high']
+    lows = [s['price'] for s in swings if s['type'] == 'low']
+    if len(highs) >= 2 and len(lows) >= 2:
+        h_slope = highs[-1] - highs[-2]
+        l_slope = lows[-1] - lows[-2]
+        if h_slope > 0 and l_slope > 0 and l_slope > h_slope:
+            return True
+    return False
+
+def detect_adam_eve_bull(df):
+    """Detect Adam & Eve bottom pattern."""
+    if len(df) < 30:
+        return False
+    lows = df['low'].values[-30:]
+    min_idx = np.argmin(lows)
+    if min_idx < 5 or min_idx > 25:
+        return False
+    first_low = lows[min_idx]
+    remaining = lows[min_idx+1:]
+    if len(remaining) < 3:
+        return False
+    second_low = min(remaining)
+    if abs(first_low - second_low) / first_low < 0.005:
+        return True
+    return False
+
+def detect_bullish_wolfe(df):
+    """Detect bullish Wolfe wave pattern."""
+    if len(df) < 30:
+        return False
+    swings = identify_swings(df, order=3)
+    lows = [s for s in swings if s['type'] == 'low']
+    if len(lows) >= 3:
+        if lows[-1]['price'] < lows[-2]['price'] and lows[-3]['price'] < lows[-1]['price']:
+            return True
+    return False
+
+# ============================================================
+# 2m. BATCH 5: MARKET IMBALANCE
+# ============================================================
+def detect_market_imbalance(df):
+    """Detect market imbalance. Returns 'bullish', 'bearish', or None."""
+    if len(df) < 10:
+        return None
+    bullish_vol = df[df['close'] > df['open']]['volume'].iloc[-10:].sum()
+    bearish_vol = df[df['close'] < df['open']]['volume'].iloc[-10:].sum()
+    total = bullish_vol + bearish_vol
+    if total == 0:
+        return None
+    if bullish_vol / total > 0.7:
+        return 'bullish'
+    if bearish_vol / total > 0.7:
+        return 'bearish'
+    return None
+
+# ============================================================
+# 2n. BATCH 6: ADVANCED DETECTIONS
+# ============================================================
+def detect_equal_highs_lows(df):
+    """Returns 'bullish' if equal lows, 'bearish' if equal highs, or None."""
+    if len(df) < 15:
+        return None
+    highs = df['high'].values[-15:]
+    lows  = df['low'].values[-15:]
+    closes = df['close'].values[-15:]
+    def has_cluster(arr):
+        arr_sorted = np.sort(arr)
+        diffs = np.diff(arr_sorted)
+        return any(diffs < arr_sorted[:-1]*0.0003)
+    if has_cluster(highs):
+        cluster_mid = np.median(highs)
+        if closes[-1] < cluster_mid:
+            return 'bearish'
+    if has_cluster(lows):
+        cluster_mid = np.median(lows)
+        if closes[-1] > cluster_mid:
+            return 'bullish'
+    return None
+
+def detect_amd_phase(df):
+    """Returns 'accumulation', 'advance', 'distribution', 'decline', or None."""
+    if len(df) < 40:
+        return None
+    wyckoff = detect_wyckoff_phase(df)
+    if wyckoff in ('accumulation', 'manipulation'):
+        struct = market_structure(df)
+        if struct == 'bullish':
+            return 'advance'
+        return 'accumulation'
+    if wyckoff == 'distribution':
+        struct = market_structure(df)
+        if struct == 'bearish':
+            return 'decline'
+        return 'distribution'
+    return wyckoff
+
+def detect_trend(df):
+    """Returns 'strong_bullish', 'bullish', 'sideways', 'bearish', 'strong_bearish'."""
+    if len(df) < 40:
+        return 'sideways'
+    highs = df['high'].values[-40:]
+    lows = df['low'].values[-40:]
+    closes = df['close'].values[-40:]
+    sh, sl = [], []
+    for i in range(3, 37):
+        if all(highs[i] >= highs[i-j] for j in range(1,4)) and all(highs[i] >= highs[i+j] for j in range(1,4)):
+            sh.append(i)
+        if all(lows[i] <= lows[i-j] for j in range(1,4)) and all(lows[i] <= lows[i+j] for j in range(1,4)):
+            sl.append(i)
+    if len(sh) < 2 or len(sl) < 2:
+        ema50 = ema(df['close'], 50).iloc[-1]
+        ema5  = ema(df['close'], 5).iloc[-1]
+        if ema5 > ema50: return 'bullish'
+        elif ema5 < ema50: return 'bearish'
+        return 'sideways'
+    last_highs = [highs[i] for i in sh[-3:]]
+    last_lows  = [lows[i] for i in sl[-3:]]
+    if len(last_highs) >= 2 and len(last_lows) >= 2:
+        hh = last_highs[-1] > last_highs[-2]
+        hl = last_lows[-1] > last_lows[-2]
+        lh = last_highs[-1] < last_highs[-2]
+        ll = last_lows[-1] < last_lows[-2]
+        ema50 = ema(df['close'], 50).iloc[-1]
+        price = closes[-1]
+        distance = (price - ema50) / ema50 * 100
+        if hh and hl:
+            if distance > 0.5: return 'strong_bullish'
+            return 'bullish'
+        elif lh and ll:
+            if distance < -0.5: return 'strong_bearish'
+            return 'bearish'
+    adx_val = adx(df['high'], df['low'], df['close'], 14).iloc[-1]
+    if adx_val > 25:
+        if closes[-1] > closes[-10]: return 'bullish'
+        else: return 'bearish'
+    return 'sideways'
+
+def detect_chart_pattern(df):
+    """Returns (pattern_name, expected_direction) or (None, None)."""
+    if len(df) < 25:
+        return None, None
+    swings = identify_swings(df, order=3)
+    if len(swings) < 5:
+        return None, None
+    highs = [s for s in swings if s['type']=='high']
+    lows  = [s for s in swings if s['type']=='low']
+    if len(highs) >= 2:
+        h1, h2 = highs[-2], highs[-1]
+        if abs(h1['price'] - h2['price']) / h1['price'] < 0.001:
+            return 'double_top', 'SELL'
+    if len(lows) >= 2:
+        l1, l2 = lows[-2], lows[-1]
+        if abs(l1['price'] - l2['price']) / l1['price'] < 0.001:
+            return 'double_bottom', 'BUY'
+    if len(highs) >= 3:
+        h1, h2, h3 = highs[-3], highs[-2], highs[-1]
+        if h2['price'] > h1['price'] and h2['price'] > h3['price'] and abs(h1['price']-h3['price'])/h1['price']<0.01:
+            return 'head_shoulders', 'SELL'
+    if len(lows) >= 3:
+        l1, l2, l3 = lows[-3], lows[-2], lows[-1]
+        if l2['price'] < l1['price'] and l2['price'] < l3['price'] and abs(l1['price']-l3['price'])/l1['price']<0.01:
+            return 'inv_head_shoulders', 'BUY'
+    if len(highs)>=4 and len(lows)>=4:
+        h_prices = [h['price'] for h in highs[-4:]]
+        l_prices = [l['price'] for l in lows[-4:]]
+        slope_h = np.polyfit(range(len(h_prices)), h_prices, 1)[0]
+        slope_l = np.polyfit(range(len(l_prices)), l_prices, 1)[0]
+        if slope_h > 0 and slope_l > 0 and slope_l > slope_h:
+            return 'rising_wedge', 'SELL'
+        if slope_h < 0 and slope_l < 0 and slope_h < slope_l:
+            return 'falling_wedge', 'BUY'
+    recent = df.iloc[-10:]
+    prev = df.iloc[-20:-10]
+    if len(prev) < 10: return None, None
+    prev_move = prev['close'].iloc[-1] - prev['close'].iloc[0]
+    if abs(prev_move) > 2 * (recent['high'].max() - recent['low'].min()):
+        if prev_move > 0: return 'bullish_flag', 'BUY'
+        else: return 'bearish_flag', 'SELL'
+    return None, None
+
+def imbalance_swing_levels(df):
+    """Return (bullish_target, bearish_target) price levels where an FVG originated."""
+    if len(df) < 20: return None, None
+    swings = identify_swings(df, order=3)
+    if not swings: return None, None
+    fvg_data = fvg_quality(df)
+    if fvg_data:
+        fvg_dir = fvg_data[0]
+        if fvg_dir == 'bullish':
+            lows = [s for s in swings if s['type']=='low']
+            if lows: return None, lows[-1]['price']
+        else:
+            highs = [s for s in swings if s['type']=='high']
+            if highs: return highs[-1]['price'], None
+    return None, None
+
+def detect_liquidity_side(df):
+    """Return 'buy_side' or 'sell_side' based on volume at equal highs/lows."""
+    if len(df) < 15: return None
+    eq = detect_equal_highs_lows(df)
+    if eq is None: return None
+    vol = df['volume'].iloc[-1]
+    avg_vol = df['volume'].iloc[-20:-1].mean()
+    if eq == 'bullish' and vol > avg_vol * 1.5: return 'sell_side'
+    if eq == 'bearish' and vol > avg_vol * 1.5: return 'buy_side'
+    return None
+
+def adr_remaining_pct(df, timeframe_min=1440):
+    """Return estimate of how much daily range is left, as a fraction."""
+    if len(df) < 100: return 1.0
+    recent_high = df['high'].iloc[-50:].max()
+    recent_low = df['low'].iloc[-50:].min()
+    current_range = recent_high - recent_low
+    avg_range = (df['high'] - df['low']).rolling(50).mean().iloc[-1] * 6
+    if avg_range == 0: return 1.0
+    return max(0, 1 - (current_range / avg_range))
+
+def detect_equilibrium(df):
+    """Return (eq_price, distance_pct) of how close price is to equilibrium."""
+    if len(df) < 30: return None, None
+    high = df['high'].iloc[-30:].max()
+    low = df['low'].iloc[-30:].min()
+    eq = (high + low) / 2
+    price = df['close'].iloc[-1]
+    distance = abs(price - eq) / price * 100
+    return eq, distance
+
+def atr_indicator(high, low, close, period=14):
+    """ATR indicator returning last value as float."""
+    tr = pd.concat([
+        high - low,
+        (high - close.shift()).abs(),
+        (low - close.shift()).abs()
+    ], axis=1).max(axis=1)
+    atr_val = tr.rolling(period).mean().iloc[-1]
+    return atr_val
+
+def smart_ema(df, base_period=20):
+    """EMA with period scaled inversely to ATR."""
+    atr_val = atr_indicator(df['high'], df['low'], df['close'], 14)
+    if atr_val == 0 or pd.isna(atr_val):
+        period = base_period
+    else:
+        period = max(5, int(base_period * 0.001 / atr_val))
+    return ema(df['close'], period)
+
+def mitigation_block(df):
+    """Returns 'bullish' if demand OB was mitigated, 'bearish' if supply OB was mitigated."""
+    if len(df) < 20: return None
+    for i in range(10, len(df)-1):
+        if (df['close'].iloc[i] < df['open'].iloc[i] and
+            abs(df['close'].iloc[i] - df['open'].iloc[i]) > 1.5 * abs(df['close'].iloc[i-1] - df['open'].iloc[i-1])):
+            ob_high = df['high'].iloc[i]
+            subsequent = df.iloc[i+1:]
+            if any((subsequent['low'] <= ob_high) & (subsequent['close'] > ob_high)):
+                return 'bullish'
+        if (df['close'].iloc[i] > df['open'].iloc[i] and
+            abs(df['close'].iloc[i] - df['open'].iloc[i]) > 1.5 * abs(df['close'].iloc[i-1] - df['open'].iloc[i-1])):
+            ob_low = df['low'].iloc[i]
+            subsequent = df.iloc[i+1:]
+            if any((subsequent['high'] >= ob_low) & (subsequent['close'] < ob_low)):
+                return 'bearish'
+    return None
+
+def rejection_block(df):
+    """Returns 'support' if bullish rejection, 'resistance' if bearish rejection."""
+    if len(df) < 1: return None
+    c = df.iloc[-1]
+    body = abs(c['close'] - c['open'])
+    lower_wick = min(c['open'], c['close']) - c['low']
+    upper_wick = c['high'] - max(c['open'], c['close'])
+    range_ = c['high'] - c['low']
+    if range_ == 0: return None
+    if lower_wick > 2*body and upper_wick < body*0.5: return 'support'
+    if upper_wick > 2*body and lower_wick < body*0.5: return 'resistance'
+    return None
+
+def volume_imbalance(df):
+    """Returns 'bullish' if volume surged on bullish candle, 'bearish' if on bearish."""
+    if len(df) < 5: return None
+    c = df.iloc[-1]
+    prev_vol = df['volume'].iloc[-2]
+    vol = c['volume']
+    if vol > prev_vol * 2.5:
+        if c['close'] > c['open']: return 'bullish'
+        elif c['close'] < c['open']: return 'bearish'
+    return None
+
+def poi_score(df, direction):
+    """Point of Interest score 0-100 based on confluences near key levels."""
+    if len(df) < 20: return 0
+    score = 0
+    if fvg_quality(df) is not None: score += 25
+    if order_block(df) is not None: score += 25
+    if detect_liquidity_trap(df) is not None: score += 25
+    swings = identify_swings(df, order=3)
+    if swings:
+        price = df['close'].iloc[-1]
+        for s in swings[-5:]:
+            if abs(price - s['price']) / price < 0.002:
+                score += 25
+                break
+    return min(100, score)
+
+def detect_inversion_point(df):
+    """Detect potential inversion point (reversal zone)."""
+    if len(df) < 20: return False
+    trap = detect_liquidity_trap(df)
+    fvg_data = fvg_quality(df)
+    div = detect_rsi_divergence(df)
+    if trap and fvg_data and div:
+        return True
+    return False
 
 # ============================================================
 # 3. MULTI-TIMEFRAME TREND CACHE
@@ -989,11 +1835,11 @@ async def weekly_optimise():
         logger.error(f"Weekly optimize error: {e}")
 
 # ============================================================
-# 5. SIGNAL GENERATION - 10 confluences + Accuracy + MTF + Market Trend
+# 5. SIGNAL GENERATION - Full ALL-AND + Batch 0-6 + MTF + Accuracy
 # ============================================================
 def generate_signal(df, symbol="", higher_tf_trend=None, market_trend=None):
     """
-    10-point ALL-AND confluence + multi-timeframe + market trend + accuracy scoring.
+    Full ALL-AND confluence + Batch 0-6 + multi-timeframe + accuracy scoring.
     Returns: dict with all signal fields or None if no signal.
     """
     df = safe_df(df)
@@ -1046,7 +1892,7 @@ def generate_signal(df, symbol="", higher_tf_trend=None, market_trend=None):
     fvg_ = detect_fvg(df)
     mom_3 = (close.iloc[-1] - close.iloc[-4]) / close.iloc[-4] * 100 if len(close) >= 4 else 0
 
-    # v3.2: New indicators
+    # v3.2 indicators
     stoch_val, stoch_status = stochastic(high, low, close)
     regime, regime_desc = detect_regime(df)
     liq_sweep, liq_side = detect_liquidity_sweep(df)
@@ -1054,96 +1900,244 @@ def generate_signal(df, symbol="", higher_tf_trend=None, market_trend=None):
     bb_status = classify_bb_width(bb_w)
     trend_dir = 'Bullish' if ema5.iloc[-1] > ema20.iloc[-1] else 'Bearish'
 
-    def make_signal_dict(dir_, rsi_, adx_, accuracy, mtf_ok, market_ok):
-        rr = calculate_rr(price, support, resistance, dir_)
-        zone_label = ''
-        if sd == 'demand':
-            zone_label = 'Demand + Order Block'
-        elif sd == 'supply':
-            zone_label = 'Supply + Order Block'
-        elif sd:
-            zone_label = sd.title() + ' Zone'
-        else:
-            zone_label = 'None Detected'
+    # Batch 0-1 detections
+    fvg_qual = fvg_quality(df)
+    choch = choch_confirmed(df)
+    mm_model = detect_mm_model(df)
+    imbalance = detect_market_imbalance(df)
 
-        # BOS/CHoCH status
-        bos_status = 'Confirmed' if (struct == ('bullish' if dir_ == 'BUY' else 'bearish')) else 'Not Confirmed'
-        choch_status = 'Confirmed' if (mss == ('bullish' if dir_ == 'BUY' else 'bearish')) else 'Not Confirmed'
+    # Batch 6 detections
+    eq_hl = detect_equal_highs_lows(df)
+    amd = detect_amd_phase(df)
+    trend = detect_trend(df)
+    chart_pattern, chart_dir = detect_chart_pattern(df)
+    vol_imb = volume_imbalance(df)
+    rej_block = rejection_block(df)
+    mit_block = mitigation_block(df)
+    eq_price, eq_dist = detect_equilibrium(df)
+    liq_side_det = detect_liquidity_side(df)
+    atr_val = atr_indicator(high, low, close, 14)
 
-        # GLM Smart Money
-        if dir_ == 'SELL':
-            sm_structure = 'Break of Structure Down' if bos_status == 'Confirmed' else 'No Clear Break'
-            sm_liquidity = 'Sell Side Sweep' if liq_sweep and 'Sell' in liq_side else 'Buy Side Liquidity'
-            sm_breakout = 'Confirmed Breakdown' if regime == 'BREAKOUT' else 'No Breakout'
-            sm_signal = 'Valid Sell Signal' if accuracy >= 80 else 'Weak Sell Signal'
-        else:
-            sm_structure = 'Break of Structure Up' if bos_status == 'Confirmed' else 'No Clear Break'
-            sm_liquidity = 'Buy Side Sweep' if liq_sweep and 'Buy' in liq_side else 'Sell Side Liquidity'
-            sm_breakout = 'Confirmed Breakout' if regime == 'BREAKOUT' else 'No Breakout'
-            sm_signal = 'Valid Buy Signal' if accuracy >= 80 else 'Weak Buy Signal'
+    # ---- SIGNAL DIRECTION ----
+    direction = None
 
-        return {
-            'direction': dir_,
-            'rsi': round(rsi_, 1),
-            'adx': round(adx_, 1),
-            'accuracy': round(accuracy, 1),
-            # v3.2 new fields
-            'regime': regime,
-            'regime_desc': regime_desc,
-            'trend': trend_dir,
-            'bos': bos_status,
-            'choch': choch_status,
-            'fvg': 'Active' if fvg_ else 'Inactive',
-            'fvg_type': fvg_ or 'None',
-            'liquidity_sweep': liq_sweep,
-            'liquidity_side': liq_side,
-            'volume_class': vol_class,
-            'zone': zone_label,
-            'stoch_val': stoch_val,
-            'stoch_status': stoch_status,
-            'bb_status': bb_status,
-            'rr': rr,
-            'support': round(support, 5),
-            'resistance': round(resistance, 5),
-            'price': round(price, 5),
-            'order_block': sd or 'None',
-            'mtf_ok': mtf_ok,
-            'market_ok': market_ok,
-            # GLM Smart Money
-            'sm_structure': sm_structure,
-            'sm_liquidity': sm_liquidity,
-            'sm_breakout': sm_breakout,
-            'sm_signal': sm_signal,
-        }
-
+    # BUY ALL-AND conditions
     if (bull and rsi_val < PARAMS['rsi_buy'] and adx_val > PARAMS['adx_min'] and
         vol_spike and bb_sq and bb_exp and buy_sr and
-        (struct == 'bullish' or mss == 'bullish') and reversal == 'bullish' and
-        candle == 'bullish' and sd == 'demand' and fvg_ == 'bullish' and mom_3 > 0.03):
-        mtf_ok = (higher_tf_trend is None or higher_tf_trend == 'bullish')
-        market_ok = (market_trend is None or market_trend == 'bullish')
-        if not mtf_ok or not market_ok:
-            return None
-        accuracy = calculate_accuracy('BUY', rsi_val, adx_val, vol_spike, bb_sq, bb_exp,
-                                      sd, fvg_, struct, mss, reversal, candle, True, mtf_ok, market_ok)
-        return make_signal_dict('BUY', rsi_val, adx_val, accuracy, mtf_ok, market_ok)
+        (struct == 'bullish' or mss == 'bullish' or choch == 'bullish') and
+        reversal == 'bullish' and candle == 'bullish' and sd == 'demand' and
+        fvg_ == 'bullish' and mom_3 > 0.03 and
+        valid_entry_candle(df, 'BUY') and
+        direction_flow(df, 'BUY') and
+        (mm_model in BUY_MODELS or mm_model is None) and
+        (imbalance in ('bullish', None)) and
+        (eq_hl in ('bullish', None)) and
+        (vol_imb in ('bullish', None)) and
+        (rej_block != 'resistance')):
+        direction = 'BUY'
 
-    if (bear and rsi_val > PARAMS['rsi_sell'] and adx_val > PARAMS['adx_min'] and
+    # SELL ALL-AND conditions
+    elif (bear and rsi_val > PARAMS['rsi_sell'] and adx_val > PARAMS['adx_min'] and
         vol_spike and bb_sq and bb_exp and sell_sr and
-        (struct == 'bearish' or mss == 'bearish') and reversal == 'bearish' and
-        candle == 'bearish' and sd == 'supply' and fvg_ == 'bearish' and mom_3 < -0.03):
-        mtf_ok = (higher_tf_trend is None or higher_tf_trend == 'bearish')
-        market_ok = (market_trend is None or market_trend == 'bearish')
-        if not mtf_ok or not market_ok:
-            return None
-        accuracy = calculate_accuracy('SELL', rsi_val, adx_val, vol_spike, bb_sq, bb_exp,
-                                      sd, fvg_, struct, mss, reversal, candle, True, mtf_ok, market_ok)
-        return make_signal_dict('SELL', rsi_val, adx_val, accuracy, mtf_ok, market_ok)
+        (struct == 'bearish' or mss == 'bearish' or choch == 'bearish') and
+        reversal == 'bearish' and candle == 'bearish' and sd == 'supply' and
+        fvg_ == 'bearish' and mom_3 < -0.03 and
+        valid_entry_candle(df, 'SELL') and
+        direction_flow(df, 'SELL') and
+        (mm_model in ('sell_model',) or mm_model is None) and
+        (imbalance in ('bearish', None)) and
+        (eq_hl in ('bearish', None)) and
+        (vol_imb in ('bearish', None)) and
+        (rej_block != 'support')):
+        direction = 'SELL'
 
-    return None
+    if direction is None:
+        return None
+
+    # ---- HARD GATES ----
+    if not is_kill_zone():
+        return None
+
+    # Trend filter
+    if direction == 'BUY' and trend not in ('bullish', 'strong_bullish', 'sideways'):
+        return None
+    if direction == 'SELL' and trend not in ('bearish', 'strong_bearish', 'sideways'):
+        return None
+
+    # Chart pattern contradiction filter
+    if chart_pattern and chart_dir != direction:
+        return None
+
+    # Equilibrium filter
+    if direction == 'BUY' and eq_price and eq_dist is not None and eq_dist < 0.3:
+        return None
+    if direction == 'SELL' and eq_price and eq_dist is not None and eq_dist < 0.3:
+        return None
+
+    # Liquidity side filter
+    if liq_side_det == 'buy_side' and direction == 'BUY':
+        return None
+    if liq_side_det == 'sell_side' and direction == 'SELL':
+        return None
+
+    # Near daily level filter
+    if is_near_daily_level(df, direction):
+        return None
+
+    # MTF alignment
+    current_trend = 'bullish' if direction == 'BUY' else 'bearish'
+    mtf_ok = mtf_full_alignment(higher_tf_trend, market_trend, current_trend)
+    market_ok = (market_trend is None or market_trend == current_trend)
+    if not mtf_ok or not market_ok:
+        return None
+
+    # ---- SCORING ----
+    score = 0
+    # Base scoring
+    if direction == 'BUY':
+        score += min(30, max(0, (PARAMS['rsi_buy'] - rsi_val)))
+    else:
+        score += min(30, max(0, (rsi_val - PARAMS['rsi_sell'])))
+    score += min(20, max(0, (adx_val - 20)))
+    if vol_spike: score += 10
+    if bb_sq and bb_exp: score += 10
+    if sd: score += 10
+    if fvg_: score += 10
+    if struct or mss: score += 10
+    if reversal: score += 15
+    if candle: score += 15
+    if mom_3 > 0.03 or mom_3 < -0.03: score += 10
+    if mtf_ok: score += 10
+    if market_ok: score += 10
+
+    # Batch 0: Leverage zone
+    if detect_leverage_zone(df, direction): score += 15
+
+    # Batch 1: SMC Advanced scoring
+    if ifvg_detection(df) is not None: score += 10
+    if market_holding_creating(df, direction): score += 5
+    if market_respecting(df, direction): score += 10
+    if price_momentum(df, direction): score += 5
+    if direction_flow(df, direction): score += 5
+    if mm_model in BUY_MODELS or mm_model in ('sell_model',): score += 10
+    if cicd_reversal_confirmed(df, direction): score += 15
+    if price_aims(df, direction): score += 5
+    pattern_name, pattern_dir = detect_market_pattern(df)
+    if pattern_dir == direction: score += 10
+
+    # Batch 2: Confirmation Layer scoring
+    if breakout_retest(df, direction): score += 15
+    if strong_candle(df, direction): score += 10
+    if consecutive_volume_spikes(df): score += 10
+    if sr_flip(df, direction): score += 15
+    if high_volatility(df): score += 5
+    of = order_flow_direction(df)
+    if (direction == 'BUY' and of == 'bullish') or (direction == 'SELL' and of == 'bearish'): score += 10
+    wyckoff = detect_wyckoff_phase(df)
+    if direction == 'BUY' and wyckoff_phase_continuity(df, 'accumulation'): score += 10
+    if direction == 'SELL' and wyckoff_phase_continuity(df, 'distribution'): score += 10
+
+    # Batch 3: Chart Patterns (bonus only)
+    if direction == 'BUY':
+        if detect_bullish_flag(df): score += 12
+        if detect_descending_scallop(df): score += 10
+        if detect_bullish_wolfe(df): score += 15
+        if detect_adam_eve_bull(df): score += 12
+    if direction == 'SELL':
+        if detect_rising_wedge(df): score += 10
+
+    # Batch 5: Market imbalance
+    if (direction == 'BUY' and imbalance == 'bullish') or (direction == 'SELL' and imbalance == 'bearish'): score += 10
+
+    # Batch 6: New scoring
+    if (direction == 'BUY' and eq_hl == 'bullish') or (direction == 'SELL' and eq_hl == 'bearish'): score += 10
+    if (direction == 'BUY' and amd in ('accumulation', 'advance')) or (direction == 'SELL' and amd in ('distribution', 'decline')): score += 10
+    trap = detect_liquidity_trap(df)
+    if (direction == 'BUY' and trap == 'bullish') or (direction == 'SELL' and trap == 'bearish'): score += 15
+    if direction == 'BUY' and trend in ('bullish', 'strong_bullish'): score += 10
+    if direction == 'SELL' and trend in ('bearish', 'strong_bearish'): score += 10
+    if chart_dir == direction: score += 15
+    if poi_score(df, direction) >= 80: score += 10
+    if adr_remaining_pct(df) > 0.5: score += 5
+    if eq_dist is not None and eq_dist < 0.3: score += 5
+    if detect_inversion_point(df): score += 10
+    if not pd.isna(atr_val) and atr_val > 0.0005: score += 5
+    if (direction == 'BUY' and mit_block == 'bullish') or (direction == 'SELL' and mit_block == 'bearish'): score += 15
+    if (direction == 'BUY' and rej_block == 'support') or (direction == 'SELL' and rej_block == 'resistance'): score += 10
+    if (direction == 'BUY' and vol_imb == 'bullish') or (direction == 'SELL' and vol_imb == 'bearish'): score += 10
+
+    accuracy = min(100, max(50, score))
+
+    # ---- BUILD SIGNAL DICT ----
+    rr = calculate_rr(price, support, resistance, direction)
+    zone_label = ''
+    if sd == 'demand':
+        zone_label = 'Demand + Order Block'
+    elif sd == 'supply':
+        zone_label = 'Supply + Order Block'
+    elif sd:
+        zone_label = sd.title() + ' Zone'
+    else:
+        zone_label = 'None Detected'
+
+    bos_status = 'Confirmed' if (struct == ('bullish' if direction == 'BUY' else 'bearish')) else 'Not Confirmed'
+    choch_status = 'Confirmed' if (mss == ('bullish' if direction == 'BUY' else 'bearish')) else 'Not Confirmed'
+
+    if direction == 'SELL':
+        sm_structure = 'Break of Structure Down' if bos_status == 'Confirmed' else 'No Clear Break'
+        sm_liquidity = 'Sell Side Sweep' if liq_sweep and 'Sell' in liq_side else 'Buy Side Liquidity'
+        sm_breakout = 'Confirmed Breakdown' if regime == 'BREAKOUT' else 'No Breakout'
+        sm_signal = 'Valid Sell Signal' if accuracy >= 80 else 'Weak Sell Signal'
+    else:
+        sm_structure = 'Break of Structure Up' if bos_status == 'Confirmed' else 'No Clear Break'
+        sm_liquidity = 'Buy Side Sweep' if liq_sweep and 'Buy' in liq_side else 'Sell Side Liquidity'
+        sm_breakout = 'Confirmed Breakout' if regime == 'BREAKOUT' else 'No Breakout'
+        sm_signal = 'Valid Buy Signal' if accuracy >= 80 else 'Weak Buy Signal'
+
+    return {
+        'direction': direction,
+        'rsi': round(rsi_val, 1),
+        'adx': round(adx_val, 1),
+        'accuracy': round(accuracy, 1),
+        'regime': regime,
+        'regime_desc': regime_desc,
+        'trend': trend_dir,
+        'bos': bos_status,
+        'choch': choch_status,
+        'fvg': 'Active' if fvg_ else 'Inactive',
+        'fvg_type': fvg_ or 'None',
+        'fvg_quality': f'{fvg_qual[0]} sz={fvg_qual[1]} age={fvg_qual[2]}' if fvg_qual else 'Inactive',
+        'liquidity_sweep': liq_sweep,
+        'liquidity_side': liq_side,
+        'volume_class': vol_class,
+        'zone': zone_label,
+        'stoch_val': stoch_val,
+        'stoch_status': stoch_status,
+        'bb_status': bb_status,
+        'rr': rr,
+        'support': round(support, 5),
+        'resistance': round(resistance, 5),
+        'price': round(price, 5),
+        'order_block': sd or 'None',
+        'mtf_ok': mtf_ok,
+        'market_ok': market_ok,
+        'sm_structure': sm_structure,
+        'sm_liquidity': sm_liquidity,
+        'sm_breakout': sm_breakout,
+        'sm_signal': sm_signal,
+        'trend_detail': trend,
+        'chart_pattern': chart_pattern or 'None',
+        'eq_hl': eq_hl or 'None',
+        'amd_phase': amd or 'None',
+        'vol_imbalance': vol_imb or 'None',
+        'mitigation_block': mit_block or 'None',
+        'rejection_block': rej_block or 'None',
+        'liquidity_side_det': liq_side_det or 'None',
+        'atr_value': round(float(atr_val), 6) if not pd.isna(atr_val) else 0,
+    }
 
 def calculate_accuracy(direction, rsi_val, adx_val, vol_spike, bb_sq, bb_exp, sd, fvg_, struct, mss, reversal, cand_conf, mom_ok, mtf_ok, market_ok=True):
-    """Return accuracy score 0-100 based on confirmation strength."""
+    """Return accuracy score 0-100 based on confirmation strength. (Legacy - scoring now in generate_signal)"""
     score = 0
     if direction == 'BUY':
         score += min(30, max(0, (PARAMS['rsi_buy'] - rsi_val)))
@@ -1185,9 +2179,20 @@ def calculate_martingale(entry: datetime, timeframe: str, confidence: float, bas
 # 5b. BROKER CONNECTION & DATA
 # ============================================================
 PAIRS = [
-    "EURUSD-OTC", "GBPJPY-OTC", "AUDUSD-OTC", "NZDUSD-OTC", "USDCAD-OTC",
-    "EUR/JPY (OTC)", "USD/JPY (OTC)", "EUR/GBP (OTC)"
+    "EUR/USD (OTC)", "GBP/JPY (OTC)", "AUD/USD (OTC)", "NZD/USD (OTC)",
+    "USD/CAD (OTC)", "EUR/JPY (OTC)", "USD/JPY (OTC)", "EUR/GBP (OTC)"
 ]
+
+SESSION_BEST_PAIRS = {
+    'Sydney/Tokyo': ['AUD/USD (OTC)', 'NZD/USD (OTC)', 'USD/JPY (OTC)'],
+    'London': ['EUR/USD (OTC)', 'GBP/JPY (OTC)', 'EUR/GBP (OTC)', 'USD/JPY (OTC)'],
+    'New York': ['EUR/USD (OTC)', 'GBP/JPY (OTC)', 'USD/JPY (OTC)', 'EUR/JPY (OTC)', 'AUD/USD (OTC)'],
+    'default': PAIRS
+}
+
+def get_best_pairs_for_current_session():
+    session = current_session()
+    return SESSION_BEST_PAIRS.get(session, PAIRS)
 IQ_TFS = ["1m", "2m", "3m", "5m"]
 PO_TFS = ["30s", "45s", "1m", "2m", "3m", "5m"]
 TF_SECONDS = {'30s': 30, '45s': 45, '1m': 60, '2m': 120, '3m': 180, '5m': 300, '15m': 900}
@@ -1201,15 +2206,15 @@ po_connected = False
 po_demo_mode = True
 
 IQ_SYMBOL_MAP = {
-    "EURUSD-OTC": "EURUSD-OTC", "GBPJPY-OTC": "GBPJPY-OTC",
-    "AUDUSD-OTC": "AUDUSD-OTC", "NZDUSD-OTC": "NZDUSD-OTC",
-    "USDCAD-OTC": "USDCAD-OTC", "EUR/JPY (OTC)": "EURJPY-OTC",
+    "EUR/USD (OTC)": "EURUSD-OTC", "GBP/JPY (OTC)": "GBPJPY-OTC",
+    "AUD/USD (OTC)": "AUDUSD-OTC", "NZD/USD (OTC)": "NZDUSD-OTC",
+    "USD/CAD (OTC)": "USDCAD-OTC", "EUR/JPY (OTC)": "EURJPY-OTC",
     "USD/JPY (OTC)": "USDJPY-OTC", "EUR/GBP (OTC)": "EURGBP-OTC",
 }
 PO_SYMBOL_MAP = {
-    "EURUSD-OTC": "EURUSD_OTC", "GBPJPY-OTC": "GBPJPY_OTC",
-    "AUDUSD-OTC": "AUDUSD_OTC", "NZDUSD-OTC": "NZDUSD_OTC",
-    "USDCAD-OTC": "USDCAD_OTC", "EUR/JPY (OTC)": "EURJPY_OTC",
+    "EUR/USD (OTC)": "EURUSD_OTC", "GBP/JPY (OTC)": "GBPJPY_OTC",
+    "AUD/USD (OTC)": "AUDUSD_OTC", "NZD/USD (OTC)": "NZDUSD_OTC",
+    "USD/CAD (OTC)": "USDCAD_OTC", "EUR/JPY (OTC)": "EURJPY_OTC",
     "USD/JPY (OTC)": "USDJPY_OTC", "EUR/GBP (OTC)": "EURGBP_OTC",
 }
 
@@ -1217,7 +2222,8 @@ def connect_iq_option():
     global iq_api, iq_connected
     if not USE_IQ_OPTION or not IQ_API_AVAILABLE:
         return False
-    if not IQ_EMAIL or IQ_EMAIL == "your_iq_option_email@example.com":
+    if not IQ_EMAIL:
+        # No email configured
         return False
     try:
         iq_api = IQ_Option(IQ_EMAIL, IQ_PASSWORD)
@@ -1242,7 +2248,7 @@ def connect_pocket_option():
     global po_api, po_connected
     if not USE_POCKET_OPTION or not PO_API_AVAILABLE:
         return False
-    if not PO_EMAIL or PO_EMAIL == "your_pocket_option_email@example.com":
+    if not PO_EMAIL:
         return False
     try:
         if PO_API_TYPE == 'stable_api':
@@ -1398,7 +2404,7 @@ def _demo_data(symbol, tf):
 # ============================================================
 # 6. FASTAPI APP & WEBSOCKET
 # ============================================================
-app = FastAPI(title="CATALYST FINAL", version="3.3")
+app = FastAPI(title="CATALYST", version="3.9")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 init_memory()
 latest_signals: List[dict] = []
@@ -1420,14 +2426,14 @@ async def scan_loop():
 
     while True:
         if not iq_connected and IQ_API_AVAILABLE and USE_IQ_OPTION:
-            if IQ_EMAIL and IQ_PASSWORD and IQ_EMAIL != "your_iq_option_email@example.com":
+            if IQ_EMAIL and IQ_PASSWORD:
                 await loop.run_in_executor(None, connect_iq_option)
         if not po_connected and PO_API_AVAILABLE and USE_POCKET_OPTION:
-            if PO_EMAIL and PO_PASSWORD and PO_EMAIL != "your_pocket_option_email@example.com":
+            if PO_EMAIL and PO_PASSWORD:
                 await loop.run_in_executor(None, connect_pocket_option)
 
         for platform, tfs in [("IQ Option", IQ_TFS), ("Pocket Option", PO_TFS)]:
-            for sym in PAIRS:
+            for sym in get_best_pairs_for_current_session():
                 higher_tf_trend = get_higher_tf_trend(sym)
                 if higher_tf_trend is None:
                     try:
@@ -1631,6 +2637,18 @@ async def outcome(signal_id: str, outcome: str):
 async def stats():
     return get_stats()
 
+@app.get("/api/pnl")
+async def pnl():
+    try:
+        conn = sqlite3.connect(MEMORY_DB)
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*), SUM(CASE WHEN outcome='win' THEN 1 ELSE 0 END), SUM(CASE WHEN outcome='loss' THEN 1 ELSE 0 END) FROM trades")
+        total, wins, losses = cur.fetchone()
+        conn.close()
+        return {"total": total or 0, "wins": wins or 0, "losses": losses or 0}
+    except Exception as e:
+        return {"total": 0, "wins": 0, "losses": 0, "error": str(e)}
+
 @app.get("/api/daily-stats")
 async def daily_stats_api(days: int = 30):
     return {"daily": get_daily_stats(days)}
@@ -1654,7 +2672,7 @@ async def system_status():
     stats = get_stats()
     return {
         "status": "online",
-        "version": "3.3",
+        "version": "3.9",
         "engine": "CATALYST FINAL",
         "iq_connected": iq_connected,
         "po_connected": po_connected,
@@ -1689,7 +2707,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>CATALYST FINAL v3.3</title>
+<title>CATALYST v3.9</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
@@ -1764,7 +2782,7 @@ body{background:#050510;color:#e0e0e0;font-family:Segoe UI,sans-serif}
 <body>
 <div class="app">
 <div class="header">
-  <div class="logo">CATALYST<span>FINAL</span> <small style="font-size:0.4em;color:#888">v3.3</small></div>
+  <div class="logo">CATALYST<span>AI</span> <small style="font-size:0.4em;color:#888">v3.9</small></div>
   <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
     <span class="session-badge session-active" id="session-badge">...</span>
     <span class="status" id="sys-status">LIVE</span>
