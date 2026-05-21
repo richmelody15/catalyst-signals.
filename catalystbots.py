@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-CATALYSTBOTS v5.2 - Self-Healing, Auto-Improving OTC Signal Engine
+CATALYSTBOTS v5.3 - Self-Healing, Auto-Improving OTC Signal Engine
 "below the smart money - CatabotAI.com"
 
 ALL Confluences + Wyckoff + SMC + Divergence + Consequent Encroachment |
@@ -59,6 +59,16 @@ v5.2 CHANGES:
 - ict_score() consolidated accuracy scoring (0-135 pts)
 - 8 new dashboard SMC tags for ICT concepts
 - All ICT functions use .iloc[] access (not direct [])
+
+v5.3 CHANGES:
+- Tightened PARAMS: RSI 22/78 (oversold/overbought extremes only)
+- ADX minimum raised to 32 (stronger trend required)
+- Volume multiplier raised to 2.0 (higher vol confirmation)
+- MIN_CONFIDENCE raised to 85% (fewer but better signals)
+- Session field added to signal dict and Telegram alerts
+- Enhanced Telegram alert format with session + platform
+- Dashboard shows session per signal
+- Bug fix: ict_score() caches OB result (no double call)
 
 DEPLOY:
   Set env vars: IQ_EMAIL, IQ_PASSWORD, PO_EMAIL, PO_PASSWORD
@@ -1686,6 +1696,8 @@ async def send_telegram(signal: dict):
         entry_dt = datetime.fromisoformat(signal['entry_time'].replace('Z', '+00:00'))
         entry_str = entry_dt.astimezone(timezone(timedelta(hours=1))).strftime('%H:%M') + ' WAT'
         sym = signal['symbol'].replace('-OTC', '').replace('_OTC', '').replace(' (OTC)', '')
+        session = signal.get('session', 'Unknown')
+        platform = signal.get('platform', 'Unknown')
         mart_lines = []
         for i, m in enumerate(signal.get('martingale', [])):
             m_dt = datetime.fromisoformat(m['entry_time'].replace('Z', '+00:00'))
@@ -1693,14 +1705,20 @@ async def send_telegram(signal: dict):
             mart_lines.append(f"M{i+1} | {m['multiplier']}x | ${m['amount']} | {t}")
         mart_block = "\n".join(mart_lines) if mart_lines else ""
         msg = f"""
-NEW SIGNAL!
-{sym} | {signal['timeframe']} (OTC)
-Entry: {entry_str} | {signal['direction']} {emoji}
-Confidence: {signal['confidence']}% | Accuracy: {signal['accuracy']}%
-Trend: {signal.get('trend', 'N/A')} | Wyckoff: {signal.get('wyckoff', 'N/A')}
-POI: {signal.get('poi', 'N/A')} | ADR Left: {signal.get('adr_remaining', 'N/A')}
-CVD: {signal.get('cvd_trend', 'N/A')} | POC: {signal.get('poc', 'N/A')}
+🔔 NEW SIGNAL!
+
+🎫 Trade: {sym}
+⏳ Timer: {signal['timeframe']} (OTC) | 🕐 {session}
+➡️ Entry: {entry_str}
+📈 Direction: {signal['direction']} {emoji}
+🎯 AI Confidence: {signal['confidence']}%
+📊 Accuracy Level: {signal['accuracy']}%
+📉 RSI: {signal['rsi']} | ADX: {signal['adx']}
+🏛 Wyckoff: {signal.get('wyckoff', 'N/A')} | POI: {signal.get('poi', 'N/A')}
+📊 CVD: {signal.get('cvd_trend', 'N/A')} | POC: {signal.get('poc', 'N/A')}
+ADR Left: {signal.get('adr_remaining', 'N/A')}%
 {mart_block}
+
 CATALYSTBOTS - below the smart money - CatabotAI.com
 """
         await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg)
@@ -1713,8 +1731,8 @@ CATALYSTBOTS - below the smart money - CatabotAI.com
 # 4. MEMORY, AUTO-TUNING & DAILY STATS
 # ============================================================
 MEMORY_DB = os.environ.get("DB_PATH", "memory.db")
-PARAMS = {'rsi_buy': 33, 'rsi_sell': 67, 'adx_min': 25, 'vol_mult': 1.5}
-MIN_CONFIDENCE = 80.0
+PARAMS = {'rsi_buy': 22, 'rsi_sell': 78, 'adx_min': 32, 'vol_mult': 2.0}
+MIN_CONFIDENCE = 85.0
 
 def init_memory():
     conn = sqlite3.connect(MEMORY_DB)
@@ -2058,6 +2076,7 @@ def generate_signal(df, symbol="", higher_tf_trend=None, market_trend=None):
         'ict_ob': ict_detect_order_block(df),
         'ict_breaker': ict_detect_breaker_block(df),
         'ict_reclaimed': ict_detect_reclaimed_block(df),
+        'ict_liq_pool': ict_detect_liquidity_pool(df),
         'ict_liq_grab': ict_detect_liquidity_grab(df),
         'ict_liq_sweep': ict_detect_liquidity_sweep(df),
         'ict_qm': ict_detect_quasimodo_reversal(df),
@@ -2297,6 +2316,7 @@ async def scan_loop():
                             'rsi': sig_info['rsi'], 'adx': sig_info['adx'],
                             'confidence': final_conf, 'accuracy': sig_info['accuracy'],
                             'martingale': martingale,
+                            'session': current_session(),
                             # v3.2 fields
                             'regime': sig_info.get('regime', 'RANGING'),
                             'regime_desc': sig_info.get('regime_desc', ''),
@@ -2322,6 +2342,24 @@ async def scan_loop():
                             'pattern': sig_info.get('pattern'),
                             'amd': sig_info.get('amd'),
                             'encroach': sig_info.get('encroach'),
+                            # v5.1 VP/OF fields
+                            'poc': sig_info.get('poc'),
+                            'va_high': sig_info.get('va_high'),
+                            'va_low': sig_info.get('va_low'),
+                            'cvd_trend': sig_info.get('cvd_trend', 'neutral'),
+                            'aggressive_zone': sig_info.get('aggressive_zone', False),
+                            'fresh_demand': sig_info.get('fresh_demand', False),
+                            'fresh_supply': sig_info.get('fresh_supply', False),
+                            # v5.2 ICT/SMC fields
+                            'ict_ob': sig_info.get('ict_ob'),
+                            'ict_breaker': sig_info.get('ict_breaker'),
+                            'ict_reclaimed': sig_info.get('ict_reclaimed'),
+                            'ict_liq_pool': sig_info.get('ict_liq_pool'),
+                            'ict_liq_grab': sig_info.get('ict_liq_grab'),
+                            'ict_liq_sweep': sig_info.get('ict_liq_sweep'),
+                            'ict_qm': sig_info.get('ict_qm'),
+                            'ict_inverse_fvg': sig_info.get('ict_inverse_fvg'),
+                            'ict_partial_fill': sig_info.get('ict_partial_fill', False),
                         }
 
                         latest_signals.insert(0, sig)
@@ -2490,6 +2528,7 @@ if(d.ict_ob)smcTags+='<span class="smc-tag ict-ob">OB: '+d.ict_ob[0]+'</span>';
 if(d.ict_breaker)smcTags+='<span class="smc-tag ict-breaker">Breaker: '+d.ict_breaker[0]+'</span>';
 if(d.ict_reclaimed)smcTags+='<span class="smc-tag ict-reclaimed">Reclaimed: '+d.ict_reclaimed[0]+'</span>';
 if(d.ict_liq_grab)smcTags+='<span class="smc-tag ict-grab">Liq Grab: '+d.ict_liq_grab+'</span>';
+if(d.ict_liq_pool)smcTags+='<span class="smc-tag ict-sweep">Liq Pool: '+d.ict_liq_pool[0]+'</span>';
 if(d.ict_liq_sweep)smcTags+='<span class="smc-tag ict-sweep">Liq Sweep: '+d.ict_liq_sweep+'</span>';
 if(d.ict_qm)smcTags+='<span class="smc-tag ict-qm">QM: '+d.ict_qm+'</span>';
 if(d.ict_inverse_fvg)smcTags+='<span class="smc-tag ict-inv-fvg">Inv FVG: '+d.ict_inverse_fvg+'</span>';
@@ -2499,7 +2538,7 @@ card.innerHTML='<div class="card-header"><div class="pair">'+d.symbol+' '+platfo
 '<div class="direction '+d.direction.toLowerCase()+'">'+d.direction+'</div>'+
 '<div class="countdown">'+formatTime((entry-new Date())/1000)+'</div>'+
 '<div class="timing-details">Start: '+gen.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',timeZone:'Africa/Lagos'})+' | Entry: '+entry.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',timeZone:'Africa/Lagos'})+' | End: '+end.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',timeZone:'Africa/Lagos'})+' ('+d.duration_minutes+'m)</div>'+
-'<div>'+d.timeframe+' (OTC) | RSI: '+d.rsi+' | ADX: '+d.adx+' | ADR: '+d.adr_remaining+'% | RR: '+d.rr+'</div>'+
+'<div>'+d.timeframe+' (OTC) | RSI: '+d.rsi+' | ADX: '+d.adx+' | 🕐 '+(d.session||'Unknown')+' | ADR: '+d.adr_remaining+'% | RR: '+d.rr+'</div>'+
 '<div class="smc-tags">'+smcTags+'</div>'+mart+
 '<div class="btn-group"><button class="btn copy-btn" onclick="copySignal(this)">Copy</button><button class="btn win-btn" onclick="report(\''+d.signal_id+'\',\'win\',this)">WIN</button><button class="btn loss-btn" onclick="report(\''+d.signal_id+'\',\'loss\',this)">LOSS</button><button class="btn ignore-btn" onclick="report(\''+d.signal_id+'\',\'ignored\',this)">IGNORE</button></div>'+
 '<div class="outcome-text" style="display:none;font-weight:bold;margin-top:5px;"></div>';
@@ -2588,7 +2627,7 @@ async def session_info():
 @app.get("/api/status")
 async def status():
     return {
-        "engine": "CATALYSTBOTS v5.2",
+        "engine": "CATALYSTBOTS v5.3",
         "tagline": "below the smart money - CatabotAI.com",
         "session": current_session(),
         "active_pairs": get_best_pairs_for_current_session(),
