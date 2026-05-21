@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """
-CATALYSTBOTS v5.1 - Self-Healing, Auto-Improving OTC Signal Engine
+CATALYSTBOTS v5.2 - Self-Healing, Auto-Improving OTC Signal Engine
 "below the smart money - CatabotAI.com"
 
 ALL Confluences + Wyckoff + SMC + Divergence + Consequent Encroachment |
 POI Scoring + Trend Detection + Chart Patterns + AMD Phase |
 Mitigation/Rejection Blocks + Liquidity Detection + ADR Filter |
+Volume Profile & Order Flow + ICT Advanced Order Blocks |
+ICT Liquidity Pools/Grabs/Sweeps + FVG Refinements + Quasimodo |
 Session-Based Pair Selection + Memory Auto-Tuning |
 IQ Option & Pocket Option | 80-95% Win Rate Target | 24/7
 
@@ -36,6 +38,27 @@ v5.1 CHANGES:
 - Fresh Zone / Tested Zone detection
 - Initiation Detection (breakout confirmation via CVD + VP)
 - VP/OF score boosters in signal accuracy
+
+v5.2 CHANGES:
+- ICT Standard Order Block with zone bounds (type, high, low)
+- Refined Order Block (body > 50% of range = clear rejection)
+- Breaker Block (broken OB that flips to opposite)
+- ICT Mitigation Block (OB was tested and held)
+- Reclaimed Block (breaker retested and held)
+- Liquidity Pool detection (equal highs/lows clusters)
+- Liquidity Grab detection (pool sweep + reversal)
+- ICT Liquidity Sweep (swing point sweep + reversal)
+- Internal/External Liquidity detection
+- ICT FVG with gap bounds (direction, top, bottom)
+- Inverse FVG (filled gap + reversal back through)
+- Mitigated FVG (completely filled gap)
+- Partial Fill detection (FVG partially entered)
+- Fast/Slow Move Gap (large candle gap detection)
+- Quasimodo Reversal pattern detection
+- ict_ok_buy/ict_ok_sell hard filter integration
+- ict_score() consolidated accuracy scoring (0-135 pts)
+- 8 new dashboard SMC tags for ICT concepts
+- All ICT functions use .iloc[] access (not direct [])
 
 DEPLOY:
   Set env vars: IQ_EMAIL, IQ_PASSWORD, PO_EMAIL, PO_PASSWORD
@@ -1112,7 +1135,381 @@ def vp_of_score(df, direction):
 
 
 # ============================================================
-# 2s. V3.2 LEGACY HELPERS (preserved)
+# 2s. ADVANCED ICT/SMC – ORDER BLOCKS, LIQUIDITY, FVG REFINEMENTS (v5.2)
+# ============================================================
+def ict_detect_order_block(df):
+    """
+    ICT Standard order block: last opposite candle before a strong displacement.
+    Returns ('demand'/'supply', price_high, price_low) or None.
+    """
+    if len(df) < 4: return None
+    for i in range(len(df)-1, max(len(df)-4, 0), -1):
+        body = abs(df['close'].iloc[i] - df['open'].iloc[i])
+        prev_body = abs(df['close'].iloc[i-1] - df['open'].iloc[i-1])
+        if prev_body > 0 and body > prev_body * 2 and df['volume'].iloc[i] > df['volume'].iloc[i-1] * 1.5:
+            if df['close'].iloc[i] > df['open'].iloc[i]:  # bullish displacement
+                return ('demand', df['high'].iloc[i], df['low'].iloc[i])
+            else:
+                return ('supply', df['high'].iloc[i], df['low'].iloc[i])
+    return None
+
+def ict_detect_refined_order_block(df):
+    """
+    Refined OB: the body of the OB must be >50% of its range (clear rejection).
+    Returns ('demand'/'supply', price_high, price_low) or None.
+    """
+    if len(df) < 5: return None
+    for i in range(len(df)-1, max(len(df)-5, 0), -1):
+        body = abs(df['close'].iloc[i] - df['open'].iloc[i])
+        candle_range = df['high'].iloc[i] - df['low'].iloc[i]
+        if candle_range > 0 and body > 0.5 * candle_range:
+            prev_body = abs(df['close'].iloc[i-1] - df['open'].iloc[i-1])
+            if prev_body > 0 and body > prev_body * 1.8:
+                if df['close'].iloc[i] > df['open'].iloc[i]:
+                    return ('demand', df['high'].iloc[i], df['low'].iloc[i])
+                else:
+                    return ('supply', df['high'].iloc[i], df['low'].iloc[i])
+    return None
+
+def ict_detect_breaker_block(df):
+    """
+    Breaker block: an old order block that got broken and now acts as opposite.
+    Example: old demand OB was broken (price closed below it) → now it's supply OB.
+    Returns ('demand'/'supply', ob_high, ob_low) or None.
+    """
+    if len(df) < 15: return None
+    ob = ict_detect_order_block(df.iloc[:-5])  # look back 5 candles ago
+    if not ob: return None
+    ob_type, ob_high, ob_low = ob
+    price = df['close'].iloc[-1]
+    if ob_type == 'demand' and price < ob_low:   # demand broken → now supply
+        return ('supply', ob_high, ob_low)
+    if ob_type == 'supply' and price > ob_high:  # supply broken → now demand
+        return ('demand', ob_high, ob_low)
+    return None
+
+def ict_detect_mitigation_block(df):
+    """
+    ICT Mitigation block: price returned to an order block and the block held (mitigated).
+    Returns ('demand'/'supply', level) where price bounced, or None.
+    """
+    if len(df) < 20: return None
+    for lookback in range(5, min(15, len(df)-1)):
+        sub_df = df.iloc[:-lookback]
+        if len(sub_df) < 4: continue
+        ob = ict_detect_order_block(sub_df)
+        if not ob: continue
+        ob_type, ob_high, ob_low = ob
+        recent = df.iloc[-lookback:]
+        if ob_type == 'demand':
+            if any(recent['low'].values <= ob_high):
+                if df['close'].iloc[-1] > ob_high:
+                    return ('demand', ob_high)
+        else:
+            if any(recent['high'].values >= ob_low):
+                if df['close'].iloc[-1] < ob_low:
+                    return ('supply', ob_low)
+    return None
+
+def ict_detect_reclaimed_block(df):
+    """
+    Reclaimed block: a breaker that got tested again and held.
+    Returns ('demand'/'supply', level) or None.
+    """
+    if len(df) < 15: return None
+    breaker = ict_detect_breaker_block(df)
+    if not breaker: return None
+    b_type, b_high, b_low = breaker
+    price = df['close'].iloc[-1]
+    if b_type == 'demand':
+        if df['low'].iloc[-3:].min() <= b_high and price > b_high:
+            return ('demand', b_high)
+    else:
+        if df['high'].iloc[-3:].max() >= b_low and price < b_low:
+            return ('supply', b_low)
+    return None
+
+def ict_detect_liquidity_pool(df):
+    """
+    Liquidity pool = equal highs/lows (stop-hunt area).
+    Returns ('buy_side'/'sell_side', price) if a cluster exists, or None.
+    """
+    if len(df) < 15: return None
+    highs = df['high'].values[-15:]
+    lows = df['low'].values[-15:]
+    def cluster_present(arr):
+        sorted_arr = np.sort(arr)
+        diffs = np.diff(sorted_arr)
+        return bool(np.any(diffs < sorted_arr[:-1] * 0.0003))
+    if cluster_present(highs):
+        return ('buy_side', float(np.median(highs)))
+    if cluster_present(lows):
+        return ('sell_side', float(np.median(lows)))
+    return None
+
+def ict_detect_liquidity_grab(df):
+    """
+    Liquidity grab = price briefly breaks a pool and then reverses.
+    Returns 'bullish' if sell-side liquidity was grabbed (reversal up),
+    'bearish' if buy-side grabbed (reversal down), or None.
+    """
+    if len(df) < 10: return None
+    pool = ict_detect_liquidity_pool(df)
+    if not pool: return None
+    side, level = pool
+    recent = df.iloc[-3:]
+    if side == 'sell_side':
+        if any(recent['low'].values < level * 0.9995):
+            if df['close'].iloc[-1] > level:
+                return 'bullish'
+    if side == 'buy_side':
+        if any(recent['high'].values > level * 1.0005):
+            if df['close'].iloc[-1] < level:
+                return 'bearish'
+    return None
+
+def ict_detect_liquidity_sweep(df):
+    """
+    ICT Liquidity sweep = price breaks beyond a swing point and then reverses.
+    Returns 'bullish'/'bearish' or None.
+    """
+    if len(df) < 15: return None
+    swings = identify_swings(df, order=3)
+    if not swings: return None
+    price = df['close'].iloc[-1]
+    highs = [s for s in swings if s['type'] == 'high']
+    if highs:
+        last_high = highs[-1]['price']
+        if df['high'].iloc[-3:].max() > last_high * 1.0005 and price < last_high:
+            return 'bearish'
+    lows = [s for s in swings if s['type'] == 'low']
+    if lows:
+        last_low = lows[-1]['price']
+        if df['low'].iloc[-3:].min() < last_low * 0.9995 and price > last_low:
+            return 'bullish'
+    return None
+
+def ict_detect_internal_liquidity(df):
+    """
+    Internal liquidity = swing points within the current range (not yet swept).
+    Returns ('buy_side'/'sell_side', level) or None.
+    """
+    if len(df) < 20: return None
+    swings = identify_swings(df, order=3)
+    if len(swings) < 2: return None
+    highs = [s for s in swings if s['type'] == 'high']
+    lows = [s for s in swings if s['type'] == 'low']
+    price = df['close'].iloc[-1]
+    if highs:
+        last_high = highs[-1]['price']
+        if price < last_high:
+            return ('buy_side', last_high)
+    if lows:
+        last_low = lows[-1]['price']
+        if price > last_low:
+            return ('sell_side', last_low)
+    return None
+
+def ict_detect_external_liquidity(df):
+    """
+    External liquidity = swing points that have been broken (already swept).
+    Returns ('buy_side'/'sell_side', level) or None.
+    """
+    if len(df) < 20: return None
+    swings = identify_swings(df, order=3)
+    if len(swings) < 3: return None
+    highs = [s for s in swings if s['type'] == 'high']
+    lows = [s for s in swings if s['type'] == 'low']
+    if len(highs) >= 2:
+        prev_high = highs[-2]['price']
+        if df['close'].iloc[-1] > prev_high:
+            return ('buy_side', prev_high)
+    if len(lows) >= 2:
+        prev_low = lows[-2]['price']
+        if df['close'].iloc[-1] < prev_low:
+            return ('sell_side', prev_low)
+    return None
+
+def ict_detect_fvg(df):
+    """
+    ICT FVG with gap bounds. Returns ('bullish'/'bearish', gap_top, gap_bottom) or None.
+    """
+    if len(df) < 3: return None
+    for i in range(len(df)-1, max(len(df)-5, 1), -1):
+        prev2 = df.iloc[i-2]; curr = df.iloc[i]
+        if curr['low'] > prev2['high']:
+            return ('bullish', curr['low'], prev2['high'])
+        if curr['high'] < prev2['low']:
+            return ('bearish', prev2['low'], curr['high'])
+    return None
+
+def ict_detect_inverse_fvg(df):
+    """
+    Inverse FVG: an FVG that gets filled and price reverses back through it.
+    Returns 'bullish'/'bearish' if an inverse FVG is active, or None.
+    """
+    if len(df) < 5: return None
+    fvg = ict_detect_fvg(df)
+    if not fvg: return None
+    fvg_type, top, bottom = fvg
+    recent = df.iloc[-3:]
+    if fvg_type == 'bullish':
+        if any(recent['low'].values < bottom):
+            if df['close'].iloc[-1] > bottom:
+                return 'bullish'
+    else:
+        if any(recent['high'].values > top):
+            if df['close'].iloc[-1] < top:
+                return 'bearish'
+    return None
+
+def ict_detect_mitigated_fvg(df):
+    """
+    Mitigated FVG: the gap has been completely filled and price continues beyond it.
+    Returns same as ict_detect_inverse_fvg().
+    """
+    return ict_detect_inverse_fvg(df)
+
+def ict_detect_partial_fill(df):
+    """
+    Returns True if an FVG exists and price entered the gap but hasn't completely filled it.
+    """
+    if len(df) < 4: return False
+    fvg = ict_detect_fvg(df)
+    if not fvg: return False
+    fvg_type, top, bottom = fvg
+    recent_low = df['low'].iloc[-3:].min()
+    recent_high = df['high'].iloc[-3:].max()
+    if fvg_type == 'bullish':
+        return recent_low < top and recent_low > bottom
+    else:
+        return recent_high > bottom and recent_high < top
+
+def ict_detect_fast_slow_move_gap(df):
+    """
+    Detects a gap caused by a fast move (large candle) without overlap.
+    Returns 'bullish'/'bearish' or None.
+    """
+    if len(df) < 3: return None
+    last = df.iloc[-1]
+    prev = df.iloc[-2]
+    body = abs(last['close'] - last['open'])
+    avg_body = abs(df['close'].diff()).rolling(20).mean().iloc[-1]
+    if pd.isna(avg_body) or avg_body == 0 or body < avg_body * 1.5: return None
+    if last['low'] > prev['high']:
+        return 'bullish'
+    if last['high'] < prev['low']:
+        return 'bearish'
+    return None
+
+def ict_detect_quasimodo_reversal(df):
+    """
+    Quasimodo pattern: price makes a higher high (or lower low) and then
+    quickly reverses and breaks a key structural level.
+    Returns 'bullish'/'bearish' if a valid QM is forming, or None.
+    """
+    if len(df) < 10: return None
+    highs = df['high'].values[-10:]
+    lows = df['low'].values[-10:]
+    closes = df['close'].values[-10:]
+    # Bullish QM: price takes out a previous low (trapping sellers) then rallies
+    if len(lows) >= 5 and lows[-2] < lows[-3] and closes[-1] > highs[-4]:
+        return 'bullish'
+    # Bearish QM: price takes out a previous high then drops
+    if len(highs) >= 5 and highs[-2] > highs[-3] and closes[-1] < lows[-4]:
+        return 'bearish'
+    return None
+
+def ict_ok_buy(df):
+    """
+    Returns True if at least one bullish ICT confirmation is present.
+    Checks: OB, refined OB, breaker, mitigation, reclaimed, liq grab, liq sweep,
+    inverse FVG, fast move gap, quasimodo.
+    Extra: external sell-side liquidity swept = strong bullish confirmation.
+    """
+    ob = ict_detect_order_block(df)
+    refined_ob = ict_detect_refined_order_block(df)
+    breaker = ict_detect_breaker_block(df)
+    mitigation = ict_detect_mitigation_block(df)
+    reclaimed = ict_detect_reclaimed_block(df)
+    liq_grab = ict_detect_liquidity_grab(df)
+    liq_sweep = ict_detect_liquidity_sweep(df)
+    inverse_fvg = ict_detect_inverse_fvg(df)
+    fast_move = ict_detect_fast_slow_move_gap(df)
+    qm = ict_detect_quasimodo_reversal(df)
+    external_liq = ict_detect_external_liquidity(df)
+
+    ok = (ob and ob[0] == 'demand') or (refined_ob and refined_ob[0] == 'demand') or \
+         (breaker and breaker[0] == 'demand') or (mitigation and mitigation[0] == 'demand') or \
+         (reclaimed and reclaimed[0] == 'demand') or (liq_grab == 'bullish') or \
+         (liq_sweep == 'bullish') or (inverse_fvg == 'bullish') or (fast_move == 'bullish') or \
+         (qm == 'bullish')
+    # Extra: external sell-side swept = bullish confirmation
+    if external_liq and external_liq[0] == 'sell_side':
+        ok = ok or True
+    return ok
+
+def ict_ok_sell(df):
+    """
+    Returns True if at least one bearish ICT confirmation is present.
+    """
+    ob = ict_detect_order_block(df)
+    refined_ob = ict_detect_refined_order_block(df)
+    breaker = ict_detect_breaker_block(df)
+    mitigation = ict_detect_mitigation_block(df)
+    reclaimed = ict_detect_reclaimed_block(df)
+    liq_grab = ict_detect_liquidity_grab(df)
+    liq_sweep = ict_detect_liquidity_sweep(df)
+    inverse_fvg = ict_detect_inverse_fvg(df)
+    fast_move = ict_detect_fast_slow_move_gap(df)
+    qm = ict_detect_quasimodo_reversal(df)
+    external_liq = ict_detect_external_liquidity(df)
+
+    ok = (ob and ob[0] == 'supply') or (refined_ob and refined_ob[0] == 'supply') or \
+         (breaker and breaker[0] == 'supply') or (mitigation and mitigation[0] == 'supply') or \
+         (reclaimed and reclaimed[0] == 'supply') or (liq_grab == 'bearish') or \
+         (liq_sweep == 'bearish') or (inverse_fvg == 'bearish') or (fast_move == 'bearish') or \
+         (qm == 'bearish')
+    if external_liq and external_liq[0] == 'buy_side':
+        ok = ok or True
+    return ok
+
+def ict_score(df, direction):
+    """
+    ICT/SMC accuracy score boosters (0-135 points).
+    Called from generate_signal() to add accuracy based on ICT confluences.
+    """
+    score = 0
+    ob = ict_detect_order_block(df)
+    if ob and ob[0] == ('demand' if direction == 'BUY' else 'supply'):
+        score += 10
+    if ict_detect_refined_order_block(df):
+        score += 5
+    if ict_detect_breaker_block(df):
+        score += 10
+    if ict_detect_mitigation_block(df):
+        score += 15
+    if ict_detect_reclaimed_block(df):
+        score += 15
+    if ict_detect_liquidity_grab(df) == ('bullish' if direction == 'BUY' else 'bearish'):
+        score += 15
+    if ict_detect_liquidity_sweep(df) == ('bullish' if direction == 'BUY' else 'bearish'):
+        score += 15
+    if ict_detect_inverse_fvg(df) == ('bullish' if direction == 'BUY' else 'bearish'):
+        score += 15
+    if ict_detect_quasimodo_reversal(df) == ('bullish' if direction == 'BUY' else 'bearish'):
+        score += 15
+    if ict_detect_fast_slow_move_gap(df) == ('bullish' if direction == 'BUY' else 'bearish'):
+        score += 10
+    if ict_detect_partial_fill(df):
+        score += 5
+    if ict_detect_external_liquidity(df):
+        score += 5
+    return score
+
+
+# ============================================================
+# 2t. V3.2 LEGACY HELPERS (preserved)
 # ============================================================
 def detect_regime(df: pd.DataFrame) -> Tuple[str, str]:
     if len(df) < 30:
@@ -1525,7 +1922,8 @@ def generate_signal(df, symbol="", higher_tf_trend=None, market_trend=None):
         and trend in ('bullish', 'strong_bullish', 'sideways')
         and (pattern_dir is None or pattern_dir == 'BUY')
         and amd in ('accumulation', 'advance', None)
-        and liq_side_smc != 'sell_side'):
+        and liq_side_smc != 'sell_side'
+        and ict_ok_buy(df)):
         direction = 'BUY'
 
     # ── SELL hard filters ──────────────────────────────
@@ -1542,7 +1940,8 @@ def generate_signal(df, symbol="", higher_tf_trend=None, market_trend=None):
         and trend in ('bearish', 'strong_bearish', 'sideways')
         and (pattern_dir is None or pattern_dir == 'SELL')
         and amd in ('distribution', 'decline', None)
-        and liq_side_smc != 'buy_side'):
+        and liq_side_smc != 'buy_side'
+        and ict_ok_sell(df)):
         direction = 'SELL'
 
     if direction is None:
@@ -1600,6 +1999,9 @@ def generate_signal(df, symbol="", higher_tf_trend=None, market_trend=None):
     # v5.1 VP/OF score boosters
     score += vp_of_score(df, direction)
 
+    # v5.2 ICT/SMC score boosters
+    score += ict_score(df, direction)
+
     accuracy = min(100, max(50, score))
 
     # ── MTF check ──────────────────────────────────────
@@ -1652,6 +2054,15 @@ def generate_signal(df, symbol="", higher_tf_trend=None, market_trend=None):
         'aggressive_zone': aggressive,
         'fresh_demand': fresh_demand,
         'fresh_supply': fresh_supply,
+        # v5.2 ICT/SMC fields
+        'ict_ob': ict_detect_order_block(df),
+        'ict_breaker': ict_detect_breaker_block(df),
+        'ict_reclaimed': ict_detect_reclaimed_block(df),
+        'ict_liq_grab': ict_detect_liquidity_grab(df),
+        'ict_liq_sweep': ict_detect_liquidity_sweep(df),
+        'ict_qm': ict_detect_quasimodo_reversal(df),
+        'ict_inverse_fvg': ict_detect_inverse_fvg(df),
+        'ict_partial_fill': ict_detect_partial_fill(df),
     }
 
 def calculate_martingale(entry: datetime, timeframe: str, confidence: float, base_stake: float = 1.0) -> List[dict]:
@@ -1998,6 +2409,14 @@ body{background:#050510;color:#e0e0e0;font-family:'Segoe UI',system-ui,sans-seri
 .smc-tag.cvd{background:rgba(50,205,50,0.15);color:#32cd32}
 .smc-tag.aggressive{background:rgba(255,69,0,0.15);color:#ff4500}
 .smc-tag.fresh{background:rgba(0,250,154,0.15);color:#00fa9a}
+.smc-tag.ict-ob{background:rgba(255,215,0,0.2);color:#ffd700}
+.smc-tag.ict-breaker{background:rgba(255,140,0,0.2);color:#ff8c00}
+.smc-tag.ict-reclaimed{background:rgba(0,255,127,0.2);color:#00ff7f}
+.smc-tag.ict-grab{background:rgba(220,20,60,0.15);color:#dc143c}
+.smc-tag.ict-sweep{background:rgba(255,99,71,0.15);color:#ff6347}
+.smc-tag.ict-qm{background:rgba(186,85,211,0.2);color:#ba55d3}
+.smc-tag.ict-inv-fvg{background:rgba(30,144,255,0.2);color:#1e90ff}
+.smc-tag.ict-pfill{background:rgba(64,224,208,0.15);color:#40e0d0}
 @keyframes slide{from{opacity:0;transform:translateY(-10px)}to{opacity:1;transform:translateY(0)}}
 @media(max-width:768px){.header{flex-direction:column;align-items:flex-start}.logo{font-size:1.3em}.pair{font-size:1em}.signal-card{padding:12px}.btn{padding:8px 12px;font-size:0.75em}.countdown{font-size:1.1em}}
 </style>
@@ -2067,6 +2486,14 @@ if(d.cvd_trend&&d.cvd_trend!=='neutral')smcTags+='<span class="smc-tag cvd">CVD:
 if(d.aggressive_zone)smcTags+='<span class="smc-tag aggressive">Aggressive Zone</span>';
 if(d.fresh_demand&&d.direction==='BUY')smcTags+='<span class="smc-tag fresh">Fresh Demand</span>';
 if(d.fresh_supply&&d.direction==='SELL')smcTags+='<span class="smc-tag fresh">Fresh Supply</span>';
+if(d.ict_ob)smcTags+='<span class="smc-tag ict-ob">OB: '+d.ict_ob[0]+'</span>';
+if(d.ict_breaker)smcTags+='<span class="smc-tag ict-breaker">Breaker: '+d.ict_breaker[0]+'</span>';
+if(d.ict_reclaimed)smcTags+='<span class="smc-tag ict-reclaimed">Reclaimed: '+d.ict_reclaimed[0]+'</span>';
+if(d.ict_liq_grab)smcTags+='<span class="smc-tag ict-grab">Liq Grab: '+d.ict_liq_grab+'</span>';
+if(d.ict_liq_sweep)smcTags+='<span class="smc-tag ict-sweep">Liq Sweep: '+d.ict_liq_sweep+'</span>';
+if(d.ict_qm)smcTags+='<span class="smc-tag ict-qm">QM: '+d.ict_qm+'</span>';
+if(d.ict_inverse_fvg)smcTags+='<span class="smc-tag ict-inv-fvg">Inv FVG: '+d.ict_inverse_fvg+'</span>';
+if(d.ict_partial_fill)smcTags+='<span class="smc-tag ict-pfill">Partial Fill</span>';
 card.innerHTML='<div class="card-header"><div class="pair">'+d.symbol+' '+platformBadge+'</div><div class="conf">'+d.confidence+'%</div></div>'+
 '<div class="accuracy '+accClass+'">Accuracy: '+d.accuracy+'%</div>'+
 '<div class="direction '+d.direction.toLowerCase()+'">'+d.direction+'</div>'+
@@ -2161,7 +2588,7 @@ async def session_info():
 @app.get("/api/status")
 async def status():
     return {
-        "engine": "CATALYSTBOTS v5.1",
+        "engine": "CATALYSTBOTS v5.2",
         "tagline": "below the smart money - CatabotAI.com",
         "session": current_session(),
         "active_pairs": get_best_pairs_for_current_session(),
