@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-CATALYSTBOTS v5.0 - Self-Healing, Auto-Improving OTC Signal Engine
+CATALYSTBOTS v5.1 - Self-Healing, Auto-Improving OTC Signal Engine
 "below the smart money - CatabotAI.com"
 
 ALL Confluences + Wyckoff + SMC + Divergence + Consequent Encroachment |
@@ -9,7 +9,7 @@ Mitigation/Rejection Blocks + Liquidity Detection + ADR Filter |
 Session-Based Pair Selection + Memory Auto-Tuning |
 IQ Option & Pocket Option | 80-95% Win Rate Target | 24/7
 
-v5.0 CHANGES:
+v5.1 CHANGES:
 - POI (Point of Interest) confluence scoring (0-100)
 - FVG Quality with ATR-relative sizing and age
 - Consequent Encroachment detection (FVG partial fill + reversal)
@@ -30,6 +30,12 @@ v5.0 CHANGES:
 - Division-by-zero guards on all ratio calculations
 - All score boosters integrated into accuracy calculation
 - CATALYSTBOTS branding with CatabotAI.com tagline
+- Volume Profile (POC, Value Area, HVN/LVN)
+- Cumulative Volume Delta (CVD trend)
+- Aggressive Zone detection (large candle + high volume)
+- Fresh Zone / Tested Zone detection
+- Initiation Detection (breakout confirmation via CVD + VP)
+- VP/OF score boosters in signal accuracy
 
 DEPLOY:
   Set env vars: IQ_EMAIL, IQ_PASSWORD, PO_EMAIL, PO_PASSWORD
@@ -867,7 +873,246 @@ def rejection_block(df):
 
 
 # ============================================================
-# 2r. V3.2 LEGACY HELPERS (preserved)
+# 2r. VOLUME PROFILE & ORDER FLOW (v5.1)
+# ============================================================
+def build_volume_profile(df, lookback=50, bins=30):
+    """
+    Build a volume profile over the last `lookback` candles.
+    Returns dict with:
+        poc: price of Point of Control (highest volume)
+        va_high, va_low: Value Area (70% of total volume)
+        hvn: list of High Volume Nodes (bins with volume > 1.5x avg)
+        lvn: list of Low Volume Nodes (bins with volume < 0.5x avg)
+    """
+    if len(df) < lookback:
+        lookback = len(df)
+    if lookback < 5:
+        return None
+    subset = df.iloc[-lookback:]
+    price_low = subset['low'].min()
+    price_high = subset['high'].max()
+    bin_size = (price_high - price_low) / bins
+    if bin_size == 0:
+        return None
+
+    volume_profile = np.zeros(bins)
+    for i in range(len(subset)):
+        candle_low = subset['low'].iloc[i]
+        candle_high = subset['high'].iloc[i]
+        vol = subset['volume'].iloc[i]
+        candle_range = candle_high - candle_low
+        # distribute volume evenly across the candle's range
+        for j in range(bins):
+            bin_low = price_low + j * bin_size
+            bin_high = bin_low + bin_size
+            # overlap fraction
+            overlap_low = max(candle_low, bin_low)
+            overlap_high = min(candle_high, bin_high)
+            if overlap_high > overlap_low:
+                fraction = (overlap_high - overlap_low) / candle_range if candle_range > 0 else 0
+                volume_profile[j] += vol * fraction
+
+    # POC = bin with highest volume
+    poc_idx = np.argmax(volume_profile)
+    poc = price_low + (poc_idx + 0.5) * bin_size
+
+    # Value Area (70% of total volume)
+    total_vol = volume_profile.sum()
+    if total_vol == 0:
+        return None
+    target_vol = total_vol * 0.70
+    # sort bins by volume descending
+    sorted_indices = np.argsort(volume_profile)[::-1]
+    cumulative_vol = 0
+    va_bins = []
+    for idx in sorted_indices:
+        cumulative_vol += volume_profile[idx]
+        va_bins.append(idx)
+        if cumulative_vol >= target_vol:
+            break
+    va_high_idx = max(va_bins)
+    va_low_idx = min(va_bins)
+    va_high = price_low + (va_high_idx + 1) * bin_size
+    va_low = price_low + va_low_idx * bin_size
+
+    # HVN / LVN
+    avg_vol_per_bin = volume_profile.mean()
+    hvn = []
+    lvn = []
+    for j in range(bins):
+        mid_price = price_low + (j + 0.5) * bin_size
+        if volume_profile[j] > avg_vol_per_bin * 1.5:
+            hvn.append(round(mid_price, 5))
+        elif volume_profile[j] < avg_vol_per_bin * 0.5:
+            lvn.append(round(mid_price, 5))
+
+    return {
+        'poc': round(poc, 5),
+        'va_high': round(va_high, 5),
+        'va_low': round(va_low, 5),
+        'hvn': hvn,
+        'lvn': lvn
+    }
+
+def cumulative_volume_delta(df, lookback=20):
+    """
+    Approximate CVD by summing volume * sign(close - open).
+    Positive = bullish, negative = bearish.
+    Returns dict: trend ('bullish'/'bearish'), delta_value, recent_bias.
+    """
+    if len(df) < lookback:
+        lookback = len(df)
+    if lookback < 3:
+        return {'trend': 'neutral', 'delta': 0, 'recent_bias': 0}
+    delta = 0
+    for i in range(-lookback, 0):
+        sign = 1 if df['close'].iloc[i] > df['open'].iloc[i] else -1
+        delta += sign * df['volume'].iloc[i]
+    recent_count = min(5, lookback)
+    recent = [1 if df['close'].iloc[i] > df['open'].iloc[i] else -1 for i in range(-recent_count, 0)]
+    recent_sum = sum(recent)
+    if recent_sum > 0:
+        trend = 'bullish'
+    elif recent_sum < 0:
+        trend = 'bearish'
+    else:
+        trend = 'neutral'
+    return {'trend': trend, 'delta': delta, 'recent_bias': recent_sum}
+
+def detect_aggressive_zone(df, direction):
+    """True if price is near a level formed by a large, high-volume candle."""
+    if len(df) < 5:
+        return False
+    avg_body = (df['close'] - df['open']).abs().rolling(20).mean().iloc[-1]
+    avg_vol = df['volume'].rolling(20).mean().iloc[-1]
+    if pd.isna(avg_body) or pd.isna(avg_vol) or avg_body == 0 or avg_vol == 0:
+        return False
+    for i in range(-3, 0):
+        body = abs(df['close'].iloc[i] - df['open'].iloc[i])
+        vol = df['volume'].iloc[i]
+        if body > avg_body * 1.5 and vol > avg_vol * 1.5:
+            level = df['low'].iloc[i] if df['close'].iloc[i] > df['open'].iloc[i] else df['high'].iloc[i]
+            price = df['close'].iloc[-1]
+            if direction == 'BUY' and price <= level * 1.002 and price >= level * 0.998:
+                return True
+            if direction == 'SELL' and price >= level * 0.998 and price <= level * 1.002:
+                return True
+    return False
+
+def detect_fresh_zone(df, zone_type):
+    """zone_type: 'supply' or 'demand'. Returns True if the zone hasn't been revisited."""
+    if len(df) < 20:
+        return True
+    swings = identify_swings(df, order=3)
+    if not swings:
+        return True
+    if zone_type == 'demand':
+        lows = [s for s in swings if s['type'] == 'low']
+        if lows:
+            last_low = lows[-1]['price']
+            idx = lows[-1].get('time')
+            if idx is not None:
+                try:
+                    if isinstance(idx, int):
+                        subsequent = df.iloc[idx + 1:]
+                    else:
+                        loc_idx = df.index.get_loc(idx)
+                        subsequent = df.iloc[loc_idx + 1:]
+                except (KeyError, TypeError):
+                    subsequent = pd.DataFrame()
+                if len(subsequent) > 0 and any(subsequent['low'] <= last_low * 1.001):
+                    return False
+            return True
+    elif zone_type == 'supply':
+        highs = [s for s in swings if s['type'] == 'high']
+        if highs:
+            last_high = highs[-1]['price']
+            idx = highs[-1].get('time')
+            if idx is not None:
+                try:
+                    if isinstance(idx, int):
+                        subsequent = df.iloc[idx + 1:]
+                    else:
+                        loc_idx = df.index.get_loc(idx)
+                        subsequent = df.iloc[loc_idx + 1:]
+                except (KeyError, TypeError):
+                    subsequent = pd.DataFrame()
+                if len(subsequent) > 0 and any(subsequent['high'] >= last_high * 0.999):
+                    return False
+            return True
+    return True
+
+def detect_tested_zone(df, zone_type):
+    """Returns number of times a zone has been tested."""
+    if len(df) < 20:
+        return 0
+    swings = identify_swings(df, order=3)
+    if not swings:
+        return 0
+    count = 0
+    if zone_type == 'demand':
+        lows = [s for s in swings if s['type'] == 'low']
+        if len(lows) >= 2:
+            level = lows[-1]['price']
+            for i in range(len(lows) - 1):
+                if abs(lows[i]['price'] - level) / max(level, 0.00001) < 0.002:
+                    count += 1
+    else:
+        highs = [s for s in swings if s['type'] == 'high']
+        if len(highs) >= 2:
+            level = highs[-1]['price']
+            for i in range(len(highs) - 1):
+                if abs(highs[i]['price'] - level) / max(level, 0.00001) < 0.002:
+                    count += 1
+    return count
+
+def initiation_detection(df, direction):
+    """
+    Returns True if volume delta confirms a breakout (initiation) in the signal direction.
+    For BUY: CVD bullish and price above POC.
+    For SELL: CVD bearish and price below POC.
+    """
+    vp = build_volume_profile(df, lookback=50, bins=30)
+    if not vp:
+        return False
+    cvd = cumulative_volume_delta(df)
+    if direction == 'BUY':
+        return df['close'].iloc[-1] > vp['poc'] and cvd['trend'] == 'bullish'
+    else:
+        return df['close'].iloc[-1] < vp['poc'] and cvd['trend'] == 'bearish'
+
+def vp_of_score(df, direction):
+    """
+    Volume Profile & Order Flow score boosters (0-65 points).
+    Called from generate_signal() to add accuracy based on VP/OF confluence.
+    """
+    score = 0
+    vp = build_volume_profile(df)
+    if vp:
+        if direction == 'BUY' and df['close'].iloc[-1] <= vp['poc']:
+            score += 10   # buying below POC (value)
+        if direction == 'SELL' and df['close'].iloc[-1] >= vp['poc']:
+            score += 10
+        if vp['va_low'] <= df['close'].iloc[-1] <= vp['va_high']:
+            score += 5    # inside value area
+    cvd = cumulative_volume_delta(df)
+    if direction == 'BUY' and cvd['trend'] == 'bullish':
+        score += 10
+    if direction == 'SELL' and cvd['trend'] == 'bearish':
+        score += 10
+    if detect_aggressive_zone(df, direction):
+        score += 10
+    if detect_fresh_zone(df, 'demand' if direction == 'BUY' else 'supply'):
+        score += 10
+    if detect_tested_zone(df, 'demand' if direction == 'BUY' else 'supply') == 1:
+        score += 5   # once tested is good
+    if initiation_detection(df, direction):
+        score += 15
+    return score
+
+
+# ============================================================
+# 2s. V3.2 LEGACY HELPERS (preserved)
 # ============================================================
 def detect_regime(df: pd.DataFrame) -> Tuple[str, str]:
     if len(df) < 30:
@@ -1057,6 +1302,7 @@ Entry: {entry_str} | {signal['direction']} {emoji}
 Confidence: {signal['confidence']}% | Accuracy: {signal['accuracy']}%
 Trend: {signal.get('trend', 'N/A')} | Wyckoff: {signal.get('wyckoff', 'N/A')}
 POI: {signal.get('poi', 'N/A')} | ADR Left: {signal.get('adr_remaining', 'N/A')}
+CVD: {signal.get('cvd_trend', 'N/A')} | POC: {signal.get('poc', 'N/A')}
 {mart_block}
 CATALYSTBOTS - below the smart money - CatabotAI.com
 """
@@ -1251,6 +1497,15 @@ def generate_signal(df, symbol="", higher_tf_trend=None, market_trend=None):
     mit = mitigation_block(df)
     rej = rejection_block(df)
 
+    # ── v5.1 VP/OF indicators ────────────────────────
+    vp_data = build_volume_profile(df)
+    cvd_data = cumulative_volume_delta(df)
+    aggressive = detect_aggressive_zone(df, 'BUY') or detect_aggressive_zone(df, 'SELL')
+    fresh_demand = detect_fresh_zone(df, 'demand')
+    fresh_supply = detect_fresh_zone(df, 'supply')
+    tested_demand = detect_tested_zone(df, 'demand')
+    tested_supply = detect_tested_zone(df, 'supply')
+
     # ══════════════════════════════════════════════════════
     # DIRECTION DECISION (hard filters)
     # ══════════════════════════════════════════════════════
@@ -1342,6 +1597,9 @@ def generate_signal(df, symbol="", higher_tf_trend=None, market_trend=None):
     if (direction == 'BUY' and mit == 'bullish') or (direction == 'SELL' and mit == 'bearish'): score += 10
     if (direction == 'BUY' and rej == 'support') or (direction == 'SELL' and rej == 'resistance'): score += 10
 
+    # v5.1 VP/OF score boosters
+    score += vp_of_score(df, direction)
+
     accuracy = min(100, max(50, score))
 
     # ── MTF check ──────────────────────────────────────
@@ -1386,6 +1644,14 @@ def generate_signal(df, symbol="", higher_tf_trend=None, market_trend=None):
         'pattern': pattern_name,
         'amd': amd,
         'encroach': encroach,
+        # v5.1 VP/OF new fields
+        'poc': vp_data['poc'] if vp_data else None,
+        'va_high': vp_data['va_high'] if vp_data else None,
+        'va_low': vp_data['va_low'] if vp_data else None,
+        'cvd_trend': cvd_data['trend'] if cvd_data else 'neutral',
+        'aggressive_zone': aggressive,
+        'fresh_demand': fresh_demand,
+        'fresh_supply': fresh_supply,
     }
 
 def calculate_martingale(entry: datetime, timeframe: str, confidence: float, base_stake: float = 1.0) -> List[dict]:
@@ -1728,6 +1994,10 @@ body{background:#050510;color:#e0e0e0;font-family:'Segoe UI',system-ui,sans-seri
 .smc-tag.encroach{background:rgba(255,165,0,0.15);color:#ffa500}
 .smc-tag.bos{background:rgba(0,255,136,0.15);color:#00ff88}
 .smc-tag.choch{background:rgba(255,68,68,0.15);color:#ff4444}
+.smc-tag.poc-tag{background:rgba(0,191,255,0.15);color:#00bfff}
+.smc-tag.cvd{background:rgba(50,205,50,0.15);color:#32cd32}
+.smc-tag.aggressive{background:rgba(255,69,0,0.15);color:#ff4500}
+.smc-tag.fresh{background:rgba(0,250,154,0.15);color:#00fa9a}
 @keyframes slide{from{opacity:0;transform:translateY(-10px)}to{opacity:1;transform:translateY(0)}}
 @media(max-width:768px){.header{flex-direction:column;align-items:flex-start}.logo{font-size:1.3em}.pair{font-size:1em}.signal-card{padding:12px}.btn{padding:8px 12px;font-size:0.75em}.countdown{font-size:1.1em}}
 </style>
@@ -1792,6 +2062,11 @@ if(d.amd)smcTags+='<span class="smc-tag amd">AMD: '+d.amd+'</span>';
 if(d.encroach)smcTags+='<span class="smc-tag encroach">Encroach: '+d.encroach+'</span>';
 if(d.bos)smcTags+='<span class="smc-tag bos">BOS: '+d.bos+'</span>';
 if(d.choch)smcTags+='<span class="smc-tag choch">CHoCH: '+d.choch+'</span>';
+if(d.poc)smcTags+='<span class="smc-tag poc-tag">POC: '+d.poc+'</span>';
+if(d.cvd_trend&&d.cvd_trend!=='neutral')smcTags+='<span class="smc-tag cvd">CVD: '+d.cvd_trend+'</span>';
+if(d.aggressive_zone)smcTags+='<span class="smc-tag aggressive">Aggressive Zone</span>';
+if(d.fresh_demand&&d.direction==='BUY')smcTags+='<span class="smc-tag fresh">Fresh Demand</span>';
+if(d.fresh_supply&&d.direction==='SELL')smcTags+='<span class="smc-tag fresh">Fresh Supply</span>';
 card.innerHTML='<div class="card-header"><div class="pair">'+d.symbol+' '+platformBadge+'</div><div class="conf">'+d.confidence+'%</div></div>'+
 '<div class="accuracy '+accClass+'">Accuracy: '+d.accuracy+'%</div>'+
 '<div class="direction '+d.direction.toLowerCase()+'">'+d.direction+'</div>'+
@@ -1886,7 +2161,7 @@ async def session_info():
 @app.get("/api/status")
 async def status():
     return {
-        "engine": "CATALYSTBOTS v5.0",
+        "engine": "CATALYSTBOTS v5.1",
         "tagline": "below the smart money - CatabotAI.com",
         "session": current_session(),
         "active_pairs": get_best_pairs_for_current_session(),
