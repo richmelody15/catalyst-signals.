@@ -66,8 +66,9 @@ v5.3 CHANGES:
 - Volume multiplier raised to 2.0 (higher vol confirmation)
 - MIN_CONFIDENCE raised to 85% (fewer but better signals)
 - Session field added to signal dict and Telegram alerts
-- Enhanced Telegram alert format with session + platform
-- Dashboard shows session per signal
+- Enhanced Telegram alert: Trend, Market Structure, risk disclaimers
+- RISK_DISCLAIMER constant added for consistent messaging
+- Dashboard risk disclaimer at bottom + per-signal card
 - Bug fix: ict_score() caches OB result (no double call)
 
 DEPLOY:
@@ -1687,17 +1688,18 @@ def news_safe(symbol: str) -> bool:
 # ============================================================
 # 3d. TELEGRAM ALERTS
 # ============================================================
+RISK_DISCLAIMER = "\u26a0\ufe0f Never trade with money you can't afford to lose."
+
 async def send_telegram(signal: dict):
     if not TG_AVAILABLE or not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         return
     try:
         bot = TelegramBot(token=TELEGRAM_TOKEN)
-        emoji = "🔴" if signal['direction'] == 'SELL' else "🟢"
+        emoji = "\U0001f534" if signal['direction'] == 'SELL' else "\U0001f7e2"
         entry_dt = datetime.fromisoformat(signal['entry_time'].replace('Z', '+00:00'))
         entry_str = entry_dt.astimezone(timezone(timedelta(hours=1))).strftime('%H:%M') + ' WAT'
         sym = signal['symbol'].replace('-OTC', '').replace('_OTC', '').replace(' (OTC)', '')
         session = signal.get('session', 'Unknown')
-        platform = signal.get('platform', 'Unknown')
         mart_lines = []
         for i, m in enumerate(signal.get('martingale', [])):
             m_dt = datetime.fromisoformat(m['entry_time'].replace('Z', '+00:00'))
@@ -1705,21 +1707,26 @@ async def send_telegram(signal: dict):
             mart_lines.append(f"M{i+1} | {m['multiplier']}x | ${m['amount']} | {t}")
         mart_block = "\n".join(mart_lines) if mart_lines else ""
         msg = f"""
-🔔 NEW SIGNAL!
+\U0001f514 NEW SIGNAL!
 
-🎫 Trade: {sym}
-⏳ Timer: {signal['timeframe']} (OTC) | 🕐 {session}
-➡️ Entry: {entry_str}
-📈 Direction: {signal['direction']} {emoji}
-🎯 AI Confidence: {signal['confidence']}%
-📊 Accuracy Level: {signal['accuracy']}%
-📉 RSI: {signal['rsi']} | ADX: {signal['adx']}
-🏛 Wyckoff: {signal.get('wyckoff', 'N/A')} | POI: {signal.get('poi', 'N/A')}
-📊 CVD: {signal.get('cvd_trend', 'N/A')} | POC: {signal.get('poc', 'N/A')}
-ADR Left: {signal.get('adr_remaining', 'N/A')}%
+\U0001f3ab Trade: {sym}
+\u23f3 Timer: {signal['timeframe']} (OTC)
+\u27a1\ufe0f Entry: {entry_str}
+\U0001f4c8 Direction: {signal['direction']} {emoji}
+\U0001f3af AI Confidence: {signal['confidence']}%
+\U0001f4ca Accuracy Level: {signal['accuracy']}%
+
+\U0001f9e0 Trend: {signal.get('trend', 'Analyzing...')}
+\U0001f4c9 RSI: {signal['rsi']} | ADX: {signal['adx']}
+\U0001f4e6 Market Structure: SMC Confirmed
+
 {mart_block}
 
-CATALYSTBOTS - below the smart money - CatabotAI.com
+Note: Trade 1% - 3% of your capability and capital
+\u26a0\ufe0f Please trade responsibly.
+AI analyzes data in real time outcomes may vary.
+\U0001f3af SIGNAL STATUS: HIGH PROBABILITY ONLY
+{RISK_DISCLAIMER}
 """
         await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg)
         logger.info(f"Telegram alert sent for {signal['symbol']}")
@@ -2479,6 +2486,7 @@ body{background:#050510;color:#e0e0e0;font-family:'Segoe UI',system-ui,sans-seri
 </div>
 <div class="stats-bar" id="stats" style="margin-bottom:15px;">Loading stats...</div>
 <div class="signals" id="signals"><div class="waiting" id="waiting"><div style="font-size:2.5em">🧠</div><h3>Waiting for perfect setups</h3><p>Scanning OTC pairs across IQ Option and Pocket Option.</p></div></div>
+<div style="text-align:center; color:#ff4444; margin-top:15px; font-size:0.9em;">⚠️ Never trade with money you can't afford to lose.</div>
 </div>
 <script>
 var currentPlatform='all';
@@ -2541,7 +2549,8 @@ card.innerHTML='<div class="card-header"><div class="pair">'+d.symbol+' '+platfo
 '<div>'+d.timeframe+' (OTC) | RSI: '+d.rsi+' | ADX: '+d.adx+' | 🕐 '+(d.session||'Unknown')+' | ADR: '+d.adr_remaining+'% | RR: '+d.rr+'</div>'+
 '<div class="smc-tags">'+smcTags+'</div>'+mart+
 '<div class="btn-group"><button class="btn copy-btn" onclick="copySignal(this)">Copy</button><button class="btn win-btn" onclick="report(\''+d.signal_id+'\',\'win\',this)">WIN</button><button class="btn loss-btn" onclick="report(\''+d.signal_id+'\',\'loss\',this)">LOSS</button><button class="btn ignore-btn" onclick="report(\''+d.signal_id+'\',\'ignored\',this)">IGNORE</button></div>'+
-'<div class="outcome-text" style="display:none;font-weight:bold;margin-top:5px;"></div>';
+'<div class="outcome-text" style="display:none;font-weight:bold;margin-top:5px;"></div>'+
+'<div style="text-align:center;color:#ff4444;font-size:0.7em;margin-top:8px;">\u26a0\ufe0f Never trade with money you can\'t afford to lose.</div>';
 var cont=document.getElementById('signals');
 document.getElementById('waiting').style.display='none';
 cont.insertBefore(card,cont.firstChild);
