@@ -82,6 +82,13 @@ DEPLOY:
 import asyncio, json, sqlite3, logging, uuid, os, traceback, time, hashlib
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional, List, Tuple
+
+# Load .env file automatically
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 import numpy as np
 import pandas as pd
 from fastapi import FastAPI, WebSocket
