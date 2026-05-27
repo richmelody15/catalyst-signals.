@@ -673,7 +673,7 @@ def poi_score(df, direction):
         score += 20
     if detect_equal_highs_lows(df) == ('bullish' if direction == 'BUY' else 'bearish'):
         score += 20
-    if detect_liquidity_trap(df) == direction:
+    if detect_liquidity_trap(df) == ('bullish' if direction == 'BUY' else 'bearish'):
         score += 20
     return min(100, score)
 
@@ -1025,10 +1025,6 @@ def detect_market_structure_reversal(df):
         return 'bullish'
     elif bos_down and prior_bullish:
         return 'bearish'
-    if prior_bullish and bos_down:
-        return 'bearish'
-    if prior_bearish and bos_up:
-        return 'bullish'
     return None
 
 def detect_amd_phase(df):
@@ -1671,16 +1667,21 @@ def ict_score(df, direction):
     Called from generate_signal() to add accuracy based on ICT confluences.
     """
     score = 0
+    wanted = 'demand' if direction == 'BUY' else 'supply'
     ob = ict_detect_order_block(df)
-    if ob and ob[0] == ('demand' if direction == 'BUY' else 'supply'):
+    if ob and ob[0] == wanted:
         score += 10
-    if ict_detect_refined_order_block(df):
+    refined_ob = ict_detect_refined_order_block(df)
+    if refined_ob and refined_ob[0] == wanted:
         score += 5
-    if ict_detect_breaker_block(df):
+    breaker = ict_detect_breaker_block(df)
+    if breaker and breaker[0] == wanted:
         score += 10
-    if ict_detect_mitigation_block(df):
+    mitigation = ict_detect_mitigation_block(df)
+    if mitigation and mitigation[0] == wanted:
         score += 15
-    if ict_detect_reclaimed_block(df):
+    reclaimed = ict_detect_reclaimed_block(df)
+    if reclaimed and reclaimed[0] == wanted:
         score += 15
     if ict_detect_liquidity_grab(df) == ('bullish' if direction == 'BUY' else 'bearish'):
         score += 15
@@ -1694,7 +1695,9 @@ def ict_score(df, direction):
         score += 10
     if ict_detect_partial_fill(df):
         score += 5
-    if ict_detect_external_liquidity(df):
+    ext_liq = ict_detect_external_liquidity(df)
+    # buy_side external liquidity swept = bullish; sell_side = bearish
+    if ext_liq and ((direction == 'BUY' and ext_liq[0] == 'sell_side') or (direction == 'SELL' and ext_liq[0] == 'buy_side')):
         score += 5
     return score
 
@@ -1760,10 +1763,8 @@ def candlestick_confirmation(df: pd.DataFrame) -> Optional[str]:
     upper_wick = h[-2] - max(c[-2], o[-2]); lower_wick = min(c[-2], o[-2]) - l[-2]
     bullish = False; bearish = False
     if full_range > 0 and body > 0:
-        if lower_wick >= 2.0 * body and upper_wick <= body * 0.3 and c[-2] > o[-2]: bullish = True
-        if upper_wick >= 2.0 * body and lower_wick <= body * 0.3 and c[-2] > o[-2]: bullish = True
-        if upper_wick >= 2.0 * body and lower_wick <= body * 0.3 and c[-2] < o[-2]: bearish = True
-        if lower_wick >= 2.0 * body and upper_wick <= body * 0.3 and c[-2] < o[-2]: bearish = True
+        if lower_wick >= 2.0 * body and upper_wick <= body * 0.3: bullish = True   # hammer
+        if upper_wick >= 2.0 * body and lower_wick <= body * 0.3: bearish = True   # shooting star
     prev_body_range = abs(c[-3] - o[-3])
     if prev_body_range > 0:
         if c[-3] < o[-3] and c[-2] > o[-2] and o[-2] <= c[-3] and c[-2] >= o[-3]: bullish = True
@@ -1959,14 +1960,17 @@ def init_memory():
     conn.commit(); conn.close()
 
 def remember_signal(sig_id, sym, dir_, tf, platform, entry, rsi_val, adx_val, conf, accuracy=0, session='Unknown'):
+    conn = None
     try:
         conn = sqlite3.connect(MEMORY_DB)
         cur = conn.cursor()
         cur.execute("INSERT OR IGNORE INTO trades VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (None, sig_id, sym, dir_, tf, platform, entry, 'pending', rsi_val, adx_val, conf, accuracy, session))
-        conn.commit(); conn.close()
+        conn.commit()
     except Exception as e:
         logger.error(f"DB write error: {e}")
+    finally:
+        if conn: conn.close()
 
 def get_connection():
     """Get a database connection and cursor."""
@@ -1977,32 +1981,36 @@ def get_connection():
 def learn_from_outcome(sig_id, outcome):
     global PARAMS, MIN_CONFIDENCE
     conn, cur = get_connection()
-    cur.execute("UPDATE trades SET outcome=? WHERE signal_id=?", (outcome, sig_id))
+    try:
+        cur.execute("UPDATE trades SET outcome=? WHERE signal_id=?", (outcome, sig_id))
 
-    # Count 'recovery' as a win for win-rate calculation
-    cur.execute("SELECT outcome FROM trades WHERE outcome IN ('win','loss','recovery') ORDER BY entry_time DESC LIMIT 50")
-    rows = cur.fetchall()
-    if len(rows) >= 50:
-        wins = sum(1 for r in rows if r[0] in ('win','recovery'))
-        losses = sum(1 for r in rows if r[0] == 'loss')
-        wr = wins / (wins + losses) if (wins+losses) > 0 else 0
-        recoveries = sum(1 for r in rows if r[0] == 'recovery')
-        if recoveries >= 3:
-            PARAMS['adx_min'] = min(45, PARAMS['adx_min'] + 5)
-            MIN_CONFIDENCE = min(95, MIN_CONFIDENCE + 3)
-            logger.warning(f"🔄 {recoveries} recoveries in last 50 – tightening filters sharply")
-        if wr < 0.80:
-            PARAMS['rsi_buy'] = max(15, PARAMS['rsi_buy'] - 3)
-            PARAMS['rsi_sell'] = min(85, PARAMS['rsi_sell'] + 3)
-            PARAMS['adx_min'] = min(45, PARAMS['adx_min'] + 3)
-            PARAMS['vol_mult'] = min(3.0, PARAMS['vol_mult'] + 0.3)
-            MIN_CONFIDENCE = min(95, MIN_CONFIDENCE + 2)
-        elif wr >= 0.95 and PARAMS['adx_min'] > 20:
-            PARAMS['adx_min'] = max(20, PARAMS['adx_min'] - 1)
-            if MIN_CONFIDENCE > 75: MIN_CONFIDENCE -= 1
-    conn.commit(); conn.close()
+        # Count 'recovery' as a win for win-rate calculation
+        cur.execute("SELECT outcome FROM trades WHERE outcome IN ('win','loss','recovery') ORDER BY entry_time DESC LIMIT 50")
+        rows = cur.fetchall()
+        if len(rows) >= 50:
+            wins = sum(1 for r in rows if r[0] in ('win','recovery'))
+            losses = sum(1 for r in rows if r[0] == 'loss')
+            wr = wins / (wins + losses) if (wins+losses) > 0 else 0
+            recoveries = sum(1 for r in rows if r[0] == 'recovery')
+            if recoveries >= 3:
+                PARAMS['adx_min'] = min(45, PARAMS['adx_min'] + 5)
+                MIN_CONFIDENCE = min(95, MIN_CONFIDENCE + 3)
+                logger.warning(f"🔄 {recoveries} recoveries in last 50 – tightening filters sharply")
+            if wr < 0.80:
+                PARAMS['rsi_buy'] = max(15, PARAMS['rsi_buy'] - 3)
+                PARAMS['rsi_sell'] = min(85, PARAMS['rsi_sell'] + 3)
+                PARAMS['adx_min'] = min(45, PARAMS['adx_min'] + 3)
+                PARAMS['vol_mult'] = min(3.0, PARAMS['vol_mult'] + 0.3)
+                MIN_CONFIDENCE = min(95, MIN_CONFIDENCE + 2)
+            elif wr >= 0.95 and PARAMS['adx_min'] > 20:
+                PARAMS['adx_min'] = max(20, PARAMS['adx_min'] - 1)
+                if MIN_CONFIDENCE > 75: MIN_CONFIDENCE -= 1
+        conn.commit()
+    finally:
+        conn.close()
 
 def get_stats() -> dict:
+    conn = None
     try:
         conn = sqlite3.connect(MEMORY_DB)
         cur = conn.cursor()
@@ -2016,7 +2024,6 @@ def get_stats() -> dict:
         ignored = len(cur.fetchall())
         cur.execute("SELECT COUNT(*) FROM trades WHERE outcome='pending'")
         pending = cur.fetchone()[0]
-        conn.close()
         wr = round((wins + recoveries) / total_real * 100, 1) if total_real else 0
         return {"total_trades": total_real, "wins": wins, "losses": losses,
                 "recoveries": recoveries, "win_rate": wr, "ignored": ignored,
@@ -2025,16 +2032,18 @@ def get_stats() -> dict:
         return {"total_trades": 0, "wins": 0, "losses": 0, "recoveries": 0,
                 "win_rate": 0, "ignored": 0, "pending": 0,
                 "params": PARAMS, "min_confidence": MIN_CONFIDENCE}
+    finally:
+        if conn: conn.close()
 
 def get_period_stats(start_time, end_time):
     """Return stats for a given time period using SQLite."""
+    conn = None
     try:
         conn = sqlite3.connect(MEMORY_DB)
         cur = conn.cursor()
         cur.execute("SELECT outcome, symbol FROM trades WHERE entry_time >= ? AND entry_time < ?",
                     (start_time.isoformat(), end_time.isoformat()))
         rows = cur.fetchall()
-        conn.close()
         total = len(rows)
         wins = sum(1 for r in rows if r[0] == 'win')
         losses = sum(1 for r in rows if r[0] == 'loss')
@@ -2066,6 +2075,8 @@ def get_period_stats(start_time, end_time):
         return {"total_signals": 0, "wins": 0, "losses": 0, "recoveries": 0,
                 "ignored": 0, "win_rate": 0, "initial_win_rate": 0,
                 "best_pair": "N/A", "worst_pair": "N/A"}
+    finally:
+        if conn: conn.close()
 
 def get_full_analysis_board() -> dict:
     """Return analysis board with daily/weekly/monthly/yearly/overview periods."""
@@ -2091,6 +2102,7 @@ def get_full_analysis_board() -> dict:
     }
 
 def historical_confidence(rsi_val, adx_val, direction, platform) -> float:
+    conn = None
     try:
         conn = sqlite3.connect(MEMORY_DB)
         cur = conn.cursor()
@@ -2099,12 +2111,13 @@ def historical_confidence(rsi_val, adx_val, direction, platform) -> float:
                        ORDER BY entry_time DESC LIMIT 30""",
                     (direction, platform, rsi_val - 5, rsi_val + 5, adx_val - 10, adx_val + 10))
         rows = cur.fetchall()
-        conn.close()
         if len(rows) >= 10:
             wins = sum(1 for r in rows if r[0] == 'win')
             return round(wins / len(rows) * 100, 1)
     except Exception:
         pass
+    finally:
+        if conn: conn.close()
     return 75.0
 
 
@@ -2189,7 +2202,8 @@ def generate_signal(df, symbol="", higher_tf_trend=None, market_trend=None):
     # ── v5.1 VP/OF indicators ────────────────────────
     vp_data = build_volume_profile(df)
     cvd_data = cumulative_volume_delta(df)
-    aggressive = detect_aggressive_zone(df, 'BUY') or detect_aggressive_zone(df, 'SELL')
+    aggressive_buy = detect_aggressive_zone(df, 'BUY')
+    aggressive_sell = detect_aggressive_zone(df, 'SELL')
     fresh_demand = detect_fresh_zone(df, 'demand')
     fresh_supply = detect_fresh_zone(df, 'supply')
     tested_demand = detect_tested_zone(df, 'demand')
@@ -2389,7 +2403,7 @@ def generate_signal(df, symbol="", higher_tf_trend=None, market_trend=None):
         'va_high': vp_data['va_high'] if vp_data else None,
         'va_low': vp_data['va_low'] if vp_data else None,
         'cvd_trend': cvd_data['trend'] if cvd_data else 'neutral',
-        'aggressive_zone': aggressive,
+        'aggressive_zone': aggressive_buy if direction == 'BUY' else aggressive_sell,
         'fresh_demand': fresh_demand,
         'fresh_supply': fresh_supply,
         # v5.2 ICT/SMC fields
@@ -2601,7 +2615,7 @@ async def scan_loop():
                     except Exception: pass
                 if get_market_trend(sym) is None:
                     try:
-                        df15 = get_data_sync(sym, '5m')
+                        df15 = get_data_sync(sym, '15m')
                         if df15 is not None and len(df15) >= 20:
                             e5 = ema(df15['close'], 5); e20 = ema(df15['close'], 20)
                             trend15 = 'bullish' if e5.iloc[-1] > e20.iloc[-1] else ('bearish' if e5.iloc[-1] < e20.iloc[-1] else None)
@@ -2633,7 +2647,7 @@ async def scan_loop():
                             'direction': sig_info['direction'], 'timeframe': tf,
                             'platform': platform, 'generated_at': now_utc.isoformat(),
                             'entry_time': entry_time.isoformat(),
-                            'duration_minutes': TF_SECONDS.get(tf, 60) // 60,
+                            'duration_minutes': max(1, round(TF_SECONDS.get(tf, 60) / 60)),
                             'rsi': sig_info['rsi'], 'adx': sig_info['adx'],
                             'confidence': final_conf, 'accuracy': sig_info['accuracy'],
                             'martingale': martingale,
@@ -2829,7 +2843,7 @@ setInterval(updateSession,30000);updateSession();
 function formatTime(s){if(s<=0)return"Entry passed";var m=Math.floor(s/60),sec=Math.floor(s%60);return'Entry in '+m+':'+(sec<10?'0':'')+sec;}
 function updateCountdowns(){document.querySelectorAll('.signal-card').forEach(card=>{var entryTime=new Date(card.dataset.entryTime),diff=(entryTime-new Date())/1000,el=card.querySelector('.countdown');if(el){el.textContent=formatTime(diff);el.style.color=diff<=0?'#ff4444':'#ffd700';}});}
 setInterval(updateCountdowns,2000);
-var ws=new WebSocket('ws://'+location.host+'/ws');
+var ws=new WebSocket((location.protocol==='https:'?'wss:':'ws:')+'//'+location.host+'/ws');
 ws.onmessage=function(e){
 var d=JSON.parse(e.data);
 if(d.type==='new_signal'){
@@ -2877,7 +2891,7 @@ card.innerHTML='<div class="card-header"><div class="pair">'+d.symbol+' '+platfo
 '<div class="direction '+d.direction.toLowerCase()+'">'+d.direction+'</div>'+
 '<div class="countdown">'+formatTime((entry-new Date())/1000)+'</div>'+
 '<div class="timing-details">Start: '+gen.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',timeZone:'Africa/Lagos'})+' | Entry: '+entry.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',timeZone:'Africa/Lagos'})+' | End: '+end.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',timeZone:'Africa/Lagos'})+' ('+d.duration_minutes+'m)</div>'+
-'<div>'+d.timeframe+' (OTC) | RSI: '+d.rsi+' | ADX: '+d.adx+' | 🕐 '+(d.session||'Unknown')+' | ADR: '+d.adr_remaining+'% | RR: '+d.rr+'</div>'+
+'<div>'+d.timeframe+' (OTC) | RSI: '+d.rsi+' | ADX: '+d.adx+' | 🕐 '+(d.session||'Unknown')+' | ADR: '+(d.adr_remaining!=null?Math.round(d.adr_remaining*100)+'%':'N/A')+' | RR: '+d.rr+'</div>'+
 '<div class="smc-tags">'+smcTags+'</div>'+mart+
 '<div class="btn-group"><button class="btn copy-btn" onclick="copySignal(this)">Copy</button><button class="btn win-btn" onclick="report(\''+d.signal_id+'\',\'win\',this)">WIN</button><button class="btn loss-btn" onclick="report(\''+d.signal_id+'\',\'loss\',this)">LOSS</button><button class="btn ignore-btn" onclick="report(\''+d.signal_id+'\',\'ignored\',this)">IGNORE</button><button class="btn" style="background:#ffd700;color:#000;" onclick="report(\''+d.signal_id+'\',\'recovery\',this)">RECOVERY</button></div>'+
 '<div class="outcome-text" style="display:none;font-weight:bold;margin-top:5px;"></div>'+
@@ -2912,8 +2926,9 @@ setTimeout(()=>{btn.textContent='Copy';btn.style.background='#00b4d8';},2000);
 setInterval(function(){
 var now=new Date(),hour=now.getUTCHours()+now.getUTCMinutes()/60,rem='';
 if(hour>=22||hour<7){var end=new Date(now);end.setUTCHours(7,0,0,0);if(hour>=22)end.setUTCDate(end.getUTCDate()+1);rem='Sydney/Tokyo ends in '+Math.floor((end-now)/3600000)+'h '+Math.floor(((end-now)%3600000)/60000)+'m';}
-else if(hour>=8&&hour<16){var end=new Date(now);end.setUTCHours(16,0,0,0);rem='London/NY ends in '+Math.floor((end-now)/3600000)+'h '+Math.floor(((end-now)%3600000)/60000)+'m';}
-else rem='Low liquidity';
+else if(hour>=7&&hour<12){var end=new Date(now);end.setUTCHours(12,0,0,0);rem='London ends in '+Math.floor((end-now)/3600000)+'h '+Math.floor(((end-now)%3600000)/60000)+'m';}
+else if(hour>=12&&hour<16){var end=new Date(now);end.setUTCHours(16,0,0,0);rem='New York ends in '+Math.floor((end-now)/3600000)+'h '+Math.floor(((end-now)%3600000)/60000)+'m';}
+else rem='Off session';
 document.getElementById('session-timer').textContent=rem;
 },10000);
 var analysisData=null;var currentAnalysisTab='overview';function loadAnalysisData(){fetch('/api/analytics/full/analysis-board').then(r=>r.json()).then(data=>{analysisData=data;var firstBtn=document.querySelector('.tab-btn');switchAnalysisTab('overview',firstBtn);}).catch(e=>{document.getElementById('analysis-content').innerHTML='<p style="color:#ff4444;">Error loading analysis</p>';});}function switchAnalysisTab(period,btn){if(!analysisData)return;currentAnalysisTab=period;document.querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active'));if(btn)btn.classList.add('active');var d=analysisData[period];if(!d){document.getElementById('analysis-content').innerHTML='<p style="color:#888;">No data for this period.</p>';return;}var wrColor=d.win_rate>=80?'#00ff88':d.win_rate>=60?'#ffd700':'#ff4444';var iwrColor=d.initial_win_rate>=80?'#00ff88':d.initial_win_rate>=60?'#ffd700':'#ff4444';document.getElementById('analysis-content').innerHTML='<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;">'+'<div class="stat-box"><strong>Total Signals</strong><br>'+d.total_signals+'</div>'+'<div class="stat-box"><strong>Win Rate</strong><br><span style="color:'+wrColor+';font-weight:bold;">'+d.win_rate+'%</span></div>'+'<div class="stat-box"><strong>Initial WR</strong><br><span style="color:'+iwrColor+';font-weight:bold;">'+d.initial_win_rate+'%</span></div>'+'<div class="stat-box"><strong>Wins</strong><br><span style="color:#00ff88;">'+d.wins+'</span></div>'+'<div class="stat-box"><strong>Losses</strong><br><span style="color:#ff4444;">'+d.losses+'</span></div>'+'<div class="stat-box"><strong>Recoveries</strong><br><span style="color:#ffd700;">'+d.recoveries+'</span></div>'+'<div class="stat-box"><strong>Ignored</strong><br><span style="color:#888;">'+d.ignored+'</span></div>'+'<div class="stat-box"><strong>Best Pair</strong><br><span style="color:#00ff88;">'+d.best_pair+'</span></div>'+'<div class="stat-box"><strong>Worst Pair</strong><br><span style="color:#ff4444;">'+d.worst_pair+'</span></div>'+'</div>';}function copyAnalysis(){if(!analysisData||!currentAnalysisTab)return;var d=analysisData[currentAnalysisTab];if(!d)return;var periodNames={'overview':'Last 30 Days','daily':'Today','weekly':'This Week','monthly':'This Month','yearly':'This Year'};var text='Catalyst AI - '+(periodNames[currentAnalysisTab]||currentAnalysisTab)+'\\n'+'Total Signals : '+d.total_signals+'\\n'+'Overall Win Rate : '+d.win_rate+'%\\n'+'Initial Win Rate : '+d.initial_win_rate+'%\\n'+'Wins : '+d.wins+'\\n'+'Losses : '+d.losses+'\\n'+'Martingale Recoveries : '+d.recoveries+'\\n'+'Signals Ignored : '+d.ignored+'\\n'+'Best Pair : '+d.best_pair+'\\n'+'Worst Pair : '+d.worst_pair;navigator.clipboard.writeText(text).then(()=>{var btn=document.querySelector('.copy-analysis-btn');if(btn){btn.textContent='Copied!';btn.style.background='#00ff88';setTimeout(()=>{btn.textContent='Copy Stats';btn.style.background='#00b4d8';},2000);}}).catch(()=>{alert('Failed to copy.');});}
@@ -2995,15 +3010,17 @@ async def get_signals():
 
 @app.get("/api/pnl")
 async def pnl():
+    conn = None
     try:
         conn = sqlite3.connect(MEMORY_DB)
         cur = conn.cursor()
         cur.execute("SELECT COUNT(*), SUM(CASE WHEN outcome='win' THEN 1 ELSE 0 END), SUM(CASE WHEN outcome='loss' THEN 1 ELSE 0 END) FROM trades")
         total, wins, losses = cur.fetchone()
-        conn.close()
         return {"total": total or 0, "wins": wins or 0, "losses": losses or 0}
     except Exception:
         return {"total": 0, "wins": 0, "losses": 0}
+    finally:
+        if conn: conn.close()
 
 _scan_task = None
 
@@ -3024,12 +3041,12 @@ async def dashboard():
 # 8. WEEKLY OPTIMIZER
 # ============================================================
 async def weekly_optimise():
+    conn = None
     try:
         conn = sqlite3.connect(MEMORY_DB)
         cur = conn.cursor()
         cur.execute("SELECT outcome FROM trades WHERE outcome IN ('win','loss') ORDER BY entry_time DESC LIMIT 500")
         rows = cur.fetchall()
-        conn.close()
         if len(rows) < 50: return
         global PARAMS, MIN_CONFIDENCE
         wins = sum(1 for r in rows if r[0] == 'win')
@@ -3045,6 +3062,8 @@ async def weekly_optimise():
             if MIN_CONFIDENCE > 78: MIN_CONFIDENCE -= 1
     except Exception as e:
         logger.error(f"Weekly optimize error: {e}")
+    finally:
+        if conn: conn.close()
 
 
 # ============================================================
