@@ -295,6 +295,97 @@ def detect_range_expansion(df):
         return False
     return candle_range(df, 0) > candle_range(df, 1) * 1.5
 
+# ──────────────── MACD ────────────────
+def compute_macd(close, fast=12, slow=26, signal=9):
+    ema_fast = ema(close, fast)
+    ema_slow = ema(close, slow)
+    macd_line = ema_fast - ema_slow
+    signal_line = ema(macd_line, signal)
+    histogram = macd_line - signal_line
+    return macd_line, signal_line, histogram
+
+def macd_bullish_cross(df, fast=12, slow=26, signal=9):
+    """True if MACD histogram crossed from negative to positive."""
+    if len(df) < slow + signal:
+        return False
+    _, _, hist = compute_macd(df['close'], fast, slow, signal)
+    return hist.iloc[-2] < 0 and hist.iloc[-1] > 0
+
+def macd_bearish_cross(df, fast=12, slow=26, signal=9):
+    """True if MACD histogram crossed from positive to negative."""
+    if len(df) < slow + signal:
+        return False
+    _, _, hist = compute_macd(df['close'], fast, slow, signal)
+    return hist.iloc[-2] > 0 and hist.iloc[-1] < 0
+
+# ──────────────── Parabolic SAR (simplified) ────────────────
+def compute_parabolic_sar(df, af_start=0.02, af_max=0.2):
+    """Returns (sar_array, is_bullish) where is_bullish = price above SAR."""
+    high = df['high'].values
+    low = df['low'].values
+    n = len(high)
+    if n < 2:
+        return np.zeros(n), True
+    sar = np.zeros(n)
+    af = af_start
+    ep = high[0]
+    trend = 1  # 1 = bullish, -1 = bearish
+    sar[0] = low[0]
+    for i in range(1, n):
+        sar[i] = sar[i-1] + af * (ep - sar[i-1])
+        if trend == 1:
+            if low[i] < sar[i]:
+                trend = -1
+                sar[i] = ep
+                ep = low[i]
+                af = af_start
+            else:
+                if high[i] > ep:
+                    ep = high[i]
+                    af = min(af + af_start, af_max)
+        else:
+            if high[i] > sar[i]:
+                trend = 1
+                sar[i] = ep
+                ep = high[i]
+                af = af_start
+            else:
+                if low[i] < ep:
+                    ep = low[i]
+                    af = min(af + af_start, af_max)
+    return sar, df['close'].iloc[-1] > sar[-1]
+
+# ──────────────── Bollinger Band Position ────────────────
+def bollinger_position(df, period=20, nbdev=2):
+    """Returns 'upper', 'lower', or 'middle' based on where price sits relative to BB."""
+    if len(df) < period:
+        return 'middle'
+    sma = df['close'].rolling(period).mean().iloc[-1]
+    std = df['close'].rolling(period).std().iloc[-1]
+    if pd.isna(sma) or pd.isna(std) or std == 0:
+        return 'middle'
+    upper = sma + nbdev * std
+    lower = sma - nbdev * std
+    price = df['close'].iloc[-1]
+    if price >= upper:
+        return 'upper'
+    elif price <= lower:
+        return 'lower'
+    return 'middle'
+
+# ──────────────── Additional MA Alignment ────────────────
+def ma_alignment_bull(df, ma_periods=[20, 50]):
+    """True if EMA(short) > EMA(long) — bullish MA alignment."""
+    if len(df) < max(ma_periods):
+        return False
+    return ema(df['close'], ma_periods[0]).iloc[-1] > ema(df['close'], ma_periods[1]).iloc[-1]
+
+def ma_alignment_bear(df, ma_periods=[20, 50]):
+    """True if EMA(short) < EMA(long) — bearish MA alignment."""
+    if len(df) < max(ma_periods):
+        return False
+    return ema(df['close'], ma_periods[0]).iloc[-1] < ema(df['close'], ma_periods[1]).iloc[-1]
+
 def stochastic(high: pd.Series, low: pd.Series, close: pd.Series, k_period: int = 14, d_period: int = 3) -> Tuple[float, str]:
     if len(close) < k_period:
         return 50.0, 'Neutral'
@@ -1815,7 +1906,15 @@ AI analyzes data in real time outcomes may vary.
 # 4. MEMORY, AUTO-TUNING & DAILY STATS
 # ============================================================
 MEMORY_DB = os.environ.get("DB_PATH", "memory.db")
-PARAMS = {'rsi_buy': 22, 'rsi_sell': 78, 'adx_min': 32, 'vol_mult': 2.0, 'use_ema_ribbon': True, 'use_candle_range': True}
+PARAMS = {
+    'rsi_buy': 22, 'rsi_sell': 78, 'adx_min': 32, 'vol_mult': 2.0,
+    'use_ema_ribbon': True,        # Triple EMA alignment
+    'use_candle_range': True,      # NR4 + expansion + wide range
+    'use_macd': True,              # MACD crossover
+    'use_psar': True,              # Parabolic SAR
+    'use_bb_position': True,       # Bollinger Band position
+    'use_ma_alignment': True       # EMA20/50 alignment
+}
 MIN_CONFIDENCE = 85.0
 
 def init_memory():
@@ -2113,7 +2212,12 @@ def generate_signal(df, symbol="", higher_tf_trend=None, market_trend=None):
         and rsi_sustained(df, 'BUY')
         and rsi_ma_crossover(df, 'BUY')
         and (not PARAMS.get('use_candle_range', False) or
-             (detect_narrow_range(df) and detect_range_expansion(df) and detect_wide_range(df)))):
+             (detect_narrow_range(df) and detect_range_expansion(df) and detect_wide_range(df)))
+        # ─── Classic Indicators ──────────────────
+        and (not PARAMS.get('use_macd', False) or macd_bullish_cross(df))
+        and (not PARAMS.get('use_psar', False) or compute_parabolic_sar(df)[1])
+        and (not PARAMS.get('use_bb_position', False) or bollinger_position(df) == 'lower')
+        and (not PARAMS.get('use_ma_alignment', False) or ma_alignment_bull(df))):
         direction = 'BUY'
 
     # ── SELL hard filters ──────────────────────────────
@@ -2136,7 +2240,12 @@ def generate_signal(df, symbol="", higher_tf_trend=None, market_trend=None):
         and rsi_sustained(df, 'SELL')
         and rsi_ma_crossover(df, 'SELL')
         and (not PARAMS.get('use_candle_range', False) or
-             (detect_narrow_range(df) and detect_range_expansion(df) and detect_wide_range(df)))):
+             (detect_narrow_range(df) and detect_range_expansion(df) and detect_wide_range(df)))
+        # ─── Classic Indicators ──────────────────
+        and (not PARAMS.get('use_macd', False) or macd_bearish_cross(df))
+        and (not PARAMS.get('use_psar', False) or not compute_parabolic_sar(df)[1])
+        and (not PARAMS.get('use_bb_position', False) or bollinger_position(df) == 'upper')
+        and (not PARAMS.get('use_ma_alignment', False) or ma_alignment_bear(df))):
         direction = 'SELL'
 
     if direction is None:
@@ -2203,6 +2312,22 @@ def generate_signal(df, symbol="", higher_tf_trend=None, market_trend=None):
     if PARAMS.get('use_ema_ribbon', False) and ema_ribbon_aligned(df, direction): score += 10
     if detect_narrow_range(df) and detect_range_expansion(df): score += 5
     if detect_wide_range(df): score += 5
+
+    # v5.5 Classic indicator score boosters
+    if PARAMS.get('use_macd', False):
+        if direction == 'BUY' and macd_bullish_cross(df): score += 5
+        if direction == 'SELL' and macd_bearish_cross(df): score += 5
+    if PARAMS.get('use_psar', False):
+        _, psar_bull = compute_parabolic_sar(df)
+        if direction == 'BUY' and psar_bull: score += 5
+        if direction == 'SELL' and not psar_bull: score += 5
+    if PARAMS.get('use_bb_position', False):
+        bb_pos = bollinger_position(df)
+        if direction == 'BUY' and bb_pos == 'lower': score += 5
+        if direction == 'SELL' and bb_pos == 'upper': score += 5
+    if PARAMS.get('use_ma_alignment', False):
+        if direction == 'BUY' and ma_alignment_bull(df): score += 5
+        if direction == 'SELL' and ma_alignment_bear(df): score += 5
 
     accuracy = min(100, max(50, score))
 
