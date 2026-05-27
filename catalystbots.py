@@ -2967,7 +2967,7 @@ async def session_info():
 @app.get("/api/status")
 async def status():
     return {
-        "engine": "CATALYSTBOTS v5.3",
+        "engine": "CATALYSTBOTS v5.5",
         "tagline": "below the smart money - CatabotAI.com",
         "session": current_session(),
         "active_pairs": get_best_pairs_for_current_session(),
