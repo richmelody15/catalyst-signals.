@@ -1965,43 +1965,40 @@ def remember_signal(sig_id, sym, dir_, tf, platform, entry, rsi_val, adx_val, co
     except Exception as e:
         logger.error(f"DB write error: {e}")
 
+def get_connection():
+    """Get a database connection and cursor."""
+    conn = sqlite3.connect(MEMORY_DB)
+    cur = conn.cursor()
+    return conn, cur
+
 def learn_from_outcome(sig_id, outcome):
-    try:
-        conn = sqlite3.connect(MEMORY_DB)
-        cur = conn.cursor()
-        cur.execute("UPDATE trades SET outcome=? WHERE signal_id=?", (outcome, sig_id))
-        # Count 'recovery' as a win for win-rate calculation
-        cur.execute("SELECT outcome FROM trades WHERE outcome IN ('win','loss','recovery') ORDER BY entry_time DESC LIMIT 50")
-        real_rows = cur.fetchall()
-        global PARAMS, MIN_CONFIDENCE
-        if len(real_rows) >= 50:
-            wins = sum(1 for r in real_rows if r[0] in ('win', 'recovery'))
-            losses = sum(1 for r in real_rows if r[0] == 'loss')
-            wr = wins / (wins + losses) if (wins + losses) > 0 else 0
-            logger.info(f"Real WR {wr:.1%} (including recoveries) [{wins}W/{losses}L]")
+    global PARAMS, MIN_CONFIDENCE
+    conn, _ = get_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE trades SET outcome=? WHERE signal_id=?", (outcome, sig_id))
 
-            # If many recoveries, tighten more aggressively
-            recoveries = sum(1 for r in real_rows if r[0] == 'recovery')
-            if recoveries >= 3:
-                PARAMS['adx_min'] = min(45, PARAMS['adx_min'] + 5)
-                MIN_CONFIDENCE = min(95, MIN_CONFIDENCE + 3)
-                logger.warning(f"{recoveries} recoveries in last 50 - tightening filters sharply")
-
-            if wr < 0.80:
-                PARAMS['rsi_buy'] = max(15, PARAMS['rsi_buy'] - 3)
-                PARAMS['rsi_sell'] = min(85, PARAMS['rsi_sell'] + 3)
-                PARAMS['adx_min'] = min(45, PARAMS['adx_min'] + 3)
-                PARAMS['vol_mult'] = min(3.0, PARAMS['vol_mult'] + 0.3)
-                MIN_CONFIDENCE = min(95, MIN_CONFIDENCE + 2)
-                logger.warning(f"TIGHTENING: {PARAMS}, min conf {MIN_CONFIDENCE}")
-            elif wr >= 0.95 and PARAMS['adx_min'] > 20:
-                PARAMS['adx_min'] = max(20, PARAMS['adx_min'] - 1)
-                PARAMS['vol_mult'] = max(1.2, PARAMS['vol_mult'] - 0.1)
-                if MIN_CONFIDENCE > 75: MIN_CONFIDENCE -= 1
-                logger.info(f"Relaxing: {PARAMS}, min conf {MIN_CONFIDENCE}")
-        conn.commit(); conn.close()
-    except Exception as e:
-        logger.error(f"DB learn error: {e}")
+    # Count 'recovery' as a win for win-rate calculation
+    cur.execute("SELECT outcome FROM trades WHERE outcome IN ('win','loss','recovery') ORDER BY entry_time DESC LIMIT 50")
+    rows = cur.fetchall()
+    if len(rows) >= 50:
+        wins = sum(1 for r in rows if r[0] in ('win','recovery'))
+        losses = sum(1 for r in rows if r[0] == 'loss')
+        wr = wins / (wins + losses) if (wins+losses) > 0 else 0
+        recoveries = sum(1 for r in rows if r[0] == 'recovery')
+        if recoveries >= 3:
+            PARAMS['adx_min'] = min(45, PARAMS['adx_min'] + 5)
+            MIN_CONFIDENCE = min(95, MIN_CONFIDENCE + 3)
+            logger.warning(f"🔄 {recoveries} recoveries in last 50 – tightening filters sharply")
+        if wr < 0.80:
+            PARAMS['rsi_buy'] = max(15, PARAMS['rsi_buy'] - 3)
+            PARAMS['rsi_sell'] = min(85, PARAMS['rsi_sell'] + 3)
+            PARAMS['adx_min'] = min(45, PARAMS['adx_min'] + 3)
+            PARAMS['vol_mult'] = min(3.0, PARAMS['vol_mult'] + 0.3)
+            MIN_CONFIDENCE = min(95, MIN_CONFIDENCE + 2)
+        elif wr >= 0.95 and PARAMS['adx_min'] > 20:
+            PARAMS['adx_min'] = max(20, PARAMS['adx_min'] - 1)
+            if MIN_CONFIDENCE > 75: MIN_CONFIDENCE -= 1
+    conn.commit(); conn.close()
 
 def get_stats() -> dict:
     try:
