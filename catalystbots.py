@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-CATALYSTBOTS v5.4 - Self-Healing, Auto-Improving OTC Signal Engine
+CATALYSTBOTS v5.5 - Self-Healing, Auto-Improving OTC Signal Engine
 "below the smart money - CatabotAI.com"
 
 ALL Confluences + Wyckoff + SMC + Divergence + Consequent Encroachment |
@@ -265,9 +265,10 @@ def candle_range(df, lookback=0):
     return df['high'].iloc[-(lookback + 1)] - df['low'].iloc[-(lookback + 1)]
 
 def average_range(df, period=14):
-    """Average true range (ATR) over `period` bars."""
+    """Average true range (ATR) over `period` bars. Returns 0 if insufficient data."""
     tr = df['high'] - df['low']
-    return tr.rolling(period).mean().iloc[-1]
+    result = tr.rolling(period).mean().iloc[-1]
+    return result if not pd.isna(result) else 0
 
 def detect_narrow_range(df, nr_period=4):
     """True if the last candle's range is the smallest of the last `nr_period` candles."""
@@ -349,7 +350,8 @@ def compute_parabolic_sar(df, af_start=0.02, af_max=0.2):
                 if high[i] > ep:
                     ep = high[i]
                     af = min(af + af_start, af_max)
-                sar[i+1 if i+1 < n else i] = sar[i] + af * (ep - sar[i])
+                if i + 1 < n:
+                    sar[i + 1] = sar[i] + af * (ep - sar[i])
         else:  # bearish
             if high[i] > sar[i]:
                 trend = 1
@@ -360,7 +362,8 @@ def compute_parabolic_sar(df, af_start=0.02, af_max=0.2):
                 if low[i] < ep:
                     ep = low[i]
                     af = min(af + af_start, af_max)
-                sar[i+1 if i+1 < n else i] = sar[i] + af * (ep - sar[i])
+                if i + 1 < n:
+                    sar[i + 1] = sar[i] + af * (ep - sar[i])
     # Current trend: price above last SAR => bullish
     return sar, df['close'].iloc[-1] > sar[-1]
 
@@ -776,11 +779,11 @@ def imbalance_swing_levels(df):
         if fvg_dir == 'bullish':
             lows = [s for s in swings if s['type'] == 'low']
             if lows:
-                return None, lows[-1]['price']
+                return lows[-1]['price'], None  # swing low = bullish target (support)
         else:
             highs = [s for s in swings if s['type'] == 'high']
             if highs:
-                return highs[-1]['price'], None
+                return None, highs[-1]['price']  # swing high = bearish target (resistance)
     return None, None
 
 
@@ -807,6 +810,7 @@ def detect_inversion_point(df):
     """Return price level where a strong reversal occurred in the last 10 bars."""
     if len(df) < 5:
         return None
+    avg_vol = df['volume'].iloc[-20:-1].mean() if len(df) >= 20 else 1
     for i in range(-5, -1):
         c = df.iloc[i]
         body = abs(c['close'] - c['open'])
@@ -816,7 +820,6 @@ def detect_inversion_point(df):
         if range_ == 0:
             continue
         vol = c['volume']
-        avg_vol = df['volume'].iloc[-20:-1].mean() if len(df) >= 20 else 1
         if avg_vol > 0 and vol > avg_vol * 1.8:
             if lower_wick > 2 * body and upper_wick < body * 0.5 and c['close'] > c['open']:
                 return c['low']
@@ -1973,8 +1976,7 @@ def get_connection():
 
 def learn_from_outcome(sig_id, outcome):
     global PARAMS, MIN_CONFIDENCE
-    conn, _ = get_connection()
-    cur = conn.cursor()
+    conn, cur = get_connection()
     cur.execute("UPDATE trades SET outcome=? WHERE signal_id=?", (outcome, sig_id))
 
     # Count 'recovery' as a win for win-rate calculation
@@ -2019,7 +2021,7 @@ def get_stats() -> dict:
         return {"total_trades": total_real, "wins": wins, "losses": losses,
                 "recoveries": recoveries, "win_rate": wr, "ignored": ignored,
                 "pending": pending, "params": PARAMS, "min_confidence": MIN_CONFIDENCE}
-    except:
+    except Exception:
         return {"total_trades": 0, "wins": 0, "losses": 0, "recoveries": 0,
                 "win_rate": 0, "ignored": 0, "pending": 0,
                 "params": PARAMS, "min_confidence": MIN_CONFIDENCE}
@@ -2101,7 +2103,7 @@ def historical_confidence(rsi_val, adx_val, direction, platform) -> float:
         if len(rows) >= 10:
             wins = sum(1 for r in rows if r[0] == 'win')
             return round(wins / len(rows) * 100, 1)
-    except:
+    except Exception:
         pass
     return 75.0
 
@@ -2218,7 +2220,8 @@ def generate_signal(df, symbol="", higher_tf_trend=None, market_trend=None):
         and rsi_sustained(df, 'BUY')
         and rsi_ma_crossover(df, 'BUY')
         and (not PARAMS.get('use_candle_range', False) or
-             (detect_narrow_range(df) and detect_range_expansion(df) and detect_wide_range(df)))
+             (detect_narrow_range(df) and detect_range_expansion(df))
+             or detect_wide_range(df))
         # ─── Classic Indicators ──────────────────
         and (not PARAMS.get('use_macd', False) or macd_bullish_cross(df))
         and (not PARAMS.get('use_psar', False) or compute_parabolic_sar(df)[1])
@@ -2246,7 +2249,8 @@ def generate_signal(df, symbol="", higher_tf_trend=None, market_trend=None):
         and rsi_sustained(df, 'SELL')
         and rsi_ma_crossover(df, 'SELL')
         and (not PARAMS.get('use_candle_range', False) or
-             (detect_narrow_range(df) and detect_range_expansion(df) and detect_wide_range(df)))
+             (detect_narrow_range(df) and detect_range_expansion(df))
+             or detect_wide_range(df))
         # ─── Classic Indicators ──────────────────
         and (not PARAMS.get('use_macd', False) or macd_bearish_cross(df))
         and (not PARAMS.get('use_psar', False) or not compute_parabolic_sar(df)[1])
@@ -2288,10 +2292,11 @@ def generate_signal(df, symbol="", higher_tf_trend=None, market_trend=None):
     if reversal: score += 15
     if candle: score += 15
     if wyckoff_confirms_signal(wyckoff_phase, direction): score += 10
-    score += poi_score(df, direction) / 5
+    poi_dir = poi_buy if direction == 'BUY' else poi_sell
+    score += poi_dir / 5
 
     # v5.0 Score boosters
-    if poi_score(df, direction) >= 80: score += 10
+    if poi_dir >= 80: score += 10
     if adr_rem > 0.5: score += 5
     if eq_dist and eq_dist < 0.3: score += 5
     if inv_point: score += 10
@@ -2537,7 +2542,7 @@ def _demo_data(symbol, tf):
     freq = tf.replace('m', 'min').replace('s', 's')
     try:
         dates = pd.date_range(end=datetime.now(timezone.utc), periods=periods, freq=freq)
-    except:
+    except Exception:
         dates = pd.date_range(end=datetime.now(timezone.utc), periods=periods, freq='1min')
     price = 1.0800; trend = 1; closes = []
     for _ in range(periods):
@@ -2560,12 +2565,12 @@ def get_data_sync(symbol, tf):
         try:
             df = fetch_po_candles(symbol, tf)
             if df is not None and len(df) >= 30: return df
-        except: pass
+        except Exception: pass
     if iq_connected and iq_api is not None and USE_IQ_OPTION:
         try:
             df = fetch_iq_candles(symbol, tf)
             if df is not None and len(df) >= 30: return df
-        except: pass
+        except Exception: pass
     return _demo_data(symbol, tf)
 
 
@@ -2593,7 +2598,7 @@ async def scan_loop():
                             e5 = ema(df5['close'], 5); e20 = ema(df5['close'], 20)
                             trend5 = 'bullish' if e5.iloc[-1] > e20.iloc[-1] else ('bearish' if e5.iloc[-1] < e20.iloc[-1] else None)
                             if trend5: cache_higher_tf_trend(sym, trend5)
-                    except: pass
+                    except Exception: pass
                 if get_market_trend(sym) is None:
                     try:
                         df15 = get_data_sync(sym, '5m')
@@ -2601,7 +2606,7 @@ async def scan_loop():
                             e5 = ema(df15['close'], 5); e20 = ema(df15['close'], 20)
                             trend15 = 'bullish' if e5.iloc[-1] > e20.iloc[-1] else ('bearish' if e5.iloc[-1] < e20.iloc[-1] else None)
                             if trend15: cache_market_trend(sym, trend15)
-                    except: pass
+                    except Exception: pass
 
                 for tf in tfs:
                     try:
@@ -2684,7 +2689,7 @@ async def scan_loop():
                         payload = {'type': 'new_signal', **sig}
                         for ws_client in list(clients):
                             try: await ws_client.send_json(payload)
-                            except: clients.discard(ws_client)
+                            except Exception: clients.discard(ws_client)
 
                         logger.info(f"{platform} {sym} {sig_info['direction']} | Acc:{sig_info['accuracy']:.0f}% Final:{final_conf:.0f}%")
                         asyncio.create_task(send_telegram(sig))
@@ -2931,7 +2936,7 @@ async def startup():
             scheduler.add_job(weekly_optimise, 'cron', day_of_week='mon', hour=3)
             scheduler.start()
             logger.info("Weekly optimizer scheduled")
-        except: pass
+        except Exception: pass
     asyncio.create_task(protected_scan_loop())
 
 @app.websocket("/ws")
@@ -2940,7 +2945,7 @@ async def ws(websocket: WebSocket):
     clients.add(websocket)
     try:
         while True: await websocket.receive_text()
-    except: clients.discard(websocket)
+    except Exception: clients.discard(websocket)
 
 @app.post("/api/trade/outcome")
 async def outcome(signal_id: str, outcome: str):
@@ -2968,7 +2973,7 @@ async def session_info():
     elif 7 <= h < 12: s = "London"
     elif 12 <= h < 16: s = "New York"
     else: s = "Off"
-    return {"session": s, "active": True}
+    return {"session": s, "active": s != "Off"}
 
 @app.get("/api/status")
 async def status():
@@ -2997,12 +3002,17 @@ async def pnl():
         total, wins, losses = cur.fetchone()
         conn.close()
         return {"total": total or 0, "wins": wins or 0, "losses": losses or 0}
-    except:
+    except Exception:
         return {"total": 0, "wins": 0, "losses": 0}
+
+_scan_task = None
 
 @app.get("/api/scan")
 async def manual_scan():
-    asyncio.create_task(scan_loop())
+    global _scan_task
+    if _scan_task is not None and not _scan_task.done():
+        return {"status": "already_running"}
+    _scan_task = asyncio.create_task(scan_loop())
     return {"status": "started"}
 
 @app.get("/")
