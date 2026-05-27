@@ -297,6 +297,7 @@ def detect_range_expansion(df):
 
 # ──────────────── MACD ────────────────
 def compute_macd(close, fast=12, slow=26, signal=9):
+    """Return MACD line, signal line, histogram."""
     ema_fast = ema(close, fast)
     ema_slow = ema(close, slow)
     macd_line = ema_fast - ema_slow
@@ -305,22 +306,26 @@ def compute_macd(close, fast=12, slow=26, signal=9):
     return macd_line, signal_line, histogram
 
 def macd_bullish_cross(df, fast=12, slow=26, signal=9):
-    """True if MACD histogram crossed from negative to positive."""
+    """True if MACD just crossed above its signal line (histogram turned positive)."""
     if len(df) < slow + signal:
         return False
-    _, _, hist = compute_macd(df['close'], fast, slow, signal)
+    _, signal_line, hist = compute_macd(df['close'], fast, slow, signal)
+    # Histogram just turned positive (cross from below)
     return hist.iloc[-2] < 0 and hist.iloc[-1] > 0
 
 def macd_bearish_cross(df, fast=12, slow=26, signal=9):
-    """True if MACD histogram crossed from positive to negative."""
+    """True if MACD just crossed below its signal line."""
     if len(df) < slow + signal:
         return False
-    _, _, hist = compute_macd(df['close'], fast, slow, signal)
+    _, signal_line, hist = compute_macd(df['close'], fast, slow, signal)
     return hist.iloc[-2] > 0 and hist.iloc[-1] < 0
 
-# ──────────────── Parabolic SAR (simplified) ────────────────
+# ──────────────── Parabolic SAR ────────────────
 def compute_parabolic_sar(df, af_start=0.02, af_max=0.2):
-    """Returns (sar_array, is_bullish) where is_bullish = price above SAR."""
+    """
+    Simplified PSAR. Returns (sar_values, is_bullish) where is_bullish=True
+    if the last candle's close > SAR (uptrend).
+    """
     high = df['high'].values
     low = df['low'].values
     n = len(high)
@@ -331,9 +336,10 @@ def compute_parabolic_sar(df, af_start=0.02, af_max=0.2):
     ep = high[0]
     trend = 1  # 1 = bullish, -1 = bearish
     sar[0] = low[0]
+
     for i in range(1, n):
         sar[i] = sar[i-1] + af * (ep - sar[i-1])
-        if trend == 1:
+        if trend == 1:  # bullish
             if low[i] < sar[i]:
                 trend = -1
                 sar[i] = ep
@@ -343,7 +349,8 @@ def compute_parabolic_sar(df, af_start=0.02, af_max=0.2):
                 if high[i] > ep:
                     ep = high[i]
                     af = min(af + af_start, af_max)
-        else:
+                sar[i+1 if i+1 < n else i] = sar[i] + af * (ep - sar[i])
+        else:  # bearish
             if high[i] > sar[i]:
                 trend = 1
                 sar[i] = ep
@@ -353,11 +360,13 @@ def compute_parabolic_sar(df, af_start=0.02, af_max=0.2):
                 if low[i] < ep:
                     ep = low[i]
                     af = min(af + af_start, af_max)
+                sar[i+1 if i+1 < n else i] = sar[i] + af * (ep - sar[i])
+    # Current trend: price above last SAR => bullish
     return sar, df['close'].iloc[-1] > sar[-1]
 
-# ──────────────── Bollinger Band Position ────────────────
+# ──────────────── Bollinger Bands Position ────────────────
 def bollinger_position(df, period=20, nbdev=2):
-    """Returns 'upper', 'lower', or 'middle' based on where price sits relative to BB."""
+    """Returns where price is relative to BB: 'upper', 'lower', 'middle'."""
     if len(df) < period:
         return 'middle'
     sma = df['close'].rolling(period).mean().iloc[-1]
@@ -373,15 +382,15 @@ def bollinger_position(df, period=20, nbdev=2):
         return 'lower'
     return 'middle'
 
-# ──────────────── Additional MA Alignment ────────────────
+# ──────────────── Moving Average Additional ────────────────
 def ma_alignment_bull(df, ma_periods=[20, 50]):
-    """True if EMA(short) > EMA(long) — bullish MA alignment."""
+    """True if short MA > long MA (bullish alignment)."""
     if len(df) < max(ma_periods):
         return False
     return ema(df['close'], ma_periods[0]).iloc[-1] > ema(df['close'], ma_periods[1]).iloc[-1]
 
 def ma_alignment_bear(df, ma_periods=[20, 50]):
-    """True if EMA(short) < EMA(long) — bearish MA alignment."""
+    """True if short MA < long MA (bearish alignment)."""
     if len(df) < max(ma_periods):
         return False
     return ema(df['close'], ma_periods[0]).iloc[-1] < ema(df['close'], ma_periods[1]).iloc[-1]
