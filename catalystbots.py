@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-CATALYSTBOTS v5.3 - Self-Healing, Auto-Improving OTC Signal Engine
+CATALYSTBOTS v5.4 - Self-Healing, Auto-Improving OTC Signal Engine
 "below the smart money - CatabotAI.com"
 
 ALL Confluences + Wyckoff + SMC + Divergence + Consequent Encroachment |
@@ -224,6 +224,76 @@ def bb_width(series: pd.Series, period: int = 20) -> pd.Series:
     sma = series.rolling(period).mean()
     std = series.rolling(period).std()
     return (4.0 * std) / sma.replace(0, 1e-10)
+
+def rsi_sustained(df, direction, period=14, threshold_buy=25, threshold_sell=75, consecutive=2):
+    """Returns True if RSI has been in the extreme zone for at least `consecutive` candles."""
+    if len(df) < period + consecutive:
+        return False
+    rsi_vals = rsi(df['close'], period).values
+    if direction == 'BUY':
+        return all(r < threshold_buy for r in rsi_vals[-consecutive:])
+    else:
+        return all(r > threshold_sell for r in rsi_vals[-consecutive:])
+
+def rsi_ma_crossover(df, direction, rsi_period=14, ma_period=5):
+    """Returns True if RSI crosses above (BUY) or below (SELL) its own MA."""
+    if len(df) < rsi_period + ma_period + 1:
+        return False
+    rsi_vals = rsi(df['close'], rsi_period)
+    rsi_ma = rsi_vals.rolling(ma_period).mean()
+    if direction == 'BUY':
+        return rsi_vals.iloc[-2] < rsi_ma.iloc[-2] and rsi_vals.iloc[-1] > rsi_ma.iloc[-1]
+    else:
+        return rsi_vals.iloc[-2] > rsi_ma.iloc[-2] and rsi_vals.iloc[-1] < rsi_ma.iloc[-1]
+
+def ema_ribbon_aligned(df, direction):
+    """Returns True if EMA ribbon is perfectly aligned: BUY=EMA5>EMA20>EMA50, SELL=reverse."""
+    if len(df) < 50:
+        return False
+    ema5 = ema(df['close'], 5).iloc[-1]
+    ema20 = ema(df['close'], 20).iloc[-1]
+    ema50 = ema(df['close'], 50).iloc[-1]
+    if direction == 'BUY':
+        return ema5 > ema20 > ema50
+    else:
+        return ema5 < ema20 < ema50
+
+def candle_range(df, lookback=0):
+    """Return the high-low range of the candle `lookback` bars ago (0=latest)."""
+    if len(df) < lookback + 1:
+        return 0
+    return df['high'].iloc[-(lookback + 1)] - df['low'].iloc[-(lookback + 1)]
+
+def average_range(df, period=14):
+    """Average true range (ATR) over `period` bars."""
+    tr = df['high'] - df['low']
+    return tr.rolling(period).mean().iloc[-1]
+
+def detect_narrow_range(df, nr_period=4):
+    """True if the last candle's range is the smallest of the last `nr_period` candles."""
+    if len(df) < nr_period + 1:
+        return False
+    last_range = candle_range(df, 0)
+    for i in range(1, nr_period):
+        if candle_range(df, i) < last_range:
+            return False
+    return True
+
+def detect_wide_range(df, multiplier=1.5, period=14):
+    """True if the last candle's range > `multiplier` × average range."""
+    if len(df) < period + 1:
+        return False
+    last_range = candle_range(df, 0)
+    avg_rng = average_range(df, period)
+    if avg_rng == 0:
+        return False
+    return last_range > avg_rng * multiplier
+
+def detect_range_expansion(df):
+    """True if the current candle's range is at least 1.5× the previous candle's range."""
+    if len(df) < 2:
+        return False
+    return candle_range(df, 0) > candle_range(df, 1) * 1.5
 
 def stochastic(high: pd.Series, low: pd.Series, close: pd.Series, k_period: int = 14, d_period: int = 3) -> Tuple[float, str]:
     if len(close) < k_period:
@@ -1745,7 +1815,7 @@ AI analyzes data in real time outcomes may vary.
 # 4. MEMORY, AUTO-TUNING & DAILY STATS
 # ============================================================
 MEMORY_DB = os.environ.get("DB_PATH", "memory.db")
-PARAMS = {'rsi_buy': 22, 'rsi_sell': 78, 'adx_min': 32, 'vol_mult': 2.0}
+PARAMS = {'rsi_buy': 22, 'rsi_sell': 78, 'adx_min': 32, 'vol_mult': 2.0, 'use_ema_ribbon': True, 'use_candle_range': True}
 MIN_CONFIDENCE = 85.0
 
 def init_memory():
@@ -1757,9 +1827,15 @@ def init_memory():
             signal_id TEXT UNIQUE, symbol TEXT, direction TEXT,
             timeframe TEXT, platform TEXT, entry_time TIMESTAMP,
             outcome TEXT DEFAULT 'pending', rsi REAL, adx REAL,
-            confidence REAL, accuracy REAL DEFAULT 0
+            confidence REAL, accuracy REAL DEFAULT 0,
+            session TEXT DEFAULT 'Unknown'
         )
     """)
+    # Migration: add session column if it doesn't exist (for existing DBs)
+    try:
+        cur.execute("ALTER TABLE trades ADD COLUMN session TEXT DEFAULT 'Unknown'")
+    except Exception:
+        pass  # column already exists
     cur.execute("""
         CREATE TABLE IF NOT EXISTS daily_stats (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1771,12 +1847,12 @@ def init_memory():
     """)
     conn.commit(); conn.close()
 
-def remember_signal(sig_id, sym, dir_, tf, platform, entry, rsi_val, adx_val, conf, accuracy=0):
+def remember_signal(sig_id, sym, dir_, tf, platform, entry, rsi_val, adx_val, conf, accuracy=0, session='Unknown'):
     try:
         conn = sqlite3.connect(MEMORY_DB)
         cur = conn.cursor()
-        cur.execute("INSERT OR IGNORE INTO trades VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                    (None, sig_id, sym, dir_, tf, platform, entry, 'pending', rsi_val, adx_val, conf, accuracy))
+        cur.execute("INSERT OR IGNORE INTO trades VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (None, sig_id, sym, dir_, tf, platform, entry, 'pending', rsi_val, adx_val, conf, accuracy, session))
         conn.commit(); conn.close()
     except Exception as e:
         logger.error(f"DB write error: {e}")
@@ -1786,13 +1862,23 @@ def learn_from_outcome(sig_id, outcome):
         conn = sqlite3.connect(MEMORY_DB)
         cur = conn.cursor()
         cur.execute("UPDATE trades SET outcome=? WHERE signal_id=?", (outcome, sig_id))
-        cur.execute("SELECT outcome FROM trades WHERE outcome IN ('win','loss') ORDER BY entry_time DESC LIMIT 50")
+        # Count 'recovery' as a win for win-rate calculation
+        cur.execute("SELECT outcome FROM trades WHERE outcome IN ('win','loss','recovery') ORDER BY entry_time DESC LIMIT 50")
         real_rows = cur.fetchall()
         global PARAMS, MIN_CONFIDENCE
         if len(real_rows) >= 50:
-            wins = sum(1 for r in real_rows if r[0] == 'win')
-            wr = wins / len(real_rows)
-            logger.info(f"WR {wr:.1%} ({wins}/{len(real_rows)})")
+            wins = sum(1 for r in real_rows if r[0] in ('win', 'recovery'))
+            losses = sum(1 for r in real_rows if r[0] == 'loss')
+            wr = wins / (wins + losses) if (wins + losses) > 0 else 0
+            logger.info(f"Real WR {wr:.1%} (including recoveries) [{wins}W/{losses}L]")
+
+            # If many recoveries, tighten more aggressively
+            recoveries = sum(1 for r in real_rows if r[0] == 'recovery')
+            if recoveries >= 3:
+                PARAMS['adx_min'] = min(45, PARAMS['adx_min'] + 5)
+                MIN_CONFIDENCE = min(95, MIN_CONFIDENCE + 3)
+                logger.warning(f"{recoveries} recoveries in last 50 - tightening filters sharply")
+
             if wr < 0.80:
                 PARAMS['rsi_buy'] = max(15, PARAMS['rsi_buy'] - 3)
                 PARAMS['rsi_sell'] = min(85, PARAMS['rsi_sell'] + 3)
@@ -1813,22 +1899,89 @@ def get_stats() -> dict:
     try:
         conn = sqlite3.connect(MEMORY_DB)
         cur = conn.cursor()
-        cur.execute("SELECT outcome FROM trades WHERE outcome IN ('win','loss')")
+        cur.execute("SELECT outcome FROM trades WHERE outcome IN ('win','loss','recovery')")
         real = cur.fetchall()
         total_real = len(real)
         wins = sum(1 for r in real if r[0] == 'win')
+        recoveries = sum(1 for r in real if r[0] == 'recovery')
+        losses = sum(1 for r in real if r[0] == 'loss')
         cur.execute("SELECT outcome FROM trades WHERE outcome='ignored'")
         ignored = len(cur.fetchall())
         cur.execute("SELECT COUNT(*) FROM trades WHERE outcome='pending'")
         pending = cur.fetchone()[0]
         conn.close()
-        wr = round(wins / total_real * 100, 1) if total_real else 0
-        return {"total_trades": total_real, "wins": wins, "losses": total_real - wins,
-                "win_rate": wr, "ignored": ignored, "pending": pending,
-                "params": PARAMS, "min_confidence": MIN_CONFIDENCE}
+        wr = round((wins + recoveries) / total_real * 100, 1) if total_real else 0
+        return {"total_trades": total_real, "wins": wins, "losses": losses,
+                "recoveries": recoveries, "win_rate": wr, "ignored": ignored,
+                "pending": pending, "params": PARAMS, "min_confidence": MIN_CONFIDENCE}
     except:
-        return {"total_trades": 0, "wins": 0, "losses": 0, "win_rate": 0,
-                "ignored": 0, "pending": 0, "params": PARAMS, "min_confidence": MIN_CONFIDENCE}
+        return {"total_trades": 0, "wins": 0, "losses": 0, "recoveries": 0,
+                "win_rate": 0, "ignored": 0, "pending": 0,
+                "params": PARAMS, "min_confidence": MIN_CONFIDENCE}
+
+def get_period_stats(start_time, end_time):
+    """Return stats for a given time period using SQLite."""
+    try:
+        conn = sqlite3.connect(MEMORY_DB)
+        cur = conn.cursor()
+        cur.execute("SELECT outcome, symbol FROM trades WHERE entry_time >= ? AND entry_time < ?",
+                    (start_time.isoformat(), end_time.isoformat()))
+        rows = cur.fetchall()
+        conn.close()
+        total = len(rows)
+        wins = sum(1 for r in rows if r[0] == 'win')
+        losses = sum(1 for r in rows if r[0] == 'loss')
+        recoveries = sum(1 for r in rows if r[0] == 'recovery')
+        ignored = sum(1 for r in rows if r[0] == 'ignored')
+        real_total = wins + losses + recoveries
+        wr = round((wins + recoveries) / real_total * 100, 1) if real_total else 0
+        initial_wr = round(wins / (wins + losses) * 100, 1) if (wins + losses) else 0
+        pair_stats = {}
+        for r in rows:
+            if r[0] in ('win', 'loss', 'recovery'):
+                sym = r[1]
+                if sym not in pair_stats:
+                    pair_stats[sym] = {'wins': 0, 'total': 0}
+                if r[0] in ('win', 'recovery'):
+                    pair_stats[sym]['wins'] += 1
+                pair_stats[sym]['total'] += 1
+        eligible = {k: v for k, v in pair_stats.items() if v['total'] >= 5}
+        best_pair = max(eligible, key=lambda x: eligible[x]['wins'] / eligible[x]['total'], default="N/A")
+        worst_pair = min(eligible, key=lambda x: eligible[x]['wins'] / eligible[x]['total'], default="N/A")
+        return {
+            "total_signals": total,
+            "wins": wins, "losses": losses, "recoveries": recoveries, "ignored": ignored,
+            "win_rate": wr, "initial_win_rate": initial_wr,
+            "best_pair": best_pair, "worst_pair": worst_pair
+        }
+    except Exception as e:
+        logger.error(f"Period stats error: {e}")
+        return {"total_signals": 0, "wins": 0, "losses": 0, "recoveries": 0,
+                "ignored": 0, "win_rate": 0, "initial_win_rate": 0,
+                "best_pair": "N/A", "worst_pair": "N/A"}
+
+def get_full_analysis_board() -> dict:
+    """Return analysis board with daily/weekly/monthly/yearly/overview periods."""
+    now = datetime.now(timezone.utc)
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    daily = get_period_stats(today_start, now)
+    weekday = now.weekday()
+    week_start = today_start - timedelta(days=weekday)
+    weekly = get_period_stats(week_start, now)
+    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    monthly = get_period_stats(month_start, now)
+    year_start = now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+    yearly = get_period_stats(year_start, now)
+    overview_start = now - timedelta(days=30)
+    overview = get_period_stats(overview_start, now)
+    return {
+        "overview": overview,
+        "daily": daily,
+        "weekly": weekly,
+        "monthly": monthly,
+        "yearly": yearly,
+        "current_time": str(now)
+    }
 
 def historical_confidence(rsi_val, adx_val, direction, platform) -> float:
     try:
@@ -1955,7 +2108,12 @@ def generate_signal(df, symbol="", higher_tf_trend=None, market_trend=None):
         and (pattern_dir is None or pattern_dir == 'BUY')
         and amd in ('accumulation', 'advance', None)
         and liq_side_smc != 'sell_side'
-        and ict_ok_buy(df)):
+        and ict_ok_buy(df)
+        and (not PARAMS.get('use_ema_ribbon', False) or ema_ribbon_aligned(df, 'BUY'))
+        and rsi_sustained(df, 'BUY')
+        and rsi_ma_crossover(df, 'BUY')
+        and (not PARAMS.get('use_candle_range', False) or
+             (detect_narrow_range(df) and detect_range_expansion(df) and detect_wide_range(df)))):
         direction = 'BUY'
 
     # ── SELL hard filters ──────────────────────────────
@@ -1973,7 +2131,12 @@ def generate_signal(df, symbol="", higher_tf_trend=None, market_trend=None):
         and (pattern_dir is None or pattern_dir == 'SELL')
         and amd in ('distribution', 'decline', None)
         and liq_side_smc != 'buy_side'
-        and ict_ok_sell(df)):
+        and ict_ok_sell(df)
+        and (not PARAMS.get('use_ema_ribbon', False) or ema_ribbon_aligned(df, 'SELL'))
+        and rsi_sustained(df, 'SELL')
+        and rsi_ma_crossover(df, 'SELL')
+        and (not PARAMS.get('use_candle_range', False) or
+             (detect_narrow_range(df) and detect_range_expansion(df) and detect_wide_range(df)))):
         direction = 'SELL'
 
     if direction is None:
@@ -2033,6 +2196,13 @@ def generate_signal(df, symbol="", higher_tf_trend=None, market_trend=None):
 
     # v5.2 ICT/SMC score boosters
     score += ict_score(df, direction)
+
+    # v5.4 RSI confirmation + EMA ribbon + candle range boosters
+    if rsi_sustained(df, direction): score += 5
+    if rsi_ma_crossover(df, direction): score += 5
+    if PARAMS.get('use_ema_ribbon', False) and ema_ribbon_aligned(df, direction): score += 10
+    if detect_narrow_range(df) and detect_range_expansion(df): score += 5
+    if detect_wide_range(df): score += 5
 
     accuracy = min(100, max(50, score))
 
@@ -2317,7 +2487,8 @@ async def scan_loop():
                         now_utc = datetime.now(timezone.utc)
                         entry_time = now_utc + timedelta(minutes=1)
                         sig_id = str(uuid.uuid4())
-                        remember_signal(sig_id, sym, sig_info['direction'], tf, platform, entry_time, sig_info['rsi'], sig_info['adx'], final_conf, sig_info['accuracy'])
+                        sess = current_session()
+                        remember_signal(sig_id, sym, sig_info['direction'], tf, platform, entry_time, sig_info['rsi'], sig_info['adx'], final_conf, sig_info['accuracy'], sess)
 
                         martingale = calculate_martingale(entry_time, tf, final_conf)
 
@@ -2443,6 +2614,9 @@ body{background:#050510;color:#e0e0e0;font-family:'Segoe UI',system-ui,sans-seri
 .btn-group{margin-top:10px;display:flex;flex-wrap:wrap;gap:5px}
 .btn{padding:8px 14px;border:none;border-radius:8px;cursor:pointer;font-weight:bold;font-size:0.8em}
 .win-btn{background:#00ff88;color:#000}.loss-btn{background:#ff4444;color:#fff}.ignore-btn{background:#666;color:#fff}.copy-btn{background:#00b4d8;color:#fff}
+.tab-btn{padding:6px 14px;border:1px solid #2a2a5a;background:#0a0a2e;color:#e0e0e0;border-radius:20px;cursor:pointer;font-size:0.8em}
+.tab-btn.active{background:#00ff88;color:#000;border-color:#00ff88}
+.stat-box{background:rgba(255,255,255,0.05);padding:10px;border-radius:8px;text-align:center;font-size:0.9em}
 .countdown{font-size:1.3em;font-weight:bold;color:#ffd700;margin:8px 0}
 .timing-details{font-size:0.8em;color:#aaa;margin-bottom:10px}
 .martingale{margin-top:10px;background:#111;padding:10px;border-radius:8px;font-size:0.8em}
@@ -2493,6 +2667,20 @@ body{background:#050510;color:#e0e0e0;font-family:'Segoe UI',system-ui,sans-seri
 </div>
 <div class="stats-bar" id="stats" style="margin-bottom:15px;">Loading stats...</div>
 <div class="signals" id="signals"><div class="waiting" id="waiting"><div style="font-size:2.5em">🧠</div><h3>Waiting for perfect setups</h3><p>Scanning OTC pairs across IQ Option and Pocket Option.</p></div></div>
+<div style="margin-top:20px; background:#1a1a2e; border-radius:12px; padding:15px; border:1px solid #2a2a5a;">
+<h3 style="color:#00ff88;">📊 Performance Analysis</h3>
+<div style="display:flex; justify-content:space-between; align-items:center;">
+<div class="tab-bar" style="display:flex; gap:5px; margin:10px 0; flex-wrap:wrap;">
+<button class="tab-btn active" onclick="switchAnalysisTab('overview',this)">Overview</button>
+<button class="tab-btn" onclick="switchAnalysisTab('daily',this)">Today</button>
+<button class="tab-btn" onclick="switchAnalysisTab('weekly',this)">This Week</button>
+<button class="tab-btn" onclick="switchAnalysisTab('monthly',this)">This Month</button>
+<button class="tab-btn" onclick="switchAnalysisTab('yearly',this)">This Year</button>
+</div>
+<button class="btn copy-analysis-btn" onclick="copyAnalysis()" style="background:#00b4d8; color:#fff; white-space:nowrap;">📋 Copy Stats</button>
+</div>
+<div id="analysis-content" style="font-size:0.9em; color:#ccc;">Loading...</div>
+</div>
 <div style="text-align:center; color:#ff4444; margin-top:15px; font-size:0.9em;">⚠️ Never trade with money you can't afford to lose.</div>
 </div>
 <script>
@@ -2555,7 +2743,7 @@ card.innerHTML='<div class="card-header"><div class="pair">'+d.symbol+' '+platfo
 '<div class="timing-details">Start: '+gen.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',timeZone:'Africa/Lagos'})+' | Entry: '+entry.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',timeZone:'Africa/Lagos'})+' | End: '+end.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',timeZone:'Africa/Lagos'})+' ('+d.duration_minutes+'m)</div>'+
 '<div>'+d.timeframe+' (OTC) | RSI: '+d.rsi+' | ADX: '+d.adx+' | 🕐 '+(d.session||'Unknown')+' | ADR: '+d.adr_remaining+'% | RR: '+d.rr+'</div>'+
 '<div class="smc-tags">'+smcTags+'</div>'+mart+
-'<div class="btn-group"><button class="btn copy-btn" onclick="copySignal(this)">Copy</button><button class="btn win-btn" onclick="report(\''+d.signal_id+'\',\'win\',this)">WIN</button><button class="btn loss-btn" onclick="report(\''+d.signal_id+'\',\'loss\',this)">LOSS</button><button class="btn ignore-btn" onclick="report(\''+d.signal_id+'\',\'ignored\',this)">IGNORE</button></div>'+
+'<div class="btn-group"><button class="btn copy-btn" onclick="copySignal(this)">Copy</button><button class="btn win-btn" onclick="report(\''+d.signal_id+'\',\'win\',this)">WIN</button><button class="btn loss-btn" onclick="report(\''+d.signal_id+'\',\'loss\',this)">LOSS</button><button class="btn ignore-btn" onclick="report(\''+d.signal_id+'\',\'ignored\',this)">IGNORE</button><button class="btn" style="background:#ffd700;color:#000;" onclick="report(\''+d.signal_id+'\',\'recovery\',this)">RECOVERY</button></div>'+
 '<div class="outcome-text" style="display:none;font-weight:bold;margin-top:5px;"></div>'+
 '<div style="text-align:center;color:#ff4444;font-size:0.7em;margin-top:8px;">\u26a0\ufe0f Never trade with money you can\'t afford to lose.</div>';
 var cont=document.getElementById('signals');
@@ -2572,6 +2760,7 @@ var txt=card.querySelector('.outcome-text');
 txt.style.display='block';
 if(outcome==='win'){card.style.borderLeft='4px solid #00ff88';txt.style.color='#00ff88';txt.textContent='Trade Won';}
 else if(outcome==='loss'){card.style.borderLeft='4px solid #ff4444';txt.style.color='#ff4444';txt.textContent='Trade Lost';}
+else if(outcome==='recovery'){card.style.borderLeft='4px solid #ffd700';txt.style.color='#ffd700';txt.textContent='Won via Martingale';}
 else{card.style.borderLeft='4px solid #888';txt.style.color='#888';txt.textContent='Ignored';}
 card.querySelector('.btn-group').style.display='none';
 updateStats();
@@ -2591,6 +2780,8 @@ else if(hour>=8&&hour<16){var end=new Date(now);end.setUTCHours(16,0,0,0);rem='L
 else rem='Low liquidity';
 document.getElementById('session-timer').textContent=rem;
 },10000);
+var analysisData=null;var currentAnalysisTab='overview';function loadAnalysisData(){fetch('/api/analytics/full/analysis-board').then(r=>r.json()).then(data=>{analysisData=data;var firstBtn=document.querySelector('.tab-btn');switchAnalysisTab('overview',firstBtn);}).catch(e=>{document.getElementById('analysis-content').innerHTML='<p style="color:#ff4444;">Error loading analysis</p>';});}function switchAnalysisTab(period,btn){if(!analysisData)return;currentAnalysisTab=period;document.querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active'));if(btn)btn.classList.add('active');var d=analysisData[period];if(!d){document.getElementById('analysis-content').innerHTML='<p style="color:#888;">No data for this period.</p>';return;}var wrColor=d.win_rate>=80?'#00ff88':d.win_rate>=60?'#ffd700':'#ff4444';var iwrColor=d.initial_win_rate>=80?'#00ff88':d.initial_win_rate>=60?'#ffd700':'#ff4444';document.getElementById('analysis-content').innerHTML='<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;">'+'<div class="stat-box"><strong>Total Signals</strong><br>'+d.total_signals+'</div>'+'<div class="stat-box"><strong>Win Rate</strong><br><span style="color:'+wrColor+';font-weight:bold;">'+d.win_rate+'%</span></div>'+'<div class="stat-box"><strong>Initial WR</strong><br><span style="color:'+iwrColor+';font-weight:bold;">'+d.initial_win_rate+'%</span></div>'+'<div class="stat-box"><strong>Wins</strong><br><span style="color:#00ff88;">'+d.wins+'</span></div>'+'<div class="stat-box"><strong>Losses</strong><br><span style="color:#ff4444;">'+d.losses+'</span></div>'+'<div class="stat-box"><strong>Recoveries</strong><br><span style="color:#ffd700;">'+d.recoveries+'</span></div>'+'<div class="stat-box"><strong>Ignored</strong><br><span style="color:#888;">'+d.ignored+'</span></div>'+'<div class="stat-box"><strong>Best Pair</strong><br><span style="color:#00ff88;">'+d.best_pair+'</span></div>'+'<div class="stat-box"><strong>Worst Pair</strong><br><span style="color:#ff4444;">'+d.worst_pair+'</span></div>'+'</div>';}function copyAnalysis(){if(!analysisData||!currentAnalysisTab)return;var d=analysisData[currentAnalysisTab];if(!d)return;var periodNames={'overview':'Last 30 Days','daily':'Today','weekly':'This Week','monthly':'This Month','yearly':'This Year'};var text='Catalyst AI - '+(periodNames[currentAnalysisTab]||currentAnalysisTab)+'\\n'+'Total Signals : '+d.total_signals+'\\n'+'Overall Win Rate : '+d.win_rate+'%\\n'+'Initial Win Rate : '+d.initial_win_rate+'%\\n'+'Wins : '+d.wins+'\\n'+'Losses : '+d.losses+'\\n'+'Martingale Recoveries : '+d.recoveries+'\\n'+'Signals Ignored : '+d.ignored+'\\n'+'Best Pair : '+d.best_pair+'\\n'+'Worst Pair : '+d.worst_pair;navigator.clipboard.writeText(text).then(()=>{var btn=document.querySelector('.copy-analysis-btn');if(btn){btn.textContent='Copied!';btn.style.background='#00ff88';setTimeout(()=>{btn.textContent='Copy Stats';btn.style.background='#00b4d8';},2000);}}).catch(()=>{alert('Failed to copy.');});}
+setInterval(loadAnalysisData,30000);loadAnalysisData();
 </script>
 </body>
 </html>
@@ -2622,14 +2813,22 @@ async def ws(websocket: WebSocket):
 
 @app.post("/api/trade/outcome")
 async def outcome(signal_id: str, outcome: str):
-    if outcome not in ('win', 'loss', 'ignored'):
-        return {"error": "invalid"}
+    if outcome not in ('win', 'loss', 'ignored', 'recovery'):
+        return {"error": "invalid outcome"}
     learn_from_outcome(signal_id, outcome)
     return {"status": "ok"}
 
 @app.get("/api/stats")
 async def stats():
     return get_stats()
+
+@app.get("/api/analytics/analysis-board")
+async def analysis_board():
+    return get_full_analysis_board()
+
+@app.get("/api/analytics/full/analysis-board")
+async def full_analysis_board():
+    return get_full_analysis_board()
 
 @app.get("/api/session")
 async def session_info():
